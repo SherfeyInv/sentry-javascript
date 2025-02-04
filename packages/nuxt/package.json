@@ -45,7 +45,7 @@
     "@nuxt/kit": "^3.13.2",
     "@sentry/browser": "8.45.0",
     "@sentry/core": "8.45.0",
-    "@sentry/node": "8.45.0",
+    "@sentry/node": "8.49.0",
     "@sentry/opentelemetry": "8.45.0",
     "@sentry/rollup-plugin": "2.22.7",
     "@sentry/vite-plugin": "2.22.6",
