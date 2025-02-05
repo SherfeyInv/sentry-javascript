@@ -69,7 +69,7 @@
     "@opentelemetry/instrumentation-aws-lambda": "0.49.0",
     "@opentelemetry/instrumentation-aws-sdk": "0.48.0",
     "@sentry/core": "8.45.0",
-    "@sentry/node": "8.45.0",
+    "@sentry/node": "8.49.0",
     "@types/aws-lambda": "^8.10.62"
   },
   "devDependencies": {
