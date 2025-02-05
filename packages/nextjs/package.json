@@ -81,7 +81,7 @@
     "@rollup/plugin-commonjs": "28.0.1",
     "@sentry-internal/browser-utils": "8.45.0",
     "@sentry/core": "8.45.0",
-    "@sentry/node": "8.45.0",
+    "@sentry/node": "8.49.0",
     "@sentry/opentelemetry": "8.45.0",
     "@sentry/react": "8.45.0",
     "@sentry/vercel-edge": "8.45.0",
