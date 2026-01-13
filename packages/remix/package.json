@@ -53,7 +53,7 @@
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
-    "@remix-run/router": "1.x",
+    "@remix-run/router": "1.23.2",
     "@sentry/cli": "^2.39.1",
     "@sentry/core": "8.45.0",
     "@sentry/node": "8.45.0",
