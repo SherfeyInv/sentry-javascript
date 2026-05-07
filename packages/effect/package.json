@@ -71,7 +71,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "^4.0.0-beta.50",
-    "effect": "^4.0.0-beta.50"
+    "effect": "^4.0.0-beta.51"
   },
   "scripts": {
     "build": "run-p build:transpile build:types",
