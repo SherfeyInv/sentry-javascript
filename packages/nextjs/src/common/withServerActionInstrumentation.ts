@@ -1,21 +1,21 @@
 import type { RequestEventData } from '@sentry/core';
-import { getActiveSpan } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  SPAN_STATUS_ERROR,
   captureException,
   continueTrace,
+  debug,
+  getActiveSpan,
   getClient,
   getIsolationScope,
   handleCallbackErrors,
-  logger,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
+  SPAN_STATUS_ERROR,
   startSpan,
-  vercelWaitUntil,
   withIsolationScope,
 } from '@sentry/core';
+import { flushSafelyWithTimeout, waitUntil } from '../common/utils/responseEnd';
 import { DEBUG_BUILD } from './debug-build';
 import { isNotFoundNavigationError, isRedirectNavigationError } from './nextNavigationErrorUtils';
-import { flushSafelyWithTimeout } from './utils/responseEnd';
 
 interface Options {
   formData?: FormData;
@@ -82,9 +82,9 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
       awaitedHeaders?.forEach((value, key) => {
         fullHeadersObject[key] = value;
       });
-    } catch (e) {
+    } catch {
       DEBUG_BUILD &&
-        logger.warn(
+        debug.warn(
           "Sentry wasn't able to extract the tracing headers for a server action. Will not trace this request.",
         );
     }
@@ -116,9 +116,11 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
               forceTransaction: true,
               attributes: {
                 [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+                [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.nextjs.server_action',
               },
             },
             async span => {
+              // oxlint-disable-next-line typescript/await-thenable -- callback may be async at runtime
               const result = await handleCallbackErrors(callback, error => {
                 if (isNotFoundNavigationError(error)) {
                   // We don't want to report "not-found"s
@@ -130,6 +132,7 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
                   captureException(error, {
                     mechanism: {
                       handled: false,
+                      type: 'auto.function.nextjs.server_action',
                     },
                   });
                 }
@@ -152,7 +155,7 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
             },
           );
         } finally {
-          vercelWaitUntil(flushSafelyWithTimeout());
+          waitUntil(flushSafelyWithTimeout());
         }
       },
     );

@@ -85,7 +85,7 @@ function wrapTestInZone(testBody: string | any[] | undefined) {
       enumerable: false,
     });
     wrappedFunc.length = testBody.length;
-  } catch (e) {
+  } catch {
     return testBody.length === 0
       ? () => testProxyZone.run(testBody, null)
       : (done: any) => testProxyZone.run(testBody, null, [done]);
@@ -182,22 +182,20 @@ function isAngularFixture(val: any): boolean {
  */
 function fixtureVitestSerializer(fixture: any) {
   // * Get Component meta data
-  const componentType = (
-    fixture && fixture.componentType ? fixture.componentType : fixture.componentRef.componentType
-  ) as any;
+  const componentType = (fixture?.componentType ? fixture.componentType : fixture.componentRef.componentType) as any;
 
   let inputsData: string = '';
 
   const selector = Reflect.getOwnPropertyDescriptor(componentType, '__annotations__')?.value[0].selector;
 
-  if (componentType && componentType.propDecorators) {
+  if (componentType?.propDecorators) {
     inputsData = Object.entries(componentType.propDecorators)
       .map(([key, value]) => `${key}="${value}"`)
       .join('');
   }
 
   // * Get DOM Elements
-  const divElement = fixture && fixture.nativeElement ? fixture.nativeElement : fixture.location.nativeElement;
+  const divElement = fixture?.nativeElement ? fixture.nativeElement : fixture.location.nativeElement;
 
   // * Convert string data to HTML data
   const doc = new DOMParser().parseFromString(

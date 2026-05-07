@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
-    "@sentry/react": "latest || *",
+    "@sentry/react": "file:../../packed/sentry-react-packed.tgz",
     "@types/node": "^18.19.1",
     "@types/react": "18.0.0",
     "@types/react-dom": "18.0.0",
@@ -47,7 +47,7 @@
   "sentryTest": {
     "variants": [
       {
-        "build-command": "test:build-ts3.8",
+        "build-command": "pnpm test:build-ts3.8",
         "label": "create-react-app (TS 3.8)"
       }
     ]

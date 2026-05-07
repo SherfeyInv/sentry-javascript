@@ -1,5 +1,5 @@
-import { loggingTransport } from '@sentry-internal/node-integration-tests';
 import * as Sentry from '@sentry/node';
+import { loggingTransport } from '@sentry-internal/node-integration-tests';
 
 Sentry.init({
   dsn: 'https://public@dsn.ingest.sentry.io/1337',
@@ -11,8 +11,8 @@ Sentry.init({
 Sentry.withScope(scope => {
   scope.setPropagationContext({
     parentSpanId: '1234567890123456',
-    spanId: '123456789012345x',
     traceId: '12345678901234567890123456789012',
+    sampleRand: Math.random(),
   });
 
   const spanIdTraceId = Sentry.startSpan(

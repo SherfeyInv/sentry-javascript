@@ -1,15 +1,15 @@
 import {
-  ROOT_CONTEXT,
-  TraceFlags,
   context,
   defaultTextMapGetter,
   defaultTextMapSetter,
   propagation,
+  ROOT_CONTEXT,
   trace,
+  TraceFlags,
 } from '@opentelemetry/api';
 import { suppressTracing } from '@opentelemetry/core';
 import { getCurrentScope, withScope } from '@sentry/core';
-
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SENTRY_BAGGAGE_HEADER, SENTRY_SCOPES_CONTEXT_KEY, SENTRY_TRACE_HEADER } from '../src/constants';
 import { SentryPropagator } from '../src/propagator';
 import { getSamplingDecision } from '../src/utils/getSamplingDecision';
@@ -25,17 +25,17 @@ describe('SentryPropagator', () => {
     mockSdkInit({
       environment: 'production',
       release: '1.0.0',
-      enableTracing: true,
+      tracesSampleRate: 1,
       dsn: 'https://abc@domain/123',
     });
   });
 
-  afterEach(() => {
-    cleanupOtel();
+  afterEach(async () => {
+    await cleanupOtel();
   });
 
   it('returns fields set', () => {
-    expect(propagator.fields()).toEqual([SENTRY_TRACE_HEADER, SENTRY_BAGGAGE_HEADER]);
+    expect(propagator.fields()).toEqual([SENTRY_TRACE_HEADER, SENTRY_BAGGAGE_HEADER, 'traceparent']);
   });
 
   describe('inject', () => {
@@ -45,8 +45,8 @@ describe('SentryPropagator', () => {
           scope.setPropagationContext({
             traceId: 'd4cda95b652f4a1592b449d5929fda1b',
             parentSpanId: '6e0c63257de34c93',
-            spanId: '6e0c63257de34c92',
             sampled: true,
+            sampleRand: Math.random(),
           });
 
           propagator.inject(context.active(), carrier, defaultTextMapSetter);
@@ -59,7 +59,7 @@ describe('SentryPropagator', () => {
               'sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b',
             ].sort(),
           );
-          expect(carrier[SENTRY_TRACE_HEADER]).toBe('d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1');
+          expect(carrier[SENTRY_TRACE_HEADER]).toMatch(/d4cda95b652f4a1592b449d5929fda1b-[a-f0-9]{16}-1/);
         });
       });
 
@@ -68,8 +68,8 @@ describe('SentryPropagator', () => {
           scope.setPropagationContext({
             traceId: 'd4cda95b652f4a1592b449d5929fda1b',
             parentSpanId: '6e0c63257de34c93',
-            spanId: '6e0c63257de34c92',
             sampled: true,
+            sampleRand: Math.random(),
             dsc: {
               transaction: 'sampled-transaction',
               sampled: 'false',
@@ -96,7 +96,7 @@ describe('SentryPropagator', () => {
               'sentry-replay_id=dsc_replay_id',
             ].sort(),
           );
-          expect(carrier[SENTRY_TRACE_HEADER]).toBe('d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1');
+          expect(carrier[SENTRY_TRACE_HEADER]).toMatch(/d4cda95b652f4a1592b449d5929fda1b-[a-f0-9]{16}-1/);
         });
       });
 
@@ -131,10 +131,10 @@ describe('SentryPropagator', () => {
             'sentry-environment=production',
             'sentry-release=1.0.0',
             'sentry-public_key=abc',
-            'sentry-sample_rate=1',
             'sentry-sampled=true',
             'sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b',
             'sentry-transaction=test',
+            expect.stringMatching(/sentry-sample_rand=0\.[0-9]+/),
           ],
           'd4cda95b652f4a1592b449d5929fda1b-{{spanId}}-1',
           true,
@@ -184,10 +184,10 @@ describe('SentryPropagator', () => {
             'sentry-environment=production',
             'sentry-release=1.0.0',
             'sentry-public_key=abc',
-            'sentry-sample_rate=1',
             'sentry-sampled=true',
             'sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b',
             'sentry-transaction=test',
+            expect.stringMatching(/sentry-sample_rand=0\.[0-9]+/),
           ],
           'd4cda95b652f4a1592b449d5929fda1b-{{spanId}}-1',
           undefined,
@@ -301,8 +301,9 @@ describe('SentryPropagator', () => {
         context.with(trace.setSpanContext(ROOT_CONTEXT, spanContext), () => {
           trace.getTracer('test').startActiveSpan('test', span => {
             propagator.inject(context.active(), carrier, defaultTextMapSetter);
-
-            expect(baggageToArray(carrier[SENTRY_BAGGAGE_HEADER])).toEqual(baggage.sort());
+            baggage.forEach(baggageItem => {
+              expect(baggageToArray(carrier[SENTRY_BAGGAGE_HEADER])).toContainEqual(baggageItem);
+            });
             expect(carrier[SENTRY_TRACE_HEADER]).toBe(sentryTrace.replace('{{spanId}}', span.spanContext().spanId));
           });
         });
@@ -322,23 +323,23 @@ describe('SentryPropagator', () => {
                 scope.setPropagationContext({
                   traceId: 'TRACE_ID',
                   parentSpanId: 'PARENT_SPAN_ID',
-                  spanId: 'SPAN_ID',
                   sampled: true,
+                  sampleRand: Math.random(),
                 });
 
                 propagator.inject(context.active(), carrier, defaultTextMapSetter);
 
-                expect(baggageToArray(carrier[SENTRY_BAGGAGE_HEADER])).toEqual(
-                  [
-                    'sentry-environment=production',
-                    'sentry-release=1.0.0',
-                    'sentry-public_key=abc',
-                    'sentry-sample_rate=1',
-                    'sentry-sampled=true',
-                    'sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b',
-                    'sentry-transaction=test',
-                  ].sort(),
-                );
+                [
+                  'sentry-environment=production',
+                  'sentry-release=1.0.0',
+                  'sentry-public_key=abc',
+                  'sentry-sampled=true',
+                  'sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b',
+                  'sentry-transaction=test',
+                  expect.stringMatching(/sentry-sample_rand=0\.[0-9]+/),
+                ].forEach(item => {
+                  expect(baggageToArray(carrier[SENTRY_BAGGAGE_HEADER])).toContainEqual(item);
+                });
                 expect(carrier[SENTRY_TRACE_HEADER]).toBe(
                   `d4cda95b652f4a1592b449d5929fda1b-${span.spanContext().spanId}-1`,
                 );
@@ -362,8 +363,8 @@ describe('SentryPropagator', () => {
               scope.setPropagationContext({
                 traceId: 'TRACE_ID',
                 parentSpanId: 'PARENT_SPAN_ID',
-                spanId: 'SPAN_ID',
                 sampled: true,
+                sampleRand: Math.random(),
               });
 
               propagator.inject(context.active(), carrier, defaultTextMapSetter);
@@ -399,8 +400,8 @@ describe('SentryPropagator', () => {
               scope.setPropagationContext({
                 traceId: 'TRACE_ID',
                 parentSpanId: 'PARENT_SPAN_ID',
-                spanId: 'SPAN_ID',
                 sampled: true,
+                sampleRand: Math.random(),
               });
 
               propagator.inject(context.active(), carrier, defaultTextMapSetter);
@@ -499,14 +500,17 @@ describe('SentryPropagator', () => {
       );
     });
 
-    it('should overwrite existing sentry baggage header', () => {
+    it('overwrites existing sentry baggage values and add sentry-trace header if sentry-trace is not set yet', () => {
+      // This is an edeg case where someone set a baggage header with existing sentry- values but no sentry-trace header.
+      // There's no evidence this occurs in real-life but if it does, we can assume that this must be some kind of error
+      // Hence, we overwrite the existing sentry- values with our new ones but keep all other non-sentry values.
       const spanContext = {
         traceId: 'd4cda95b652f4a1592b449d5929fda1b',
         spanId: '6e0c63257de34c92',
         traceFlags: TraceFlags.SAMPLED,
       };
 
-      const carrier = {
+      const carrier: Record<string, string> = {
         baggage: 'foo=bar,other=yes,sentry-release=9.9.9,sentry-other=yes',
       };
       const context = trace.setSpanContext(ROOT_CONTEXT, spanContext);
@@ -519,11 +523,11 @@ describe('SentryPropagator', () => {
           'sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b',
           'sentry-public_key=abc',
           'sentry-environment=production',
-          'sentry-other=yes',
           'sentry-release=1.0.0',
           'sentry-sampled=true',
         ].sort(),
       );
+      expect(carrier[SENTRY_TRACE_HEADER]).toBe('d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1');
     });
 
     it('should create baggage without propagation context', () => {
@@ -536,6 +540,7 @@ describe('SentryPropagator', () => {
       expect(carrier[SENTRY_BAGGAGE_HEADER]).toBe(
         `foo=bar,sentry-environment=production,sentry-release=1.0.0,sentry-public_key=abc,sentry-trace_id=${traceId}`,
       );
+      expect(carrier[SENTRY_TRACE_HEADER]).toBeDefined(); // whenever we set baggage, we must also set sentry-trace
     });
 
     it('should NOT set baggage and sentry-trace header if instrumentation is suppressed', () => {
@@ -549,6 +554,86 @@ describe('SentryPropagator', () => {
       propagator.inject(context, carrier, defaultTextMapSetter);
       expect(carrier[SENTRY_TRACE_HEADER]).toBe(undefined);
       expect(carrier[SENTRY_BAGGAGE_HEADER]).toBe(undefined);
+    });
+
+    it("doesn't set baggage header if sentry-trace header is already set", () => {
+      const carrier: Record<string, string> = {
+        [SENTRY_TRACE_HEADER]: 'abcdef-xyz-1',
+      };
+      propagator.inject(ROOT_CONTEXT, carrier, defaultTextMapSetter);
+
+      expect(carrier[SENTRY_BAGGAGE_HEADER]).toBe(undefined);
+      expect(carrier[SENTRY_TRACE_HEADER]).toBe('abcdef-xyz-1');
+    });
+
+    describe('traceparent header', () => {
+      it("doesn't change baggage header if sentry-trace header is already set", () => {
+        const carrier: Record<string, string> = {
+          [SENTRY_TRACE_HEADER]: 'abcdef-xyz-1',
+          [SENTRY_BAGGAGE_HEADER]: 'foo=bar,other=yes,sentry-release=9.9.9',
+        };
+        propagator.inject(ROOT_CONTEXT, carrier, defaultTextMapSetter);
+
+        expect(carrier[SENTRY_BAGGAGE_HEADER]).toBe('foo=bar,other=yes,sentry-release=9.9.9');
+        expect(carrier[SENTRY_TRACE_HEADER]).toBe('abcdef-xyz-1');
+      });
+
+      it("doesn't set traceparent header if sentry-trace header is already set", () => {
+        mockSdkInit({ propagateTraceparent: true });
+        const carrier: Record<string, string> = {
+          [SENTRY_TRACE_HEADER]: 'abcdef-xyz-1',
+        };
+        propagator.inject(ROOT_CONTEXT, carrier, defaultTextMapSetter);
+
+        expect(carrier['traceparent']).toBe(undefined);
+        expect(carrier[SENTRY_TRACE_HEADER]).toBe('abcdef-xyz-1');
+      });
+
+      it('sets traceparent header if propagateTraceparent is true', () => {
+        mockSdkInit({
+          environment: 'production',
+          release: '1.0.0',
+          tracesSampleRate: 1,
+          dsn: 'https://abc@domain/123',
+          propagateTraceparent: true,
+        });
+
+        const spanContext = {
+          traceId: 'd4cda95b652f4a1592b449d5929fda1b',
+          spanId: '6e0c63257de34c92',
+          traceFlags: TraceFlags.SAMPLED,
+        };
+        const context = trace.setSpanContext(ROOT_CONTEXT, spanContext);
+        const baggage = propagation.createBaggage({ foo: { value: 'bar' } });
+        propagator.inject(propagation.setBaggage(context, baggage), carrier, defaultTextMapSetter);
+
+        expect(baggageToArray(carrier[SENTRY_BAGGAGE_HEADER])).toEqual(
+          [
+            'foo=bar',
+            'sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b',
+            'sentry-public_key=abc',
+            'sentry-environment=production',
+            'sentry-release=1.0.0',
+            'sentry-sampled=true',
+          ].sort(),
+        );
+        expect(carrier['traceparent']).toBe('00-d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-01');
+      });
+
+      it("doesn't set traceparent header if propagateTraceparent is false", () => {
+        mockSdkInit({
+          environment: 'production',
+          release: '1.0.0',
+          tracesSampleRate: 1,
+          dsn: 'https://abc@domain/123',
+          propagateTraceparent: false,
+        });
+        const carrier: Record<string, string> = {};
+        propagator.inject(ROOT_CONTEXT, carrier, defaultTextMapSetter);
+
+        expect(carrier['traceparent']).toBe(undefined);
+        expect(carrier[SENTRY_TRACE_HEADER]).toBeDefined();
+      });
     });
   });
 
@@ -601,15 +686,15 @@ describe('SentryPropagator', () => {
       const context = propagator.extract(ROOT_CONTEXT, carrier, defaultTextMapGetter);
       expect(trace.getSpanContext(context)).toEqual(undefined);
       expect(getCurrentScope().getPropagationContext()).toEqual({
-        spanId: expect.stringMatching(/[a-f0-9]{16}/),
         traceId: expect.stringMatching(/[a-f0-9]{32}/),
+        sampleRand: expect.any(Number),
       });
     });
 
     it('sets data from baggage header on span context', () => {
       const sentryTraceHeader = 'd4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1';
       const baggage =
-        'sentry-environment=production,sentry-release=1.0.0,sentry-public_key=abc,sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b,sentry-transaction=dsc-transaction';
+        'sentry-environment=production,sentry-release=1.0.0,sentry-public_key=abc,sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b,sentry-transaction=dsc-transaction,sentry-sample_rand=0.123';
       carrier[SENTRY_TRACE_HEADER] = sentryTraceHeader;
       carrier[SENTRY_BAGGAGE_HEADER] = baggage;
       const context = propagator.extract(ROOT_CONTEXT, carrier, defaultTextMapGetter);
@@ -625,6 +710,7 @@ describe('SentryPropagator', () => {
             public_key: 'abc',
             trace_id: 'd4cda95b652f4a1592b449d5929fda1b',
             transaction: 'dsc-transaction',
+            sample_rand: '0.123',
           },
         }),
       });
@@ -652,8 +738,8 @@ describe('SentryPropagator', () => {
       const context = propagator.extract(ROOT_CONTEXT, carrier, defaultTextMapGetter);
       expect(trace.getSpanContext(context)).toEqual(undefined);
       expect(getCurrentScope().getPropagationContext()).toEqual({
-        spanId: expect.stringMatching(/[a-f0-9]{16}/),
         traceId: expect.stringMatching(/[a-f0-9]{32}/),
+        sampleRand: expect.any(Number),
       });
     });
   });

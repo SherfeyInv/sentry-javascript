@@ -1,8 +1,8 @@
 export type {
   Breadcrumb,
   BreadcrumbHint,
-  // eslint-disable-next-line deprecation/deprecation
-  Request,
+  Context,
+  Contexts,
   RequestEventData,
   SdkInfo,
   Event,
@@ -15,11 +15,14 @@ export type {
   Thread,
   User,
   Session,
+  ReportDialogOptions,
+  CaptureContext,
+  ExclusiveEventHintOrCaptureContext,
+  Log,
+  LogSeverityLevel,
 } from '@sentry/core';
 
 export type { BrowserOptions } from './client';
-
-export type { ReportDialogOptions } from './sdk';
 
 export {
   addEventProcessor,
@@ -33,16 +36,16 @@ export {
   createTransport,
   lastEventId,
   flush,
-  // eslint-disable-next-line deprecation/deprecation
-  getCurrentHub,
   getClient,
   isInitialized,
+  isEnabled,
   getCurrentScope,
   getIsolationScope,
   getGlobalScope,
   setCurrentClient,
   Scope,
   continueTrace,
+  getTraceData,
   suppressTracing,
   SDK_VERSION,
   setContext,
@@ -51,10 +54,13 @@ export {
   setTag,
   setTags,
   setUser,
+  setConversationId,
   withScope,
   withIsolationScope,
   functionToStringIntegration,
+  // eslint-disable-next-line deprecation/deprecation
   inboundFiltersIntegration,
+  eventFiltersIntegration,
   dedupeIntegration,
   parameterize,
   startSession,
@@ -64,6 +70,8 @@ export {
   spanToTraceHeader,
   spanToBaggageHeader,
   updateSpanName,
+  withStreamedSpan,
+  metrics,
 } from '@sentry/core';
 
 export {
@@ -76,6 +84,7 @@ export {
 export { WINDOW } from './helpers';
 export { BrowserClient } from './client';
 export { makeFetchTransport } from './transports/fetch';
+export { uiProfiler } from './profiling';
 export {
   defaultStackParser,
   defaultStackLineParsers,
@@ -87,18 +96,14 @@ export {
 } from './stack-parsers';
 export { eventFromException, eventFromMessage, exceptionFromError } from './eventbuilder';
 export { createUserFeedbackEnvelope } from './userfeedback';
-export {
-  getDefaultIntegrations,
-  forceLoad,
-  init,
-  onLoad,
-  showReportDialog,
-} from './sdk';
+export { getDefaultIntegrations, forceLoad, init, onLoad } from './sdk';
+export { showReportDialog } from './report-dialog';
 
 export { breadcrumbsIntegration } from './integrations/breadcrumbs';
 export { globalHandlersIntegration } from './integrations/globalhandlers';
 export { httpContextIntegration } from './integrations/httpcontext';
 export { linkedErrorsIntegration } from './integrations/linkederrors';
 export { browserApiErrorsIntegration } from './integrations/browserapierrors';
+export { browserSessionIntegration } from './integrations/browsersession';
 
 export { lazyLoadIntegration } from './utils/lazyLoadIntegration';

@@ -1,34 +1,31 @@
-import { DiagLogLevel, diag } from '@opentelemetry/api';
-import { Resource } from '@opentelemetry/resources';
+import { context, diag, DiagLogLevel, propagation, trace } from '@opentelemetry/api';
 import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
-import {
-  ATTR_SERVICE_NAME,
-  ATTR_SERVICE_VERSION,
-  SEMRESATTRS_SERVICE_NAMESPACE,
-} from '@opentelemetry/semantic-conventions';
 import type { Client, Integration, Options } from '@sentry/core';
 import {
-  GLOBAL_OBJ,
-  SDK_VERSION,
+  consoleIntegration,
+  conversationIdIntegration,
   createStackParser,
+  debug,
   dedupeIntegration,
   functionToStringIntegration,
   getCurrentScope,
   getIntegrationsToSetup,
-  hasTracingEnabled,
+  GLOBAL_OBJ,
+  hasSpansEnabled,
   inboundFiltersIntegration,
   linkedErrorsIntegration,
-  logger,
   nodeStackLineParser,
   requestDataIntegration,
+  spanStreamingIntegration,
   stackParserFromStackParserOptions,
 } from '@sentry/core';
 import {
+  enhanceDscWithOpenTelemetryRootSpanName,
+  getSentryResource,
+  openTelemetrySetupCheck,
   SentryPropagator,
   SentrySampler,
   SentrySpanProcessor,
-  enhanceDscWithOpenTelemetryRootSpanName,
-  openTelemetrySetupCheck,
   setOpenTelemetryContextAsyncContextStrategy,
   setupEventContextTrace,
   wrapContextManagerClass,
@@ -51,10 +48,15 @@ const nodeStackParser = createStackParser(nodeStackLineParser());
 export function getDefaultIntegrations(options: Options): Integration[] {
   return [
     dedupeIntegration(),
+    // TODO(v11): Replace with `eventFiltersIntegration` once we remove the deprecated `inboundFiltersIntegration`
+    // eslint-disable-next-line deprecation/deprecation
     inboundFiltersIntegration(),
     functionToStringIntegration(),
+    conversationIdIntegration(),
     linkedErrorsIntegration(),
     winterCGFetchIntegration(),
+    consoleIntegration(),
+    // TODO(v11): integration can be included - but integration should not add IP address etc
     ...(options.sendDefaultPii ? [requestDataIntegration()] : []),
   ];
 }
@@ -85,26 +87,21 @@ export function init(options: VercelEdgeOptions = {}): Client | undefined {
     const detectedRelease = getSentryRelease();
     if (detectedRelease !== undefined) {
       options.release = detectedRelease;
-    } else {
-      // If release is not provided, then we should disable autoSessionTracking
-      // eslint-disable-next-line deprecation/deprecation
-      options.autoSessionTracking = false;
     }
   }
 
   options.environment =
     options.environment || process.env.SENTRY_ENVIRONMENT || getVercelEnv(false) || process.env.NODE_ENV;
 
-  // eslint-disable-next-line deprecation/deprecation
-  if (options.autoSessionTracking === undefined && options.dsn !== undefined) {
-    // eslint-disable-next-line deprecation/deprecation
-    options.autoSessionTracking = true;
+  const resolvedIntegrations = getIntegrationsToSetup(options);
+  if (options.traceLifecycle === 'stream' && !resolvedIntegrations.some(i => i.name === 'SpanStreaming')) {
+    resolvedIntegrations.push(spanStreamingIntegration());
   }
 
   const client = new VercelEdgeClient({
     ...options,
     stackParser: stackParserFromStackParserOptions(options.stackParser || nodeStackParser),
-    integrations: getIntegrationsToSetup(options),
+    integrations: resolvedIntegrations,
     transport: options.transport || makeEdgeTransport,
   });
   // The client is on the current scope, from where it generally is inherited
@@ -134,20 +131,20 @@ function validateOpenTelemetrySetup(): void {
 
   const required: ReturnType<typeof openTelemetrySetupCheck> = ['SentryContextManager', 'SentryPropagator'];
 
-  if (hasTracingEnabled()) {
+  if (hasSpansEnabled()) {
     required.push('SentrySpanProcessor');
   }
 
   for (const k of required) {
     if (!setup.includes(k)) {
-      logger.error(
+      debug.error(
         `You have to set up the ${k}. Without this, the OpenTelemetry & Sentry integration will not work properly.`,
       );
     }
   }
 
   if (!setup.includes('SentrySampler')) {
-    logger.warn(
+    debug.warn(
       'You have to set up the SentrySampler. Without this, the OpenTelemetry & Sentry integration may still work, but sample rates set for the Sentry SDK will not be respected. If you use a custom sampler, make sure to use `wrapSamplingDecision`.',
     );
   }
@@ -163,12 +160,7 @@ export function setupOtel(client: VercelEdgeClient): void {
   // Create and configure NodeTracerProvider
   const provider = new BasicTracerProvider({
     sampler: new SentrySampler(client),
-    resource: new Resource({
-      [ATTR_SERVICE_NAME]: 'edge',
-      // eslint-disable-next-line deprecation/deprecation
-      [SEMRESATTRS_SERVICE_NAMESPACE]: 'sentry',
-      [ATTR_SERVICE_VERSION]: SDK_VERSION,
-    }),
+    resource: getSentryResource('edge'),
     forceFlushTimeoutMillis: 500,
     spanProcessors: [
       new SentrySpanProcessor({
@@ -179,29 +171,29 @@ export function setupOtel(client: VercelEdgeClient): void {
 
   const SentryContextManager = wrapContextManagerClass(AsyncLocalStorageContextManager);
 
-  // Initialize the provider
-  provider.register({
-    propagator: new SentryPropagator(),
-    contextManager: new SentryContextManager(),
-  });
+  trace.setGlobalTracerProvider(provider);
+  propagation.setGlobalPropagator(new SentryPropagator());
+  context.setGlobalContextManager(new SentryContextManager());
 
   client.traceProvider = provider;
 }
 
 /**
- * Setup the OTEL logger to use our own logger.
+ * Setup the OTEL logger to use our own debug logger.
  */
 function setupOpenTelemetryLogger(): void {
-  const otelLogger = new Proxy(logger as typeof logger & { verbose: (typeof logger)['debug'] }, {
-    get(target, prop, receiver) {
-      const actualProp = prop === 'verbose' ? 'debug' : prop;
-      return Reflect.get(target, actualProp, receiver);
-    },
-  });
-
   // Disable diag, to ensure this works even if called multiple times
   diag.disable();
-  diag.setLogger(otelLogger, DiagLogLevel.DEBUG);
+  diag.setLogger(
+    {
+      error: debug.error,
+      warn: debug.warn,
+      info: debug.log,
+      debug: debug.log,
+      verbose: debug.log,
+    },
+    DiagLogLevel.DEBUG,
+  );
 }
 
 /**
@@ -215,7 +207,7 @@ export function getSentryRelease(fallback?: string): string | undefined {
   }
 
   // This supports the variable that sentry-webpack-plugin injects
-  if (GLOBAL_OBJ.SENTRY_RELEASE && GLOBAL_OBJ.SENTRY_RELEASE.id) {
+  if (GLOBAL_OBJ.SENTRY_RELEASE?.id) {
     return GLOBAL_OBJ.SENTRY_RELEASE.id;
   }
 
@@ -266,7 +258,9 @@ export function getSentryRelease(fallback?: string): string | undefined {
     process.env['FC_GIT_COMMIT_SHA'] ||
     // Heroku #1 https://devcenter.heroku.com/articles/heroku-ci
     process.env['HEROKU_TEST_RUN_COMMIT_VERSION'] ||
-    // Heroku #2 https://docs.sentry.io/product/integrations/deployment/heroku/#configure-releases
+    // Heroku #2 https://devcenter.heroku.com/articles/dyno-metadata#dyno-metadata
+    process.env['HEROKU_BUILD_COMMIT'] ||
+    // Heroku #3 (deprecated by Heroku, kept for backward compatibility)
     process.env['HEROKU_SLUG_COMMIT'] ||
     // Railway - https://docs.railway.app/reference/variables#git-variables
     process.env['RAILWAY_GIT_COMMIT_SHA'] ||

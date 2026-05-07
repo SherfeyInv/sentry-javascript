@@ -1,15 +1,17 @@
 export type {
   Breadcrumb,
   BreadcrumbHint,
+  Log,
+  LogSeverityLevel,
+  Metric,
   PolymorphicRequest,
-  // eslint-disable-next-line deprecation/deprecation
-  Request,
   RequestEventData,
   SdkInfo,
   Event,
   EventHint,
   ErrorEvent,
   Exception,
+  FeatureFlagsIntegration,
   Session,
   SeverityLevel,
   Span,
@@ -18,7 +20,6 @@ export type {
   Thread,
   User,
 } from '@sentry/core';
-export type { AddRequestDataToEventOptions } from '@sentry/core';
 
 export type { DenoOptions } from './types';
 
@@ -36,6 +37,7 @@ export {
   flush,
   getClient,
   isInitialized,
+  isEnabled,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
@@ -64,7 +66,9 @@ export {
   startSpanManual,
   startNewTrace,
   suppressTracing,
+  // eslint-disable-next-line deprecation/deprecation
   inboundFiltersIntegration,
+  eventFiltersIntegration,
   linkedErrorsIntegration,
   functionToStringIntegration,
   requestDataIntegration,
@@ -72,6 +76,9 @@ export {
   dedupeIntegration,
   extraErrorDataIntegration,
   rewriteFramesIntegration,
+  supabaseIntegration,
+  instrumentSupabaseClient,
+  instrumentPostgresJsSql,
   zodErrorsIntegration,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
@@ -84,18 +91,24 @@ export {
   spanToTraceHeader,
   spanToBaggageHeader,
   updateSpanName,
+  wrapMcpServerWithSentry,
+  featureFlagsIntegration,
+  metrics,
+  withStreamedSpan,
+  logger,
+  consoleLoggingIntegration,
+  spanStreamingIntegration,
 } from '@sentry/core';
 
 export { DenoClient } from './client';
 
-export {
-  getDefaultIntegrations,
-  init,
-} from './sdk';
-
+export { getDefaultIntegrations, init } from './sdk';
+export { denoServeIntegration } from './integrations/deno-serve';
 export { denoContextIntegration } from './integrations/context';
 export { globalHandlersIntegration } from './integrations/globalhandlers';
 export { normalizePathsIntegration } from './integrations/normalizepaths';
 export { contextLinesIntegration } from './integrations/contextlines';
 export { denoCronIntegration } from './integrations/deno-cron';
 export { breadcrumbsIntegration } from './integrations/breadcrumbs';
+export { vercelAIIntegration } from './integrations/tracing/vercelai';
+export { denoRuntimeMetricsIntegration, type DenoRuntimeMetricsOptions } from './integrations/denoRuntimeMetrics';

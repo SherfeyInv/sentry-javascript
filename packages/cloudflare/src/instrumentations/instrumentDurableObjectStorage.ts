@@ -1,0 +1,92 @@
+import type { DurableObjectStorage } from '@cloudflare/workers-types';
+import { isThenable, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, startSpan } from '@sentry/core';
+import { storeSpanContext } from '../utils/traceLinks';
+
+const STORAGE_METHODS_TO_INSTRUMENT = ['get', 'put', 'delete', 'list', 'setAlarm', 'getAlarm', 'deleteAlarm'] as const;
+
+type StorageMethod = (typeof STORAGE_METHODS_TO_INSTRUMENT)[number];
+
+type WaitUntil = (promise: Promise<unknown>) => void;
+
+/**
+ * Instruments DurableObjectStorage methods with Sentry spans.
+ *
+ * Wraps the following async methods:
+ * - get, put, delete, list (KV API)
+ * - setAlarm, getAlarm, deleteAlarm (Alarm API)
+ *
+ * When setAlarm is called, it also stores the current span context so that when
+ * the alarm fires later, it can link back to the trace that called setAlarm.
+ *
+ * @param storage - The DurableObjectStorage instance to instrument
+ * @param waitUntil - Optional waitUntil function to defer span context storage
+ * @returns An instrumented DurableObjectStorage instance
+ */
+export function instrumentDurableObjectStorage(
+  storage: DurableObjectStorage,
+  waitUntil?: WaitUntil,
+): DurableObjectStorage {
+  return new Proxy(storage, {
+    get(target, prop, _receiver) {
+      // Use `target` as the receiver instead of the proxy (`_receiver`).
+      // Native workerd getters (e.g., `storage.sql`) validate `this` via
+      // internal slots. Passing the proxy as receiver breaks that check,
+      // causing "Illegal invocation: function called with incorrect `this`
+      // reference" errors.
+      const original = Reflect.get(target, prop, target);
+
+      if (typeof original !== 'function') {
+        return original;
+      }
+
+      const methodName = prop as string;
+      if (!STORAGE_METHODS_TO_INSTRUMENT.includes(methodName as StorageMethod)) {
+        return (original as (...args: unknown[]) => unknown).bind(target);
+      }
+
+      return function (this: unknown, ...args: unknown[]) {
+        return startSpan(
+          {
+            // Use underscore naming to match Cloudflare's native instrumentation (e.g., "durable_object_storage_get")
+            name: `durable_object_storage_${methodName}`,
+            op: 'db',
+            attributes: {
+              [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.db.cloudflare.durable_object',
+              'db.system.name': 'cloudflare.durable_object.storage',
+              'db.operation.name': methodName,
+            },
+          },
+          () => {
+            const teardown = async (): Promise<void> => {
+              // When setAlarm is called, store the current span context so that when the alarm
+              // fires later, it can link back to the trace that called setAlarm.
+              // We use the original (uninstrumented) storage (target) to avoid creating a span
+              // for this internal operation. The storage is deferred via waitUntil to not block.
+              if (methodName === 'setAlarm') {
+                await storeSpanContext(target, 'alarm');
+              }
+            };
+
+            const result = (original as (...args: unknown[]) => unknown).apply(target, args);
+
+            if (!isThenable(result)) {
+              waitUntil?.(teardown());
+
+              return result;
+            }
+
+            return result.then(
+              res => {
+                waitUntil?.(teardown());
+                return res;
+              },
+              e => {
+                throw e;
+              },
+            );
+          },
+        );
+      };
+    },
+  });
+}

@@ -1,36 +1,74 @@
+import type { Nuxt } from '@nuxt/schema';
+import { consoleSandbox } from '@sentry/core';
 import * as fs from 'fs';
 import * as path from 'path';
-import { consoleSandbox } from '@sentry/core';
+
+/**
+ * Gets the major version of the installed nitro package.
+ * Returns 2 as the default if nitro is not found or the version cannot be determined.
+ */
+export async function getNitroMajorVersion(): Promise<number> {
+  try {
+    const { getPackageInfo } = await import('local-pkg');
+    const info = await getPackageInfo('nitro');
+    if (info?.version) {
+      const major = parseInt(info.version.split('.')[0] ?? '2', 10);
+      return isNaN(major) ? 2 : major;
+    }
+  } catch {
+    // If local-pkg is unavailable or nitro is not found, default to v2
+  }
+  return 2;
+}
 
 /**
  *  Find the default SDK init file for the given type (client or server).
  *  The sentry.server.config file is prioritized over the instrument.server file.
  */
-export function findDefaultSdkInitFile(type: 'server' | 'client'): string | undefined {
+export function findDefaultSdkInitFile(type: 'server' | 'client', nuxt?: Nuxt): string | undefined {
   const possibleFileExtensions = ['ts', 'js', 'mjs', 'cjs', 'mts', 'cts'];
-  const cwd = process.cwd();
+  const relativePaths: string[] = [];
 
-  const filePaths: string[] = [];
   if (type === 'server') {
     for (const ext of possibleFileExtensions) {
-      // order is important here - we want to prioritize the server.config file
-      filePaths.push(path.join(cwd, `sentry.${type}.config.${ext}`));
-      filePaths.push(path.join(cwd, 'public', `instrument.${type}.${ext}`));
+      relativePaths.push(`sentry.${type}.config.${ext}`);
+      relativePaths.push(path.join('public', `instrument.${type}.${ext}`));
     }
   } else {
     for (const ext of possibleFileExtensions) {
-      filePaths.push(path.join(cwd, `sentry.${type}.config.${ext}`));
+      relativePaths.push(`sentry.${type}.config.${ext}`);
     }
   }
 
-  return filePaths.find(filename => fs.existsSync(filename));
+  // Get layers from highest priority to lowest
+  const layers = [...(nuxt?.options._layers ?? [])].reverse();
+
+  for (const layer of layers) {
+    for (const relativePath of relativePaths) {
+      const fullPath = path.resolve(layer.cwd, relativePath);
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
+    }
+  }
+
+  // As a fallback, also check CWD (left for pure compatibility)
+  const cwd = process.cwd();
+  for (const relativePath of relativePaths) {
+    const fullPath = path.resolve(cwd, relativePath);
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  return undefined;
 }
 
 /**
  *  Extracts the filename from a node command with a path.
  */
 export function getFilenameFromNodeStartCommand(nodeCommand: string): string | null {
-  const regex = /[^/\\]+$/;
+  const regex = /[^/\\]+\.[^/\\]+$/;
   const match = nodeCommand.match(regex);
   return match ? match[0] : null;
 }
@@ -47,7 +85,7 @@ export const QUERY_END_INDICATOR = 'SENTRY-QUERY-END';
  * Only exported for testing.
  */
 export function removeSentryQueryFromPath(url: string): string {
-  // eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor
+  // oxlint-disable-next-line sdk/no-regexp-constructor
   const regex = new RegExp(`\\${SENTRY_WRAPPED_ENTRY}.*?\\${QUERY_END_INDICATOR}`);
   return url.replace(regex, '');
 }
@@ -60,33 +98,29 @@ export function removeSentryQueryFromPath(url: string): string {
  */
 export function extractFunctionReexportQueryParameters(query: string): { wrap: string[]; reexport: string[] } {
   // Regex matches the comma-separated params between the functions query
-  // eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor
+  // oxlint-disable-next-line sdk/no-regexp-constructor
   const wrapRegex = new RegExp(
     `\\${SENTRY_WRAPPED_FUNCTIONS}(.*?)(\\${QUERY_END_INDICATOR}|\\${SENTRY_REEXPORTED_FUNCTIONS})`,
   );
-  // eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor
+  // oxlint-disable-next-line sdk/no-regexp-constructor
   const reexportRegex = new RegExp(`\\${SENTRY_REEXPORTED_FUNCTIONS}(.*?)(\\${QUERY_END_INDICATOR})`);
 
   const wrapMatch = query.match(wrapRegex);
   const reexportMatch = query.match(reexportRegex);
 
   const wrap =
-    wrapMatch && wrapMatch[1]
-      ? wrapMatch[1]
-          .split(',')
-          .filter(param => param !== '')
-          // Sanitize, as code could be injected with another rollup plugin
-          .map((str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      : [];
+    wrapMatch?.[1]
+      ?.split(',')
+      .filter(param => param !== '')
+      // Sanitize, as code could be injected with another rollup plugin
+      .map((str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) || [];
 
   const reexport =
-    reexportMatch && reexportMatch[1]
-      ? reexportMatch[1]
-          .split(',')
-          .filter(param => param !== '' && param !== 'default')
-          // Sanitize, as code could be injected with another rollup plugin
-          .map((str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      : [];
+    reexportMatch?.[1]
+      ?.split(',')
+      .filter(param => param !== '' && param !== 'default')
+      // Sanitize, as code could be injected with another rollup plugin
+      .map((str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) || [];
 
   return { wrap, reexport };
 }
@@ -162,4 +196,28 @@ export function constructFunctionReExport(pathWithQuery: string, entryId: string
         '',
       ),
     );
+}
+
+/**
+ * Sets up alias to work around OpenTelemetry's incomplete ESM imports.
+ * https://github.com/getsentry/sentry-javascript/issues/15204
+ *
+ * OpenTelemetry's @opentelemetry/resources package has incomplete imports missing
+ * the .js file extensions (like execAsync for machine-id detection). This causes module resolution
+ * errors in certain Nuxt configurations, particularly when local Nuxt modules in Nuxt 4 are present.
+ *
+ * @see https://nuxt.com/docs/guide/concepts/esm#aliasing-libraries
+ */
+export function addOTelCommonJSImportAlias(nuxt: Nuxt, isNitroV3 = false): void {
+  if (!nuxt.options.dev || isNitroV3) {
+    return;
+  }
+
+  if (!nuxt.options.alias) {
+    nuxt.options.alias = {};
+  }
+
+  if (!nuxt.options.alias['@opentelemetry/resources']) {
+    nuxt.options.alias['@opentelemetry/resources'] = '@opentelemetry/resources/build/src/index.js';
+  }
 }

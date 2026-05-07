@@ -1,0 +1,250 @@
+import type { DurableObjectStorage } from '@cloudflare/workers-types';
+import type { SerializedTraceData } from '@sentry/core';
+import {
+  captureException,
+  continueTrace,
+  getClient,
+  isThenable,
+  type Scope,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  startNewTrace as startNewTraceCore,
+  startSpan,
+  withIsolationScope,
+  withScope,
+} from '@sentry/core';
+import type { CloudflareOptions } from './client';
+import { flushAndDispose } from './flush';
+import { ensureInstrumented } from './instrument';
+import { init } from './sdk';
+import { extractRpcMeta } from './utils/rpcMeta';
+import { buildSpanLinks, getStoredSpanContext, storeSpanContext } from './utils/traceLinks';
+
+/** Extended DurableObjectState with originalStorage exposed by instrumentContext */
+interface InstrumentedDurableObjectState extends DurableObjectState {
+  originalStorage?: DurableObjectStorage;
+}
+
+type MethodWrapperOptions = {
+  spanName?: string;
+  spanOp?: string;
+  options: CloudflareOptions;
+  context: ExecutionContext | InstrumentedDurableObjectState;
+  /**
+   * If true, starts a fresh trace instead of inheriting from a parent trace.
+   * Useful for scheduled/independent invocations like alarms.
+   *
+   * If true, it also stores the current span context and links to the previous invocation's span.
+   * Uses Durable Object storage to persist the link. The link is set asynchronously via `span.addLinks()`
+   * in a `waitUntil` to avoid blocking.
+   *
+   * @default false
+   */
+  startNewTrace?: boolean;
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type UncheckedMethod = (...args: any[]) => any;
+type OriginalMethod = UncheckedMethod;
+
+/**
+ * Wraps a method with Sentry error tracking and optional tracing.
+ * Supports starting new traces and linking to previous invocations via Durable Object storage.
+ *
+ * @param wrapperOptions - The options for the wrapper.
+ * @param handler - The method to wrap.
+ * @param callback - The callback to call.
+ * @param noMark - Whether to mark the method as instrumented.
+ * @returns The wrapped method.
+ */
+export function wrapMethodWithSentry<T extends OriginalMethod>(
+  wrapperOptions: MethodWrapperOptions,
+  handler: T,
+  callback?: (...args: Parameters<T>) => void,
+  noMark?: true,
+): T {
+  return ensureInstrumented(
+    handler,
+    original =>
+      new Proxy(original, {
+        apply(target, thisArg, rawArgs: Parameters<T>) {
+          const { startNewTrace } = wrapperOptions;
+
+          // For RPC methods, extract Sentry trace context from the trailing argument.
+          // The caller side (instrumentDurableObjectStub / JSRPC proxy) appends it;
+          // we strip it here so the user's method never sees it.
+          let args = rawArgs;
+          let rpcMeta: SerializedTraceData | undefined;
+
+          if (wrapperOptions.spanOp === 'rpc') {
+            const extracted = extractRpcMeta(rawArgs);
+            args = extracted.args;
+            rpcMeta = extracted.rpcMeta;
+          }
+
+          // For startNewTrace, always use withIsolationScope to ensure a fresh scope
+          // Otherwise, use existing client's scope or isolation scope
+          const currentClient = getClient();
+          const sentryWithScope = startNewTrace ? withIsolationScope : currentClient ? withScope : withIsolationScope;
+
+          const wrappedFunction = (scope: Scope): unknown | Promise<unknown> => {
+            // In certain situations, the passed context can become undefined.
+            // For example, for Astro while prerendering pages at build time.
+            // see: https://github.com/getsentry/sentry-javascript/issues/13217
+            const context: typeof wrapperOptions.context | undefined = wrapperOptions.context;
+
+            const waitUntil = context?.waitUntil?.bind?.(context);
+            const storage = context && 'originalStorage' in context ? context.originalStorage : undefined;
+
+            let scopeClient = scope.getClient();
+            // Check if client exists AND is still usable (transport not disposed)
+            // This handles the case where a previous handler disposed the client
+            // but the scope still holds a reference to it (e.g., alarm handlers in Durable Objects)
+            // For startNewTrace, always create a fresh client
+            if (startNewTrace || !scopeClient?.getTransport()) {
+              const client = init({
+                ...wrapperOptions.options,
+                ctx: context as unknown as ExecutionContext | undefined,
+              });
+              scope.setClient(client);
+              scopeClient = client;
+            }
+
+            const clientToDispose = scopeClient;
+            const methodName = wrapperOptions.spanName || 'unknown';
+
+            const teardown = async (): Promise<void> => {
+              if (startNewTrace && storage) {
+                await storeSpanContext(storage, methodName);
+              }
+              await flushAndDispose(clientToDispose);
+            };
+
+            if (!wrapperOptions.spanName) {
+              try {
+                if (callback) {
+                  callback(...args);
+                }
+
+                const result = Reflect.apply(target, thisArg, args);
+
+                if (isThenable(result)) {
+                  return result.then(
+                    (res: unknown) => {
+                      waitUntil?.(teardown());
+                      return res;
+                    },
+                    (e: unknown) => {
+                      captureException(e, {
+                        mechanism: {
+                          type: 'auto.faas.cloudflare.durable_object',
+                          handled: false,
+                        },
+                      });
+                      waitUntil?.(teardown());
+                      throw e;
+                    },
+                  );
+                } else {
+                  waitUntil?.(teardown());
+                  return result;
+                }
+              } catch (e) {
+                captureException(e, {
+                  mechanism: {
+                    type: 'auto.faas.cloudflare.durable_object',
+                    handled: false,
+                  },
+                });
+                waitUntil?.(teardown());
+                throw e;
+              }
+            }
+
+            const attributes = wrapperOptions.spanOp
+              ? {
+                  [SEMANTIC_ATTRIBUTE_SENTRY_OP]: wrapperOptions.spanOp,
+                  [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.faas.cloudflare.durable_object',
+                }
+              : {};
+
+            const executeSpan = (): unknown => {
+              return startSpan({ name: methodName, attributes }, span => {
+                // When linking to previous trace, fetch the stored context and add links asynchronously
+                // This avoids blocking the response while fetching from storage
+                if (startNewTrace && storage) {
+                  waitUntil?.(
+                    getStoredSpanContext(storage, methodName).then(storedContext => {
+                      if (storedContext) {
+                        span.addLinks(buildSpanLinks(storedContext));
+                        // TODO: Remove this once EAP can store span links. We currently only set this attribute so that we
+                        // can obtain the previous trace information from the EAP store. Long-term, EAP will handle
+                        // span links and then we should remove this again. Also throwing in a TODO(v11), to remind us
+                        // to check this at v11 time :)
+                        const sampledFlag = storedContext.sampled ? '1' : '0';
+                        span.setAttribute(
+                          'sentry.previous_trace',
+                          `${storedContext.traceId}-${storedContext.spanId}-${sampledFlag}`,
+                        );
+                      }
+                    }),
+                  );
+                }
+
+                try {
+                  const result = Reflect.apply(target, thisArg, args);
+
+                  if (isThenable(result)) {
+                    return result.then(
+                      (res: unknown) => {
+                        waitUntil?.(teardown());
+                        return res;
+                      },
+                      (e: unknown) => {
+                        captureException(e, {
+                          mechanism: {
+                            type: 'auto.faas.cloudflare.durable_object',
+                            handled: false,
+                          },
+                        });
+                        waitUntil?.(teardown());
+                        throw e;
+                      },
+                    );
+                  } else {
+                    waitUntil?.(teardown());
+                    return result;
+                  }
+                } catch (e) {
+                  captureException(e, {
+                    mechanism: {
+                      type: 'auto.faas.cloudflare.durable_object',
+                      handled: false,
+                    },
+                  });
+                  waitUntil?.(teardown());
+                  throw e;
+                }
+              });
+            };
+
+            if (rpcMeta) {
+              return continueTrace(
+                { sentryTrace: rpcMeta['sentry-trace'] || '', baggage: rpcMeta.baggage || '' },
+                executeSpan,
+              );
+            }
+
+            if (startNewTrace) {
+              return startNewTraceCore(() => executeSpan());
+            }
+
+            return executeSpan();
+          };
+
+          return sentryWithScope(wrappedFunction);
+        },
+      }),
+    noMark,
+  );
+}

@@ -1,3 +1,5 @@
+import type { Attributes, RawAttributes } from '../attributes';
+import type { SpanLink, SpanLinkJSON } from './link';
 import type { Measurements } from './measurement';
 import type { HrTime } from './opentelemetry';
 import type { SpanStatus } from './spanStatus';
@@ -33,6 +35,48 @@ export type SpanAttributes = Partial<{
 /** This type is aligned with the OpenTelemetry TimeInput type. */
 export type SpanTimeInput = HrTime | number | Date;
 
+/**
+ * Intermediate JSON reporesentation of a v2 span, which users and our SDK integrations will interact with.
+ * This is NOT the final serialized JSON span, but an intermediate step still holding raw attributes.
+ * The final, serialized span is a {@link SerializedStreamedSpan}.
+ * Main reason: Make it easier and safer for users to work with attributes.
+ */
+export interface StreamedSpanJSON {
+  trace_id: string;
+  parent_span_id?: string;
+  span_id: string;
+  name: string;
+  start_timestamp: number;
+  end_timestamp: number;
+  status: 'ok' | 'error';
+  is_segment: boolean;
+  attributes?: RawAttributes<Record<string, unknown>>;
+  links?: SpanLinkJSON<RawAttributes<Record<string, unknown>>>[];
+}
+
+/**
+ * Serialized span item.
+ * This is the final, serialized span format that is sent to Sentry.
+ * The intermediate representation is {@link StreamedSpanJSON}.
+ * Main difference: Attributes are converted to {@link Attributes}, thus including the `type` annotation.
+ */
+export type SerializedStreamedSpan = Omit<StreamedSpanJSON, 'attributes' | 'links'> & {
+  attributes?: Attributes;
+  links?: SpanLinkJSON<Attributes>[];
+};
+
+/**
+ * Envelope span item container.
+ */
+export type SerializedStreamedSpanContainer = {
+  version?: number;
+  ingest_settings?: {
+    infer_ip?: 'auto' | 'never';
+    infer_user_agent?: 'auto' | 'never';
+  };
+  items: Array<SerializedStreamedSpan>;
+};
+
 /** A JSON representation of a span. */
 export interface SpanJSON {
   data: SpanAttributes;
@@ -50,6 +94,7 @@ export interface SpanJSON {
   measurements?: Measurements;
   is_segment?: boolean;
   segment_id?: string;
+  links?: SpanLinkJSON[];
 }
 
 // These are aligned with OpenTelemetry trace flags
@@ -181,6 +226,12 @@ export interface SentrySpanArguments {
   endTimestamp?: number | undefined;
 
   /**
+   * Links to associate with the new span. Setting links here is preferred over addLink()
+   * as certain context information is only available during span creation.
+   */
+  links?: SpanLink[];
+
+  /**
    * Set to `true` if this span should be sent as a standalone segment span
    * as opposed to a transaction.
    *
@@ -249,14 +300,21 @@ export interface Span {
   addEvent(name: string, attributesOrStartTime?: SpanAttributes | SpanTimeInput, startTime?: SpanTimeInput): this;
 
   /**
-   * NOT USED IN SENTRY, only added for compliance with OTEL Span interface
+   * Associates this span with a related span. Links can reference spans from the same or different trace
+   * and are typically used for batch operations, cross-trace scenarios, or scatter/gather patterns.
+   *
+   * Prefer setting links directly when starting a span (e.g. `Sentry.startSpan()`) as some context information is only available during span creation.
+   * @param link - The link containing the context of the span to link to and optional attributes
    */
-  addLink(link: unknown): this;
+  addLink(link: SpanLink): this;
 
   /**
-   * NOT USED IN SENTRY, only added for compliance with OTEL Span interface
+   * Associates this span with multiple related spans. See {@link addLink} for more details.
+   *
+   * Prefer setting links directly when starting a span (e.g. `Sentry.startSpan()`) as some context information is only available during span creation.
+   * @param links - Array of links to associate with this span
    */
-  addLinks(links: unknown): this;
+  addLinks(links: SpanLink[]): this;
 
   /**
    * NOT USED IN SENTRY, only added for compliance with OTEL Span interface

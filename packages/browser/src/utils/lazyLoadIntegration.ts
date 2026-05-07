@@ -1,29 +1,51 @@
-import { SDK_VERSION, getClient } from '@sentry/core';
 import type { IntegrationFn } from '@sentry/core';
+import { getClient, SDK_VERSION } from '@sentry/core';
 import type { BrowserClient } from '../client';
 import { WINDOW } from '../helpers';
 
-// This is a map of integration function method to bundle file name.
-const LazyLoadableIntegrations = {
-  replayIntegration: 'replay',
+// Single source of truth: as const array provides both the runtime list and the type.
+// Bundle file names are derived: strip 'Integration' suffix, lowercase.
+// Exceptions (hyphenated bundle names) are listed in HYPHENATED_BUNDLES.
+const LAZY_LOADABLE_NAMES = [
+  'replayIntegration',
+  'replayCanvasIntegration',
+  'feedbackIntegration',
+  'feedbackModalIntegration',
+  'feedbackScreenshotIntegration',
+  'captureConsoleIntegration',
+  'contextLinesIntegration',
+  'linkedErrorsIntegration',
+  'dedupeIntegration',
+  'extraErrorDataIntegration',
+  'graphqlClientIntegration',
+  'httpClientIntegration',
+  'reportingObserverIntegration',
+  'rewriteFramesIntegration',
+  'browserProfilingIntegration',
+  'moduleMetadataIntegration',
+  'instrumentAnthropicAiClient',
+  'instrumentOpenAiClient',
+  'instrumentGoogleGenAIClient',
+  'instrumentLangGraph',
+  'createLangChainCallbackHandler',
+  'instrumentLangChainEmbeddings',
+] as const;
+
+type ElementOf<T extends readonly unknown[]> = T[number];
+type LazyLoadableIntegrationName = ElementOf<typeof LAZY_LOADABLE_NAMES>;
+
+const HYPHENATED_BUNDLES: Partial<Record<LazyLoadableIntegrationName, string>> = {
   replayCanvasIntegration: 'replay-canvas',
-  feedbackIntegration: 'feedback',
   feedbackModalIntegration: 'feedback-modal',
   feedbackScreenshotIntegration: 'feedback-screenshot',
-  captureConsoleIntegration: 'captureconsole',
-  contextLinesIntegration: 'contextlines',
-  linkedErrorsIntegration: 'linkederrors',
-  dedupeIntegration: 'dedupe',
-  extraErrorDataIntegration: 'extraerrordata',
-  httpClientIntegration: 'httpclient',
-  reportingObserverIntegration: 'reportingobserver',
-  rewriteFramesIntegration: 'rewriteframes',
-  browserProfilingIntegration: 'browserprofiling',
-  moduleMetadataIntegration: 'modulemetadata',
-} as const;
+};
+
+function getBundleName(name: string): string {
+  return HYPHENATED_BUNDLES[name as LazyLoadableIntegrationName] || name.replace('Integration', '').toLowerCase();
+}
 
 const WindowWithMaybeIntegration = WINDOW as {
-  Sentry?: Partial<Record<keyof typeof LazyLoadableIntegrations, IntegrationFn>>;
+  Sentry?: Partial<Record<LazyLoadableIntegrationName, IntegrationFn>>;
 };
 
 /**
@@ -31,10 +53,10 @@ const WindowWithMaybeIntegration = WINDOW as {
  * Rejects if the integration cannot be loaded.
  */
 export async function lazyLoadIntegration(
-  name: keyof typeof LazyLoadableIntegrations,
+  name: LazyLoadableIntegrationName,
   scriptNonce?: string,
 ): Promise<IntegrationFn> {
-  const bundle = LazyLoadableIntegrations[name];
+  const bundle = LAZY_LOADABLE_NAMES.includes(name) ? getBundleName(name) : undefined;
 
   // `window.Sentry` is only set when using a CDN bundle, but this method can also be used via the NPM package
   const sentryOnWindow = (WindowWithMaybeIntegration.Sentry = WindowWithMaybeIntegration.Sentry || {});
@@ -56,7 +78,7 @@ export async function lazyLoadIntegration(
   const script = WINDOW.document.createElement('script');
   script.src = url;
   script.crossOrigin = 'anonymous';
-  script.referrerPolicy = 'origin';
+  script.referrerPolicy = 'strict-origin';
 
   if (scriptNonce) {
     script.setAttribute('nonce', scriptNonce);
@@ -68,7 +90,7 @@ export async function lazyLoadIntegration(
   });
 
   const currentScript = WINDOW.document.currentScript;
-  const parent = WINDOW.document.body || WINDOW.document.head || (currentScript && currentScript.parentElement);
+  const parent = WINDOW.document.body || WINDOW.document.head || currentScript?.parentElement;
 
   if (parent) {
     parent.appendChild(script);
@@ -93,8 +115,7 @@ export async function lazyLoadIntegration(
 
 function getScriptURL(bundle: string): string {
   const client = getClient<BrowserClient>();
-  const options = client && client.getOptions();
-  const baseURL = (options && options.cdnBaseUrl) || 'https://browser.sentry-cdn.com';
+  const baseURL = client?.getOptions()?.cdnBaseUrl || 'https://browser.sentry-cdn.com';
 
   return new URL(`/${SDK_VERSION}/${bundle}.min.js`, baseURL).toString();
 }

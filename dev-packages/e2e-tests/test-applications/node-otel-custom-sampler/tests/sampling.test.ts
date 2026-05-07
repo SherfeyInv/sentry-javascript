@@ -36,6 +36,13 @@ test('Sends a sampled API route transaction', async ({ baseURL }) => {
       'http.status_code': 200,
       'http.status_text': 'OK',
       'http.route': '/task',
+      'http.request.header.accept': '*/*',
+      'http.request.header.accept_encoding': 'gzip, deflate',
+      'http.request.header.accept_language': '*',
+      'http.request.header.connection': 'keep-alive',
+      'http.request.header.host': expect.any(String),
+      'http.request.header.sec_fetch_mode': 'cors',
+      'http.request.header.user_agent': 'node',
     },
     origin: 'auto.http.otel.http',
     op: 'http.server',
@@ -48,9 +55,8 @@ test('Sends a sampled API route transaction', async ({ baseURL }) => {
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
-      'http.route': '/',
       'express.name': 'query',
       'express.type': 'middleware',
     },
@@ -60,16 +66,15 @@ test('Sends a sampled API route transaction', async ({ baseURL }) => {
     timestamp: expect.any(Number),
     status: 'ok',
     op: 'middleware.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
   });
 
   expect(transactionEvent.spans).toContainEqual({
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
-      'http.route': '/',
       'express.name': 'expressInit',
       'express.type': 'middleware',
     },
@@ -79,14 +84,14 @@ test('Sends a sampled API route transaction', async ({ baseURL }) => {
     timestamp: expect.any(Number),
     status: 'ok',
     op: 'middleware.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
   });
 
   expect(transactionEvent.spans).toContainEqual({
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'request_handler.express',
       'http.route': '/task',
       'express.name': '/task',
@@ -98,7 +103,7 @@ test('Sends a sampled API route transaction', async ({ baseURL }) => {
     timestamp: expect.any(Number),
     status: 'ok',
     op: 'request_handler.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
   });
 
   expect(transactionEvent.spans).toContainEqual({

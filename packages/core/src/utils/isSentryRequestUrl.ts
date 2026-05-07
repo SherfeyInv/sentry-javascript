@@ -1,4 +1,6 @@
-import type { Client, DsnComponents } from '../types-hoist';
+import type { Client } from '../client';
+import type { DsnComponents } from '../types-hoist/dsn';
+import { isURLObjectRelative, parseStringToURLObject } from './url';
 
 /**
  * Checks whether given url points to Sentry server
@@ -6,8 +8,8 @@ import type { Client, DsnComponents } from '../types-hoist';
  * @param url url to verify
  */
 export function isSentryRequestUrl(url: string, client: Client | undefined): boolean {
-  const dsn = client && client.getDsn();
-  const tunnel = client && client.getOptions().tunnel;
+  const dsn = client?.getDsn();
+  const tunnel = client?.getOptions().tunnel;
   return checkDsn(url, dsn) || checkTunnel(url, tunnel);
 }
 
@@ -20,7 +22,25 @@ function checkTunnel(url: string, tunnel: string | undefined): boolean {
 }
 
 function checkDsn(url: string, dsn: DsnComponents | undefined): boolean {
-  return dsn ? url.includes(dsn.host) : false;
+  // Requests to Sentry's ingest endpoint must have a `sentry_key` in the query string
+  // This is equivalent to the public_key which is required in the DSN
+  // see https://develop.sentry.dev/sdk/overview/#parsing-the-dsn
+  // Therefore, a request to the same host and with a `sentry_key` in the query string
+  // can be considered a request to the ingest endpoint.
+  const urlParts = parseStringToURLObject(url);
+  if (!urlParts || isURLObjectRelative(urlParts)) {
+    return false;
+  }
+
+  if (!dsn) {
+    return false;
+  }
+
+  return hostnameMatchesDsnHost(urlParts.hostname, dsn.host) && /(^|&|\?)sentry_key=/.test(urlParts.search);
+}
+
+function hostnameMatchesDsnHost(hostname: string, dsnHost: string): boolean {
+  return hostname === dsnHost || (dsnHost.length > 0 && hostname.endsWith(`.${dsnHost}`));
 }
 
 function removeTrailingSlash(str: string): string {

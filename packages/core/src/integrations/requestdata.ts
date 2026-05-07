@@ -1,105 +1,80 @@
+import { getIsolationScope } from '../currentScopes';
 import { defineIntegration } from '../integration';
-import type { IntegrationFn } from '../types-hoist';
-import {
-  type AddRequestDataToEventOptions,
-  addNormalizedRequestDataToEvent,
-  addRequestDataToEvent,
-} from '../utils-hoist/requestdata';
+import { SEMANTIC_ATTRIBUTE_USER_IP_ADDRESS } from '../semanticAttributes';
+import type { Event } from '../types-hoist/event';
+import type { IntegrationFn } from '../types-hoist/integration';
+import type { QueryParams, RequestEventData } from '../types-hoist/request';
+import type { StreamedSpanJSON } from '../types-hoist/span';
+import { parseCookie } from '../utils/cookie';
+import { httpHeadersToSpanAttributes } from '../utils/request';
+import { getClientIPAddress, ipHeaderNames } from '../vendor/getIpAddress';
+import { safeSetSpanJSONAttributes } from '../tracing/spans/captureSpan';
 
-export type RequestDataIntegrationOptions = {
-  /**
-   * Controls what data is pulled from the request and added to the event
-   */
-  include?: {
-    cookies?: boolean;
-    data?: boolean;
-    headers?: boolean;
-    ip?: boolean;
-    query_string?: boolean;
-    url?: boolean;
-    user?:
-      | boolean
-      | {
-          id?: boolean;
-          username?: boolean;
-          email?: boolean;
-        };
-  };
+interface RequestDataIncludeOptions {
+  cookies?: boolean;
+  data?: boolean;
+  headers?: boolean;
+  ip?: boolean;
+  query_string?: boolean;
+  url?: boolean;
+}
 
+type RequestDataIntegrationOptions = {
   /**
-   * Whether to identify transactions by parameterized path, parameterized path with method, or handler name.
-   * @deprecated This option does not do anything anymore, and will be removed in v9.
+   * Controls what data is pulled from the request and added to the event.
    */
-  transactionNamingScheme?: 'path' | 'methodPath' | 'handler';
+  include?: RequestDataIncludeOptions;
 };
 
-const DEFAULT_OPTIONS = {
-  include: {
-    cookies: true,
-    data: true,
-    headers: true,
-    ip: false,
-    query_string: true,
-    url: true,
-    user: {
-      id: true,
-      username: true,
-      email: true,
-    },
-  },
-  transactionNamingScheme: 'methodPath' as const,
+// TODO(v11): Change defaults based on `sendDefaultPii`
+const DEFAULT_INCLUDE: RequestDataIncludeOptions = {
+  cookies: true,
+  data: true,
+  headers: true,
+  query_string: true,
+  url: true,
 };
 
 const INTEGRATION_NAME = 'RequestData';
 
 const _requestDataIntegration = ((options: RequestDataIntegrationOptions = {}) => {
-  const _options: Required<RequestDataIntegrationOptions> = {
-    ...DEFAULT_OPTIONS,
-    ...options,
-    include: {
-      ...DEFAULT_OPTIONS.include,
-      ...options.include,
-      user:
-        options.include && typeof options.include.user === 'boolean'
-          ? options.include.user
-          : {
-              ...DEFAULT_OPTIONS.include.user,
-              // Unclear why TS still thinks `options.include.user` could be a boolean at this point
-              ...((options.include || {}).user as Record<string, boolean>),
-            },
-    },
+  const include = {
+    ...DEFAULT_INCLUDE,
+    ...options.include,
   };
 
   return {
     name: INTEGRATION_NAME,
-    processEvent(event) {
-      // Note: In the long run, most of the logic here should probably move into the request data utility functions. For
-      // the moment it lives here, though, until https://github.com/getsentry/sentry-javascript/issues/5718 is addressed.
-      // (TL;DR: Those functions touch many parts of the repo in many different ways, and need to be cleaned up. Once
-      // that's happened, it will be easier to add this logic in without worrying about unexpected side effects.)
-
+    processEvent(event, _hint, client) {
       const { sdkProcessingMetadata = {} } = event;
-      const { request, normalizedRequest } = sdkProcessingMetadata;
+      const { normalizedRequest, ipAddress } = sdkProcessingMetadata;
 
-      const addRequestDataOptions = convertReqDataIntegrationOptsToAddReqDataOpts(_options);
+      const includeWithDefaultPiiApplied: RequestDataIncludeOptions = {
+        ...include,
+        ip: include.ip ?? client.getOptions().sendDefaultPii,
+      };
 
-      // If this is set, it takes precedence over the plain request object
       if (normalizedRequest) {
-        // Some other data is not available in standard HTTP requests, but can sometimes be augmented by e.g. Express or Next.js
-        const ipAddress = request ? request.ip || (request.socket && request.socket.remoteAddress) : undefined;
-        const user = request ? request.user : undefined;
-
-        addNormalizedRequestDataToEvent(event, normalizedRequest, { ipAddress, user }, addRequestDataOptions);
-        return event;
+        addNormalizedRequestDataToEvent(event, normalizedRequest, { ipAddress }, includeWithDefaultPiiApplied);
       }
 
-      // TODO(v9): Eventually we can remove this fallback branch and only rely on the normalizedRequest above
-      if (!request) {
-        return event;
+      return event;
+    },
+    processSegmentSpan(span, client) {
+      const { sdkProcessingMetadata = {} } = getIsolationScope().getScopeData();
+      const { normalizedRequest, ipAddress } = sdkProcessingMetadata;
+
+      if (!normalizedRequest) {
+        return;
       }
 
-      // eslint-disable-next-line deprecation/deprecation
-      return addRequestDataToEvent(event, request, addRequestDataOptions);
+      const { sendDefaultPii } = client.getOptions();
+      const includeWithDefaultPiiApplied: RequestDataIncludeOptions = {
+        ...include,
+        ip: include.ip ?? sendDefaultPii,
+      };
+
+      addNormalizedRequestDataToSpan(span, normalizedRequest, ipAddress, includeWithDefaultPiiApplied, sendDefaultPii);
     },
   };
 }) satisfies IntegrationFn;
@@ -110,45 +85,141 @@ const _requestDataIntegration = ((options: RequestDataIntegrationOptions = {}) =
  */
 export const requestDataIntegration = defineIntegration(_requestDataIntegration);
 
-/** Convert this integration's options to match what `addRequestDataToEvent` expects */
-/** TODO: Can possibly be deleted once https://github.com/getsentry/sentry-javascript/issues/5718 is fixed */
-function convertReqDataIntegrationOptsToAddReqDataOpts(
-  integrationOptions: Required<RequestDataIntegrationOptions>,
-): AddRequestDataToEventOptions {
-  const {
-    // eslint-disable-next-line deprecation/deprecation
-    transactionNamingScheme,
-    include: { ip, user, ...requestOptions },
-  } = integrationOptions;
+/**
+ * Add already normalized request data to an event.
+ * This mutates the passed in event.
+ */
+function addNormalizedRequestDataToEvent(
+  event: Event,
+  req: RequestEventData,
+  // Data that should not go into `event.request` but is somehow related to requests
+  additionalData: { ipAddress?: string },
+  include: RequestDataIncludeOptions,
+): void {
+  event.request = {
+    ...event.request,
+    ...extractNormalizedRequestData(req, include),
+  };
 
-  const requestIncludeKeys: string[] = ['method'];
-  for (const [key, value] of Object.entries(requestOptions)) {
-    if (value) {
-      requestIncludeKeys.push(key);
+  if (include.ip) {
+    const ip = (req.headers && getClientIPAddress(req.headers)) || additionalData.ipAddress;
+    if (ip) {
+      event.user = {
+        ...event.user,
+        ip_address: ip,
+      };
+    }
+  }
+}
+
+function addNormalizedRequestDataToSpan(
+  span: StreamedSpanJSON,
+  normalizedRequest: RequestEventData,
+  ipAddress: string | undefined,
+  include: RequestDataIncludeOptions,
+  sendDefaultPii: boolean | undefined,
+): void {
+  const requestData = extractNormalizedRequestData(normalizedRequest, include);
+  const attributes: Record<string, unknown> = {};
+
+  if (requestData.url) {
+    attributes['url.full'] = requestData.url;
+  }
+
+  if (requestData.method) {
+    attributes['http.request.method'] = requestData.method;
+  }
+
+  if (requestData.query_string) {
+    attributes['url.query'] = normalizeQueryString(requestData.query_string);
+  }
+
+  safeSetSpanJSONAttributes(span, attributes);
+
+  // Process cookies before headers so normalizedRequest.cookies takes precedence
+  // over the raw cookie header (matching the processEvent path).
+  if (requestData.cookies && Object.keys(requestData.cookies).length > 0) {
+    const cookieString = Object.entries(requestData.cookies)
+      .map(([name, value]) => `${name}=${value}`)
+      .join('; ');
+    const cookieAttributes = httpHeadersToSpanAttributes({ cookie: cookieString }, sendDefaultPii ?? false, 'request');
+    safeSetSpanJSONAttributes(span, cookieAttributes);
+  }
+
+  if (requestData.headers) {
+    const headerAttributes = httpHeadersToSpanAttributes(requestData.headers, sendDefaultPii ?? false, 'request');
+    safeSetSpanJSONAttributes(span, headerAttributes);
+  }
+
+  if (requestData.data != null) {
+    const serialized = typeof requestData.data === 'string' ? requestData.data : JSON.stringify(requestData.data);
+    if (serialized) {
+      safeSetSpanJSONAttributes(span, { 'http.request.body.data': serialized });
     }
   }
 
-  let addReqDataUserOpt;
-  if (user === undefined) {
-    addReqDataUserOpt = true;
-  } else if (typeof user === 'boolean') {
-    addReqDataUserOpt = user;
-  } else {
-    const userIncludeKeys: string[] = [];
-    for (const [key, value] of Object.entries(user)) {
-      if (value) {
-        userIncludeKeys.push(key);
+  if (include.ip) {
+    const ip = (normalizedRequest.headers && getClientIPAddress(normalizedRequest.headers)) || ipAddress || undefined;
+    if (ip) {
+      safeSetSpanJSONAttributes(span, { [SEMANTIC_ATTRIBUTE_USER_IP_ADDRESS]: ip });
+    }
+  }
+}
+
+function extractNormalizedRequestData(
+  normalizedRequest: RequestEventData,
+  include: RequestDataIncludeOptions,
+): RequestEventData {
+  const requestData: RequestEventData = {};
+  const headers = { ...normalizedRequest.headers };
+
+  if (include.headers) {
+    requestData.headers = headers;
+
+    if (!include.cookies) {
+      delete (headers as { cookie?: string }).cookie;
+    }
+
+    if (!include.ip) {
+      const ipHeaderNamesLower = new Set(ipHeaderNames.map(name => name.toLowerCase()));
+      for (const key of Object.keys(headers)) {
+        if (ipHeaderNamesLower.has(key.toLowerCase())) {
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete (headers as Record<string, unknown>)[key];
+        }
       }
     }
-    addReqDataUserOpt = userIncludeKeys;
   }
 
-  return {
-    include: {
-      ip,
-      user: addReqDataUserOpt,
-      request: requestIncludeKeys.length !== 0 ? requestIncludeKeys : undefined,
-      transaction: transactionNamingScheme,
-    },
-  };
+  requestData.method = normalizedRequest.method;
+
+  if (include.url) {
+    requestData.url = normalizedRequest.url;
+  }
+
+  if (include.cookies) {
+    const cookies = normalizedRequest.cookies || (headers?.cookie ? parseCookie(headers.cookie) : undefined);
+    requestData.cookies = cookies || {};
+  }
+
+  if (include.query_string) {
+    requestData.query_string = normalizedRequest.query_string;
+  }
+
+  if (include.data) {
+    requestData.data = normalizedRequest.data;
+  }
+
+  return requestData;
+}
+
+function normalizeQueryString(queryString: QueryParams): string | undefined {
+  if (typeof queryString === 'string') {
+    return queryString || undefined;
+  }
+
+  const pairs = Array.isArray(queryString) ? queryString : Object.entries(queryString);
+  const result = pairs.map(([key, value]) => `${key}=${value}`).join('&');
+
+  return result || undefined;
 }

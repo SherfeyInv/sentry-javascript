@@ -13,19 +13,12 @@ export interface PolymorphicEvent {
 }
 
 /** A `Request` type compatible with Node, Express, browser, etc., because everything is optional */
-export type PolymorphicRequest = BaseRequest &
-  BrowserRequest &
-  NodeRequest &
-  ExpressRequest &
-  KoaRequest &
-  NextjsRequest;
+export type PolymorphicRequest = BaseRequest & NodeRequest & ExpressRequest & KoaRequest & NextjsRequest;
 
 type BaseRequest = {
   method?: string;
   url?: string;
 };
-
-type BrowserRequest = BaseRequest;
 
 type NodeRequest = BaseRequest & {
   headers?: {
@@ -50,12 +43,14 @@ type NextjsRequest = NodeRequest & {
     [key: string]: string;
   };
   query?: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     [key: string]: any;
   };
 };
 
 type ExpressRequest = NodeRequest & {
   baseUrl?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   body?: string | { [key: string]: any };
   host?: string;
   hostname?: string;
@@ -70,9 +65,11 @@ type ExpressRequest = NodeRequest & {
     ];
   };
   query?: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     [key: string]: any;
   };
   user?: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     [key: string]: any;
   };
   _reconstructedRoute?: string;

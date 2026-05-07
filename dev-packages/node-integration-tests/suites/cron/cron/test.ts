@@ -1,11 +1,13 @@
+import { afterAll, expect, test } from 'vitest';
 import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
 
 afterAll(() => {
   cleanupChildProcesses();
 });
 
-test('cron instrumentation', done => {
-  createRunner(__dirname, 'scenario.ts')
+test('cron instrumentation', { timeout: 30_000 }, async () => {
+  await createRunner(__dirname, 'scenario.ts')
+    .withMockSentryServer()
     .expect({
       check_in: {
         check_in_id: expect.any(String),
@@ -15,8 +17,8 @@ test('cron instrumentation', done => {
         monitor_config: { schedule: { type: 'crontab', value: '* * * * * *' } },
         contexts: {
           trace: {
-            trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-            span_id: expect.stringMatching(/[a-f0-9]{16}/),
+            trace_id: expect.stringMatching(/[a-f\d]{32}/),
+            span_id: expect.stringMatching(/[a-f\d]{16}/),
           },
         },
       },
@@ -30,8 +32,8 @@ test('cron instrumentation', done => {
         duration: expect.any(Number),
         contexts: {
           trace: {
-            trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-            span_id: expect.stringMatching(/[a-f0-9]{16}/),
+            trace_id: expect.stringMatching(/[a-f\d]{32}/),
+            span_id: expect.stringMatching(/[a-f\d]{16}/),
           },
         },
       },
@@ -45,8 +47,8 @@ test('cron instrumentation', done => {
         monitor_config: { schedule: { type: 'crontab', value: '* * * * * *' } },
         contexts: {
           trace: {
-            trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-            span_id: expect.stringMatching(/[a-f0-9]{16}/),
+            trace_id: expect.stringMatching(/[a-f\d]{32}/),
+            span_id: expect.stringMatching(/[a-f\d]{16}/),
           },
         },
       },
@@ -60,8 +62,8 @@ test('cron instrumentation', done => {
         duration: expect.any(Number),
         contexts: {
           trace: {
-            trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-            span_id: expect.stringMatching(/[a-f0-9]{16}/),
+            trace_id: expect.stringMatching(/[a-f\d]{32}/),
+            span_id: expect.stringMatching(/[a-f\d]{16}/),
           },
         },
       },
@@ -71,5 +73,6 @@ test('cron instrumentation', done => {
         exception: { values: [{ type: 'Error', value: 'Error in cron job' }] },
       },
     })
-    .start(done);
+    .start()
+    .completed();
 });

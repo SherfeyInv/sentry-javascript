@@ -2,11 +2,10 @@
  * @vitest-environment jsdom
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { getClient } from '@sentry/core';
+import '../utils/mock-internal-setTimeout';
 import type { Transport } from '@sentry/core';
-
+import { getClient } from '@sentry/core';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_FLUSH_MIN_DELAY,
   MAX_REPLAY_DURATION,
@@ -26,9 +25,6 @@ import type { RecordMock } from '../mocks/mockRrweb';
 import { resetSdkMock } from '../mocks/resetSdkMock';
 import type { DomHandler } from '../types';
 import { getTestEventCheckout, getTestEventIncremental } from '../utils/getTestEvent';
-import { useFakeTimers } from '../utils/use-fake-timers';
-
-useFakeTimers();
 
 const prevLocation = WINDOW.location;
 
@@ -36,6 +32,10 @@ describe('Integration | session', () => {
   let replay: ReplayContainer;
   let domHandler: DomHandler;
   let mockRecord: RecordMock;
+
+  beforeAll(() => {
+    vi.useFakeTimers();
+  });
 
   beforeEach(async () => {
     ({ mockRecord, domHandler, replay } = await resetSdkMock({
@@ -207,14 +207,39 @@ describe('Integration | session', () => {
     await vi.advanceTimersByTimeAsync(DEFAULT_FLUSH_MIN_DELAY);
     await new Promise(process.nextTick);
 
-    const newTimestamp = BASE_TIMESTAMP + ELAPSED;
+    // The click actually does not trigger a flush because it never gets added to event buffer because
+    // the session is expired. We stop recording and re-sample the session expires.
+    expect(replay).not.toHaveLastSentReplay();
+
+    // This click will trigger a flush now that the session is active
+    // (sessionSampleRate=1 when resampling)
+    domHandler({
+      name: 'click',
+      event: new Event('click'),
+    });
+    await vi.advanceTimersByTimeAsync(DEFAULT_FLUSH_MIN_DELAY);
+    await new Promise(process.nextTick);
+    const newTimestamp = BASE_TIMESTAMP + ELAPSED + DEFAULT_FLUSH_MIN_DELAY;
 
     expect(replay).toHaveLastSentReplay({
       recordingPayloadHeader: { segment_id: 0 },
       recordingData: JSON.stringify([
-        { data: { isCheckout: true }, timestamp: newTimestamp, type: 2 },
+        { data: { isCheckout: true }, timestamp: newTimestamp - DEFAULT_FLUSH_MIN_DELAY, type: 2 },
         optionsEvent,
-        // the click is lost, but that's OK
+        {
+          type: 5,
+          timestamp: newTimestamp,
+          data: {
+            tag: 'breadcrumb',
+            payload: {
+              timestamp: newTimestamp / 1000,
+              type: 'default',
+              category: 'ui.click',
+              message: '<unknown>',
+              data: {},
+            },
+          },
+        },
       ]),
     });
 
@@ -224,7 +249,7 @@ describe('Integration | session', () => {
     // `_context` should be reset when a new session is created
     expect(replay.getContext()).toEqual({
       initialUrl: 'http://dummy/',
-      initialTimestamp: newTimestamp,
+      initialTimestamp: newTimestamp - DEFAULT_FLUSH_MIN_DELAY,
       urls: [],
       errorIds: new Set(),
       traceIds: new Set(),
@@ -411,6 +436,57 @@ describe('Integration | session', () => {
         initialTimestamp: timestampAtRefresh,
       }),
     );
+  });
+
+  it('updates DSC with new replay_id after session refresh', async () => {
+    const { getCurrentScope } = await import('@sentry/core');
+
+    const initialSession = { ...replay.session } as Session;
+
+    // Simulate a cached DSC on the scope (as browserTracingIntegration does
+    // when the idle span ends) with the old session's replay_id.
+    const scope = getCurrentScope();
+    scope.setPropagationContext({
+      ...scope.getPropagationContext(),
+      dsc: {
+        trace_id: 'test-trace-id',
+        public_key: 'test-public-key',
+        replay_id: initialSession.id,
+      },
+    });
+
+    // Idle past expiration
+    const ELAPSED = SESSION_IDLE_EXPIRE_DURATION + 1;
+    vi.advanceTimersByTime(ELAPSED);
+
+    // Emit a recording event to put replay into paused state (mirrors the
+    // "creates a new session" test which does this before clicking)
+    const TEST_EVENT = getTestEventIncremental({
+      data: { name: 'lost event' },
+      timestamp: BASE_TIMESTAMP,
+    });
+    mockRecord._emitter(TEST_EVENT);
+    await new Promise(process.nextTick);
+
+    expect(replay.isPaused()).toBe(true);
+
+    // Trigger user activity to cause session refresh
+    domHandler({
+      name: 'click',
+      event: new Event('click'),
+    });
+
+    // _refreshSession is async (calls await stop() then initializeSampling)
+    await vi.advanceTimersByTimeAsync(DEFAULT_FLUSH_MIN_DELAY);
+    await new Promise(process.nextTick);
+
+    // Should be a new session
+    expect(replay).not.toHaveSameSession(initialSession);
+
+    // The cached DSC should now have the NEW session's replay_id, not the old one
+    const dsc = scope.getPropagationContext().dsc;
+    expect(dsc?.replay_id).toBe(replay.session?.id);
+    expect(dsc?.replay_id).not.toBe(initialSession.id);
   });
 
   it('increases segment id after each event', async () => {

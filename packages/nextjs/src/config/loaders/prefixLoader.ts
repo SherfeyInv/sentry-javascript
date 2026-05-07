@@ -1,7 +1,6 @@
+import { escapeStringForRegex } from '@sentry/core';
 import * as fs from 'fs';
 import * as path from 'path';
-import { escapeStringForRegex } from '@sentry/core';
-
 import type { LoaderThis } from './types';
 
 type LoaderOptions = {
@@ -30,7 +29,7 @@ export default function prefixLoader(this: LoaderThis<LoaderOptions>, userCode: 
   // Fill in placeholders
   let templateCode = fs.readFileSync(templatePath).toString();
   replacements.forEach(([placeholder, value]) => {
-    // eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor -- user input is escaped
+    // oxlint-disable-next-line sdk/no-regexp-constructor -- user input is escaped
     const placeholderRegex = new RegExp(escapeStringForRegex(placeholder), 'g');
     templateCode = templateCode.replace(placeholderRegex, value);
   });

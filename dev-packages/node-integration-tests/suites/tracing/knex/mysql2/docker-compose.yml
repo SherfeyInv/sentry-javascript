@@ -1,0 +1,18 @@
+version: '3.9'
+
+services:
+  db_mysql2:
+    image: mysql:8
+    restart: always
+    container_name: integration-tests-knex-mysql2
+    ports:
+      - '3307:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: docker
+      MYSQL_DATABASE: tests
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -uroot -pdocker']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s

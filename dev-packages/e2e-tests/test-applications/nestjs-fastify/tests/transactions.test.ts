@@ -38,6 +38,13 @@ test('Sends an API route transaction', async ({ baseURL }) => {
       'http.status_code': 200,
       'http.status_text': 'OK',
       'http.route': '/test-transaction',
+      'http.request.header.accept': '*/*',
+      'http.request.header.accept_encoding': 'gzip, deflate',
+      'http.request.header.accept_language': '*',
+      'http.request.header.connection': 'keep-alive',
+      'http.request.header.host': expect.any(String),
+      'http.request.header.sec_fetch_mode': 'cors',
+      'http.request.header.user_agent': 'node',
     },
     op: 'http.server',
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -53,17 +60,19 @@ test('Sends an API route transaction', async ({ baseURL }) => {
           span_id: expect.stringMatching(/[a-f0-9]{16}/),
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
-            'sentry.origin': 'manual',
-            'fastify.type': 'middleware',
-            'plugin.name': 'fastify -> @fastify/middie',
-            'hook.name': 'onRequest',
+            'sentry.origin': 'auto.http.otel.fastify',
+            'sentry.op': 'hook.fastify',
+            'hook.name': 'fastify -> @fastify/otel -> @fastify/middie - onRequest',
+            'fastify.type': 'hook',
+            'hook.callback.name': 'runMiddie',
           },
-          description: 'middleware - runMiddie',
+          description: '@fastify/middie - onRequest',
+          op: 'hook.fastify',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
           start_timestamp: expect.any(Number),
           timestamp: expect.any(Number),
           status: 'ok',
-          origin: 'manual',
+          origin: 'auto.http.otel.fastify',
         },
         {
           span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -71,16 +80,17 @@ test('Sends an API route transaction', async ({ baseURL }) => {
           data: {
             'sentry.origin': 'auto.http.otel.fastify',
             'sentry.op': 'request_handler.fastify',
-            'plugin.name': 'fastify -> @fastify/middie',
-            'fastify.type': 'request_handler',
+            'hook.name': 'fastify -> @fastify/otel -> @fastify/middie - route-handler',
+            'fastify.type': 'request-handler',
             'http.route': '/test-transaction',
+            'hook.callback.name': 'anonymous',
           },
-          description: '@fastify/middie',
+          description: '@fastify/middie - route-handler',
+          op: 'request_handler.fastify',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
           start_timestamp: expect.any(Number),
           timestamp: expect.any(Number),
           status: 'ok',
-          op: 'request_handler.fastify',
           origin: 'auto.http.otel.fastify',
         },
         {
@@ -106,36 +116,6 @@ test('Sends an API route transaction', async ({ baseURL }) => {
           status: 'ok',
           op: 'request_context.nestjs',
           origin: 'auto.http.otel.nestjs',
-        },
-        {
-          span_id: expect.stringMatching(/[a-f0-9]{16}/),
-          trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-          data: {
-            'sentry.origin': 'auto.middleware.nestjs',
-            'sentry.op': 'middleware.nestjs',
-          },
-          description: 'SentryTracingInterceptor',
-          parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
-          start_timestamp: expect.any(Number),
-          timestamp: expect.any(Number),
-          status: 'ok',
-          op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
-        },
-        {
-          span_id: expect.stringMatching(/[a-f0-9]{16}/),
-          trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-          data: {
-            'sentry.origin': 'auto.middleware.nestjs',
-            'sentry.op': 'middleware.nestjs',
-          },
-          description: 'SentryTracingInterceptor',
-          parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
-          start_timestamp: expect.any(Number),
-          timestamp: expect.any(Number),
-          status: 'ok',
-          op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
         },
         {
           span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -178,29 +158,19 @@ test('Sends an API route transaction', async ({ baseURL }) => {
           status: 'ok',
           origin: 'manual',
         },
-        {
-          span_id: expect.stringMatching(/[a-f0-9]{16}/),
-          trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-          data: {
-            'sentry.origin': 'auto.middleware.nestjs',
-            'sentry.op': 'middleware.nestjs',
-          },
-          description: 'Interceptors - After Route',
-          parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
-          start_timestamp: expect.any(Number),
-          timestamp: expect.any(Number),
-          status: 'ok',
-          op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
-        },
       ]),
+      start_timestamp: expect.any(Number),
+      timestamp: expect.any(Number),
       transaction: 'GET /test-transaction',
-      type: 'transaction',
       transaction_info: {
         source: 'route',
       },
+      type: 'transaction',
     }),
   );
+
+  const spanDescriptions = transactionEvent.spans.map(span => span.description);
+  expect(spanDescriptions).not.toContain('SentryTracingInterceptor');
 });
 
 test('API route transaction includes nest middleware span. Spans created in and after middleware are nested correctly', async ({
@@ -306,7 +276,7 @@ test('API route transaction includes nest guard span and span started in guard i
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.guard',
           },
           description: 'ExampleGuard',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -314,7 +284,7 @@ test('API route transaction includes nest guard span and span started in guard i
           timestamp: expect.any(Number),
           status: 'ok',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.guard',
         },
       ]),
     }),
@@ -370,7 +340,7 @@ test('API route transaction includes nest pipe span for valid request', async ({
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.pipe',
           },
           description: 'ParseIntPipe',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -378,7 +348,7 @@ test('API route transaction includes nest pipe span for valid request', async ({
           timestamp: expect.any(Number),
           status: 'ok',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.pipe',
         },
       ]),
     }),
@@ -407,15 +377,15 @@ test('API route transaction includes nest pipe span for invalid request', async 
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.pipe',
           },
           description: 'ParseIntPipe',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
           start_timestamp: expect.any(Number),
           timestamp: expect.any(Number),
-          status: 'unknown_error',
+          status: 'internal_error',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.pipe',
         },
       ]),
     }),
@@ -446,7 +416,7 @@ test('API route transaction includes nest interceptor spans before route executi
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.interceptor',
           },
           description: 'ExampleInterceptor1',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -454,14 +424,14 @@ test('API route transaction includes nest interceptor spans before route executi
           timestamp: expect.any(Number),
           status: 'ok',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.interceptor',
         },
         {
           span_id: expect.stringMatching(/[a-f0-9]{16}/),
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.interceptor',
           },
           description: 'ExampleInterceptor2',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -469,7 +439,7 @@ test('API route transaction includes nest interceptor spans before route executi
           timestamp: expect.any(Number),
           status: 'ok',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.interceptor',
         },
       ]),
     }),
@@ -564,7 +534,7 @@ test('API route transaction includes exactly one nest interceptor span after rou
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.interceptor',
           },
           description: 'Interceptors - After Route',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -572,7 +542,7 @@ test('API route transaction includes exactly one nest interceptor span after rou
           timestamp: expect.any(Number),
           status: 'ok',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.interceptor',
         },
       ]),
     }),
@@ -646,7 +616,7 @@ test('API route transaction includes nest async interceptor spans before route e
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.interceptor',
           },
           description: 'AsyncInterceptor',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -654,7 +624,7 @@ test('API route transaction includes nest async interceptor spans before route e
           timestamp: expect.any(Number),
           status: 'ok',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.interceptor',
         },
       ]),
     }),
@@ -731,7 +701,7 @@ test('API route transaction includes exactly one nest async interceptor span aft
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
           data: {
             'sentry.op': 'middleware.nestjs',
-            'sentry.origin': 'auto.middleware.nestjs',
+            'sentry.origin': 'auto.middleware.nestjs.interceptor',
           },
           description: 'Interceptors - After Route',
           parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -739,7 +709,7 @@ test('API route transaction includes exactly one nest async interceptor span aft
           timestamp: expect.any(Number),
           status: 'ok',
           op: 'middleware.nestjs',
-          origin: 'auto.middleware.nestjs',
+          origin: 'auto.middleware.nestjs.interceptor',
         },
       ]),
     }),
@@ -806,5 +776,10 @@ test('Calling intercept method on service with Injectable decorator returns 200'
 
 test('Calling canActivate method on service with Injectable decorator returns 200', async ({ baseURL }) => {
   const response = await fetch(`${baseURL}/test-service-canActivate`);
+  expect(response.status).toBe(200);
+});
+
+test('Calling @All method on service with Injectable decorator returns 200', async ({ baseURL }) => {
+  const response = await fetch(`${baseURL}/test-all`);
   expect(response.status).toBe(200);
 });

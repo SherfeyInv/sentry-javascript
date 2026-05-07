@@ -1,5 +1,5 @@
-import { loggingTransport } from '@sentry-internal/node-integration-tests';
 import * as Sentry from '@sentry/node';
+import { loggingTransport } from '@sentry-internal/node-integration-tests';
 import * as iitm from 'import-in-the-middle';
 
 new iitm.Hook((_, name) => {
@@ -11,11 +11,11 @@ new iitm.Hook((_, name) => {
 Sentry.init({
   dsn: 'https://public@dsn.ingest.sentry.io/1337',
   release: '1.0',
-  autoSessionTracking: false,
   transport: loggingTransport,
-  registerEsmLoaderHooks: { onlyIncludeInstrumentedModules: true },
 });
 
-await import('./sub-module.mjs');
-await import('http');
-await import('os');
+(async () => {
+  await import('./sub-module.mjs');
+  await import('http');
+  await import('os');
+})();

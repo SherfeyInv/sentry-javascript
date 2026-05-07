@@ -2,14 +2,13 @@ export type {
   Breadcrumb,
   BreadcrumbHint,
   PolymorphicRequest,
-  // eslint-disable-next-line deprecation/deprecation
-  Request,
   RequestEventData,
   SdkInfo,
   Event,
   EventHint,
   ErrorEvent,
   Exception,
+  FeatureFlagsIntegration,
   Session,
   SeverityLevel,
   Span,
@@ -17,8 +16,10 @@ export type {
   Stacktrace,
   Thread,
   User,
+  Metric,
+  ExclusiveEventHintOrCaptureContext,
+  CaptureContext,
 } from '@sentry/core';
-export type { AddRequestDataToEventOptions } from '@sentry/core';
 
 export type { CloudflareOptions } from './client';
 
@@ -36,6 +37,7 @@ export {
   flush,
   getClient,
   isInitialized,
+  isEnabled,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
@@ -48,6 +50,7 @@ export {
   setTag,
   setTags,
   setUser,
+  setConversationId,
   getSpanStatusFromHttpCode,
   setHttpStatus,
   withScope,
@@ -68,7 +71,12 @@ export {
   getSpanDescendants,
   continueTrace,
   functionToStringIntegration,
+  // eslint-disable-next-line deprecation/deprecation
   inboundFiltersIntegration,
+  instrumentOpenAiClient,
+  instrumentGoogleGenAIClient,
+  instrumentAnthropicAiClient,
+  eventFiltersIntegration,
   linkedErrorsIntegration,
   requestDataIntegration,
   extraErrorDataIntegration,
@@ -76,7 +84,11 @@ export {
   rewriteFramesIntegration,
   captureConsoleIntegration,
   moduleMetadataIntegration,
+  supabaseIntegration,
+  instrumentSupabaseClient,
+  instrumentPostgresJsSql,
   zodErrorsIntegration,
+  consoleIntegration,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
@@ -86,9 +98,23 @@ export {
   spanToTraceHeader,
   spanToBaggageHeader,
   updateSpanName,
+  wrapMcpServerWithSentry,
+  consoleLoggingIntegration,
+  createConsolaReporter,
+  createLangChainCallbackHandler,
+  instrumentLangChainEmbeddings,
+  featureFlagsIntegration,
+  growthbookIntegration,
+  logger,
+  metrics,
+  withStreamedSpan,
+  spanStreamingIntegration,
+  instrumentLangGraph,
+  instrumentCreateReactAgent,
 } from '@sentry/core';
 
-export { withSentry } from './handler';
+export { withSentry } from './withSentry';
+export { instrumentDurableObjectWithSentry } from './durableobject';
 export { sentryPagesPlugin } from './pages-plugin';
 
 export { wrapRequestHandler } from './request';
@@ -96,6 +122,13 @@ export { wrapRequestHandler } from './request';
 export { CloudflareClient } from './client';
 export { getDefaultIntegrations } from './sdk';
 
+export { httpServerIntegration } from './integrations/httpServer';
 export { fetchIntegration } from './integrations/fetch';
+export { vercelAIIntegration } from './integrations/tracing/vercelai';
+export { honoIntegration } from './integrations/hono';
 
 export { instrumentD1WithSentry } from './d1';
+
+export { instrumentWorkflowWithSentry } from './workflows';
+
+export { setAsyncLocalStorageAsyncContextStrategy } from './async';

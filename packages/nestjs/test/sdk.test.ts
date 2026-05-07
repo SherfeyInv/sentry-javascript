@@ -1,8 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
 import { SDK_VERSION } from '@sentry/core';
 import * as SentryNode from '@sentry/node';
-
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { init as nestInit } from '../src/sdk';
 
 const nodeInit = vi.spyOn(SentryNode, 'init');
@@ -22,7 +20,10 @@ describe('Initialize Nest SDK', () => {
       _metadata: {
         sdk: {
           name: 'sentry.javascript.nestjs',
-          packages: [{ name: 'npm:@sentry/nestjs', version: SDK_VERSION }],
+          packages: [
+            { name: 'npm:@sentry/nestjs', version: SDK_VERSION },
+            { name: 'npm:@sentry/node', version: SDK_VERSION },
+          ],
           version: SDK_VERSION,
         },
       },

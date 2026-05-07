@@ -1,4 +1,6 @@
 import { getAsyncContextStrategy } from '../asyncContext';
+import type { RawAttributes } from '../attributes';
+import { serializeAttributes } from '../attributes';
 import { getMainCarrier } from '../carrier';
 import { getCurrentScope } from '../currentScopes';
 import {
@@ -9,27 +11,30 @@ import {
 } from '../semanticAttributes';
 import type { SentrySpan } from '../tracing/sentrySpan';
 import { SPAN_STATUS_OK, SPAN_STATUS_UNSET } from '../tracing/spanstatus';
+import { getCapturedScopesOnSpan } from '../tracing/utils';
+import type { TraceContext } from '../types-hoist/context';
+import type { SpanLink, SpanLinkJSON } from '../types-hoist/link';
 import type {
+  SerializedStreamedSpan,
   Span,
   SpanAttributes,
   SpanJSON,
   SpanOrigin,
-  SpanStatus,
   SpanTimeInput,
-  TraceContext,
-} from '../types-hoist';
-import { consoleSandbox } from '../utils-hoist/logger';
-import { addNonEnumerableProperty, dropUndefinedKeys } from '../utils-hoist/object';
-import { generateSpanId } from '../utils-hoist/propagationContext';
-import { timestampInSeconds } from '../utils-hoist/time';
-import { generateSentryTraceHeader } from '../utils-hoist/tracing';
+  StreamedSpanJSON,
+} from '../types-hoist/span';
+import type { SpanStatus } from '../types-hoist/spanStatus';
+import { addNonEnumerableProperty } from '../utils/object';
+import { generateSpanId } from '../utils/propagationContext';
+import { timestampInSeconds } from '../utils/time';
+import { generateSentryTraceHeader, generateTraceparentHeader } from '../utils/tracing';
+import { consoleSandbox } from './debug-logger';
 import { _getSpanForScope } from './spanOnScope';
 
 // These are aligned with OpenTelemetry trace flags
 export const TRACE_FLAG_NONE = 0x0;
 export const TRACE_FLAG_SAMPLED = 0x1;
 
-// todo(v9): Remove this once we've stopped dropping spans via `beforeSendSpan`
 let hasShownSpanDropWarning = false;
 
 /**
@@ -39,9 +44,9 @@ let hasShownSpanDropWarning = false;
  */
 export function spanToTransactionTraceContext(span: Span): TraceContext {
   const { spanId: span_id, traceId: trace_id } = span.spanContext();
-  const { data, op, parent_span_id, status, origin } = spanToJSON(span);
+  const { data, op, parent_span_id, status, origin, links } = spanToJSON(span);
 
-  return dropUndefinedKeys({
+  return {
     parent_span_id,
     span_id,
     trace_id,
@@ -49,7 +54,8 @@ export function spanToTransactionTraceContext(span: Span): TraceContext {
     op,
     status,
     origin,
-  });
+    links,
+  };
 }
 
 /**
@@ -61,13 +67,15 @@ export function spanToTraceContext(span: Span): TraceContext {
   // If the span is remote, we use a random/virtual span as span_id to the trace context,
   // and the remote span as parent_span_id
   const parent_span_id = isRemote ? spanId : spanToJSON(span).parent_span_id;
-  const span_id = isRemote ? generateSpanId() : spanId;
+  const scope = getCapturedScopesOnSpan(span).scope;
 
-  return dropUndefinedKeys({
+  const span_id = isRemote ? scope?.getPropagationContext().propagationSpanId || generateSpanId() : spanId;
+
+  return {
     parent_span_id,
     span_id,
     trace_id,
-  });
+  };
 }
 
 /**
@@ -77,6 +85,54 @@ export function spanToTraceHeader(span: Span): string {
   const { traceId, spanId } = span.spanContext();
   const sampled = spanIsSampled(span);
   return generateSentryTraceHeader(traceId, spanId, sampled);
+}
+
+/**
+ * Convert a Span to a W3C traceparent header.
+ */
+export function spanToTraceparentHeader(span: Span): string {
+  const { traceId, spanId } = span.spanContext();
+  const sampled = spanIsSampled(span);
+  return generateTraceparentHeader(traceId, spanId, sampled);
+}
+
+/**
+ *  Converts the span links array to a flattened version to be sent within an envelope.
+ *
+ *  If the links array is empty, it returns `undefined` so the empty value can be dropped before it's sent.
+ */
+export function convertSpanLinksForEnvelope(links?: SpanLink[]): SpanLinkJSON[] | undefined {
+  if (links && links.length > 0) {
+    return links.map(({ context: { spanId, traceId, traceFlags, ...restContext }, attributes }) => ({
+      span_id: spanId,
+      trace_id: traceId,
+      sampled: traceFlags === TRACE_FLAG_SAMPLED,
+      attributes,
+      ...restContext,
+    }));
+  } else {
+    return undefined;
+  }
+}
+
+/**
+ * Converts the span links array to a flattened version with serialized attributes for V2 spans.
+ *
+ * If the links array is empty, it returns `undefined` so the empty value can be dropped before it's sent.
+ */
+export function getStreamedSpanLinks(
+  links?: SpanLink[],
+): SpanLinkJSON<RawAttributes<Record<string, unknown>>>[] | undefined {
+  if (links?.length) {
+    return links.map(({ context: { spanId, traceId, traceFlags }, attributes }) => ({
+      span_id: spanId,
+      trace_id: traceId,
+      sampled: traceFlags === TRACE_FLAG_SAMPLED,
+      attributes,
+    }));
+  } else {
+    return undefined;
+  }
 }
 
 /**
@@ -122,21 +178,22 @@ export function spanToJSON(span: Span): SpanJSON {
 
   // Handle a span from @opentelemetry/sdk-base-trace's `Span` class
   if (spanIsOpenTelemetrySdkTraceBaseSpan(span)) {
-    const { attributes, startTime, name, endTime, parentSpanId, status } = span;
+    const { attributes, startTime, name, endTime, status, links } = span;
 
-    return dropUndefinedKeys({
+    return {
       span_id,
       trace_id,
       data: attributes,
       description: name,
-      parent_span_id: parentSpanId,
+      parent_span_id: getOtelParentSpanId(span),
       start_timestamp: spanTimeInputToSeconds(startTime),
       // This is [0,0] by default in OTEL, in which case we want to interpret this as no end time
       timestamp: spanTimeInputToSeconds(endTime) || undefined,
       status: getStatusMessage(status),
       op: attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP],
       origin: attributes[SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN] as SpanOrigin | undefined,
-    });
+      links: convertSpanLinksForEnvelope(links),
+    };
   }
 
   // Finally, at least we have `spanContext()`....
@@ -146,6 +203,77 @@ export function spanToJSON(span: Span): SpanJSON {
     trace_id,
     start_timestamp: 0,
     data: {},
+  };
+}
+
+/**
+ * Convert a span to the intermediate {@link StreamedSpanJSON} representation.
+ */
+export function spanToStreamedSpanJSON(span: Span): StreamedSpanJSON {
+  if (spanIsSentrySpan(span)) {
+    return span.getStreamedSpanJSON();
+  }
+
+  const { spanId: span_id, traceId: trace_id } = span.spanContext();
+
+  // Handle a span from @opentelemetry/sdk-base-trace's `Span` class
+  if (spanIsOpenTelemetrySdkTraceBaseSpan(span)) {
+    const { attributes, startTime, name, endTime, status, links } = span;
+
+    return {
+      name,
+      span_id,
+      trace_id,
+      parent_span_id: getOtelParentSpanId(span),
+      start_timestamp: spanTimeInputToSeconds(startTime),
+      end_timestamp: spanTimeInputToSeconds(endTime),
+      is_segment: span === INTERNAL_getSegmentSpan(span),
+      status: getSimpleStatusMessage(status),
+      attributes,
+      links: getStreamedSpanLinks(links),
+    };
+  }
+
+  // Finally, as a fallback, at least we have `spanContext()`....
+  // This should not actually happen in reality, but we need to handle it for type safety.
+  return {
+    span_id,
+    trace_id,
+    start_timestamp: 0,
+    name: '',
+    end_timestamp: 0,
+    status: 'ok',
+    is_segment: span === INTERNAL_getSegmentSpan(span),
+  };
+}
+
+/**
+ * In preparation for the next major of OpenTelemetry, we want to support
+ * looking up the parent span id according to the new API
+ * In OTel v1, the parent span id is accessed as `parentSpanId`
+ * In OTel v2, the parent span id is accessed as `spanId` on the `parentSpanContext`
+ */
+function getOtelParentSpanId(span: OpenTelemetrySdkTraceBaseSpan): string | undefined {
+  return 'parentSpanId' in span
+    ? span.parentSpanId
+    : 'parentSpanContext' in span
+      ? (span.parentSpanContext as { spanId?: string } | undefined)?.spanId
+      : undefined;
+}
+
+/**
+ * Converts a {@link StreamedSpanJSON} to a {@link SerializedSpan}.
+ * This is the final serialized span format that is sent to Sentry.
+ * The returned serilaized spans must not be consumed by users or SDK integrations.
+ */
+export function streamedSpanJsonToSerializedSpan(spanJson: StreamedSpanJSON): SerializedStreamedSpan {
+  return {
+    ...spanJson,
+    attributes: serializeAttributes(spanJson.attributes),
+    links: spanJson.links?.map(link => ({
+      ...link,
+      attributes: serializeAttributes(link.attributes),
+    })),
   };
 }
 
@@ -162,6 +290,7 @@ export interface OpenTelemetrySdkTraceBaseSpan extends Span {
   status: SpanStatus;
   endTime: SpanTimeInput;
   parentSpanId?: string;
+  links?: SpanLink[];
 }
 
 /**
@@ -195,7 +324,19 @@ export function getStatusMessage(status: SpanStatus | undefined): string | undef
     return 'ok';
   }
 
-  return status.message || 'unknown_error';
+  return status.message || 'internal_error';
+}
+
+/**
+ * Convert the various statuses to the simple ones expected by Sentry for streamed spans ('ok' is default).
+ */
+export function getSimpleStatusMessage(status: SpanStatus | undefined): 'ok' | 'error' {
+  return !status ||
+    status.code === SPAN_STATUS_OK ||
+    status.code === SPAN_STATUS_UNSET ||
+    status.message === 'cancelled'
+    ? 'ok'
+    : 'error';
 }
 
 const CHILD_SPANS_FIELD = '_sentryChildSpans';
@@ -259,7 +400,12 @@ export function getSpanDescendants(span: SpanWithPotentialChildren): Span[] {
 /**
  * Returns the root span of a given span.
  */
-export function getRootSpan(span: SpanWithPotentialChildren): Span {
+export const getRootSpan = INTERNAL_getSegmentSpan;
+
+/**
+ * Returns the segment span of a given span.
+ */
+export function INTERNAL_getSegmentSpan(span: SpanWithPotentialChildren): Span {
   return span[ROOT_SPAN_FIELD] || span;
 }
 
@@ -278,15 +424,13 @@ export function getActiveSpan(): Span | undefined {
 
 /**
  * Logs a warning once if `beforeSendSpan` is used to drop spans.
- *
- * todo(v9): Remove this once we've stopped dropping spans via `beforeSendSpan`.
  */
 export function showSpanDropWarning(): void {
   if (!hasShownSpanDropWarning) {
     consoleSandbox(() => {
       // eslint-disable-next-line no-console
       console.warn(
-        '[Sentry] Deprecation warning: Returning null from `beforeSendSpan` will be disallowed from SDK version 9.0.0 onwards. The callback will only support mutating spans. To drop certain spans, configure the respective integrations directly.',
+        '[Sentry] Returning null from `beforeSendSpan` is disallowed. To drop certain spans, configure the respective integrations directly or use `ignoreSpans`.',
       );
     });
     hasShownSpanDropWarning = true;

@@ -37,7 +37,7 @@ export function getPlaywrightConfig(
     /* In dev mode some apps are flaky, so we allow retry there... */
     retries: testEnv === 'development' ? 3 : 0,
     /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-    reporter: process.env.CI ? [['line'], ['junit', { outputFile: 'results.junit.xml' }]] : 'list',
+    reporter: process.env.CI ? [['line'], ['github'], ['junit', { outputFile: 'results.junit.xml' }]] : 'list',
     /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
     use: {
       /* Maximum time each action such as `click()` can take. Defaults to 0 (no limit). */
@@ -54,11 +54,11 @@ export function getPlaywrightConfig(
       {
         name: 'chromium',
         use: {
-          // This comes from `devices["Desktop Chrome"]
+          // This comes from `devices["Desktop Chrome"]` in Playwright 1.56.0
           // We inline this instead of importing this,
           // because playwright otherwise complains that it was imported twice :(
           userAgent:
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.26 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7390.37 Safari/537.36',
           viewport: { width: 1280, height: 720 },
           deviceScaleFactor: 1,
           isMobile: false,

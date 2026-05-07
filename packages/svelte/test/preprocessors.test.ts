@@ -1,11 +1,9 @@
-import { describe, expect, it } from 'vitest';
-
 import * as svelteCompiler from 'svelte/compiler';
-
+import { describe, expect, it } from 'vitest';
 import {
-  FIRST_PASS_COMPONENT_TRACKING_PREPROC_ID,
   componentTrackingPreprocessor,
   defaultComponentTrackingOptions,
+  FIRST_PASS_COMPONENT_TRACKING_PREPROC_ID,
 } from '../src/preprocessors';
 import type { SentryPreprocessorGroup } from '../src/types';
 
@@ -24,7 +22,7 @@ function expectComponentCodeToBeModified(
   preprocessedComponents.forEach(cmp => {
     const expectedFunctionCallOptions = {
       trackInit: options?.trackInit ?? true,
-      trackUpdates: options?.trackUpdates ?? true,
+      trackUpdates: options?.trackUpdates ?? false,
       componentName: cmp.name,
     };
     const expectedFunctionCall = `trackComponent(${JSON.stringify(expectedFunctionCallOptions)});\n`;
@@ -60,14 +58,12 @@ describe('componentTrackingPreprocessor', () => {
       ];
 
       const preprocessedComponents = components.map(cmp => {
-        const res: any =
-          preProc.script &&
-          preProc.script({
-            content: cmp.originalCode,
-            filename: cmp.filename,
-            attributes: {},
-            markup: '',
-          });
+        const res: any = preProc.script?.({
+          content: cmp.originalCode,
+          filename: cmp.filename,
+          attributes: {},
+          markup: '',
+        });
         return { ...cmp, newCode: res.code, map: res.map };
       });
 
@@ -83,14 +79,12 @@ describe('componentTrackingPreprocessor', () => {
       ];
 
       const preprocessedComponents = components.map(cmp => {
-        const res: any =
-          preProc.script &&
-          preProc.script({
-            content: cmp.originalCode,
-            filename: cmp.filename,
-            attributes: {},
-            markup: '',
-          });
+        const res: any = preProc.script?.({
+          content: cmp.originalCode,
+          filename: cmp.filename,
+          attributes: {},
+          markup: '',
+        });
         return { ...cmp, newCode: res.code, map: res.map };
       });
 
@@ -108,20 +102,18 @@ describe('componentTrackingPreprocessor', () => {
       ];
 
       const [cmp1, cmp2, cmp3] = components.map(cmp => {
-        const res: any =
-          preProc.script &&
-          preProc.script({
-            content: cmp.originalCode,
-            filename: cmp.filename,
-            attributes: {},
-            markup: '',
-          });
+        const res: any = preProc.script?.({
+          content: cmp.originalCode,
+          filename: cmp.filename,
+          attributes: {},
+          markup: '',
+        });
         return { ...cmp, newCode: res.code, map: res.map };
       });
 
       expect(cmp2?.newCode).toEqual(cmp2?.originalCode);
 
-      expectComponentCodeToBeModified([cmp1!, cmp3!], { trackInit: true, trackUpdates: true });
+      expectComponentCodeToBeModified([cmp1!, cmp3!], { trackInit: true, trackUpdates: false });
     });
 
     it('doesnt inject the function call to the same component more than once', () => {
@@ -146,18 +138,16 @@ describe('componentTrackingPreprocessor', () => {
       ];
 
       const [cmp11, cmp12, cmp2] = components.map(cmp => {
-        const res: any =
-          preProc.script &&
-          preProc.script({
-            content: cmp.originalCode,
-            filename: cmp.filename,
-            attributes: {},
-            markup: '',
-          });
+        const res: any = preProc.script?.({
+          content: cmp.originalCode,
+          filename: cmp.filename,
+          attributes: {},
+          markup: '',
+        });
         return { ...cmp, newCode: res.code, map: res.map };
       });
 
-      expectComponentCodeToBeModified([cmp11!, cmp2!], { trackInit: true, trackUpdates: true });
+      expectComponentCodeToBeModified([cmp11!, cmp2!], { trackInit: true });
       expect(cmp12!.newCode).toEqual(cmp12!.originalCode);
     });
 
@@ -169,14 +159,32 @@ describe('componentTrackingPreprocessor', () => {
         name: 'Cmp2',
       };
 
-      const res: any =
-        preProc.script &&
-        preProc.script({
-          content: component.originalCode,
-          filename: component.filename,
-          attributes: { context: 'module' },
-          markup: '',
-        });
+      const res: any = preProc.script?.({
+        content: component.originalCode,
+        filename: component.filename,
+        attributes: { context: 'module' },
+        markup: '',
+      });
+
+      const processedComponent = { ...component, newCode: res.code, map: res.map };
+
+      expect(processedComponent.newCode).toEqual(processedComponent.originalCode);
+    });
+
+    it('doesnt inject the function call to a module context script block with Svelte 5 module attribute', () => {
+      const preProc = componentTrackingPreprocessor();
+      const component = {
+        originalCode: 'console.log(cmp2)',
+        filename: 'lib/Cmp2.svelte',
+        name: 'Cmp2',
+      };
+
+      const res: any = preProc.script?.({
+        content: component.originalCode,
+        filename: component.filename,
+        attributes: { module: true },
+        markup: '',
+      });
 
       const processedComponent = { ...component, newCode: res.code, map: res.map };
 
@@ -193,12 +201,10 @@ describe('componentTrackingPreprocessor', () => {
         name: 'Cmp2',
       };
 
-      const res: any =
-        preProc.markup &&
-        preProc.markup({
-          content: component.originalCode,
-          filename: component.filename,
-        });
+      const res: any = preProc.markup?.({
+        content: component.originalCode,
+        filename: component.filename,
+      });
 
       expect(res.code).toEqual(
         "<script>\n</script>\n<p>I'm just a plain component</p>\n<style>p{margin-top:10px}</style>",
@@ -214,12 +220,10 @@ describe('componentTrackingPreprocessor', () => {
         name: 'Cmp2',
       };
 
-      const res: any =
-        preProc.markup &&
-        preProc.markup({
-          content: component.originalCode,
-          filename: component.filename,
-        });
+      const res: any = preProc.markup?.({
+        content: component.originalCode,
+        filename: component.filename,
+      });
 
       expect(res.code).toEqual(
         "<script>console.log('hi');</script>\n<p>I'm a component with a script</p>\n<style>p{margin-top:10px}</style>",
@@ -242,7 +246,7 @@ describe('componentTrackingPreprocessor', () => {
 
       expect(processedCode.code).toEqual(
         '<script>import { trackComponent } from "@sentry/svelte";\n' +
-          'trackComponent({"trackInit":true,"trackUpdates":true,"componentName":"Cmp1"});\n\n' +
+          'trackComponent({"trackInit":true,"trackUpdates":false,"componentName":"Cmp1"});\n\n' +
           '</script>\n' +
           "<p>I'm just a plain component</p>\n" +
           '<style>p{margin-top:10px}</style>',
@@ -262,7 +266,7 @@ describe('componentTrackingPreprocessor', () => {
 
       expect(processedCode.code).toEqual(
         '<script>import { trackComponent } from "@sentry/svelte";\n' +
-          'trackComponent({"trackInit":true,"trackUpdates":true,"componentName":"Cmp2"});\n' +
+          'trackComponent({"trackInit":true,"trackUpdates":false,"componentName":"Cmp2"});\n' +
           "console.log('hi');</script>\n" +
           "<p>I'm a component with a script</p>\n" +
           '<style>p{margin-top:10px}</style>',
@@ -281,7 +285,7 @@ describe('componentTrackingPreprocessor', () => {
 
       expect(processedCode.code).toEqual(
         '<script>import { trackComponent } from "@sentry/svelte";\n' +
-          'trackComponent({"trackInit":true,"trackUpdates":true,"componentName":"unknown"});\n' +
+          'trackComponent({"trackInit":true,"trackUpdates":false,"componentName":"unknown"});\n' +
           "console.log('hi');</script>",
       );
     });

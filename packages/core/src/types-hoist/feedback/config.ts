@@ -176,6 +176,46 @@ export interface FeedbackTextConfiguration {
    * The label for the button that removes a screenshot and hides the image editor
    */
   removeScreenshotButtonLabel: string;
+
+  /**
+   * The label for the button that highlights portions ofthe screenshot
+   */
+  highlightToolText: string;
+
+  /**
+   * The label for the button that hides portions of the screenshot
+   */
+  hideToolText: string;
+
+  /**
+   * The label for the button that removed a highlight/hidden section of the screenshot.
+   */
+  removeHighlightText: string;
+
+  /**
+   * Error text shown when feedback submission is attempted with an empty message
+   */
+  errorEmptyMessageText: string;
+
+  /**
+   * Error text shown when the Sentry client is not set up
+   */
+  errorNoClientText: string;
+
+  /**
+   * Error text shown when the feedback submission times out (after 30s)
+   */
+  errorTimeoutText: string;
+
+  /**
+   * Error text shown when the feedback submission is blocked because the domain is not allowed (HTTP 403)
+   */
+  errorForbiddenText: string;
+
+  /**
+   * Error text shown when the feedback submission fails for any other reason (e.g. network error, ad-blocker)
+   */
+  errorGenericText: string;
 }
 
 /**
@@ -197,7 +237,7 @@ export interface FeedbackCallbacks {
    *
    * After this you'll see a SuccessMessage on the screen for a moment.
    */
-  onSubmitSuccess?: (data: FeedbackFormData) => void;
+  onSubmitSuccess?: (data: FeedbackFormData, eventId: string) => void;
 
   /**
    * Callback when feedback is unsuccessfully submitted

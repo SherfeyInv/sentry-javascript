@@ -1,0 +1,673 @@
+import * as sentryCore from '@sentry/core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getInstrumented } from '../src/instrument';
+import * as sdk from '../src/sdk';
+import { wrapMethodWithSentry } from '../src/wrapMethodWithSentry';
+
+const mocks = vi.hoisted(() => ({
+  flush: vi.fn().mockResolvedValue(true),
+}));
+
+function createMockClient(hasTransport: boolean = true) {
+  return {
+    getOptions: () => ({}),
+    on: vi.fn(),
+    dispose: vi.fn(),
+    flush: mocks.flush,
+    getTransport: vi.fn().mockReturnValue(hasTransport ? { send: vi.fn() } : undefined),
+  };
+}
+
+// Mock the SDK init to avoid actual SDK initialization
+vi.mock('../src/sdk', () => ({
+  init: vi.fn(() => createMockClient(true)),
+}));
+
+// Mock sentry/core functions
+vi.mock('@sentry/core', async importOriginal => {
+  const actual = await importOriginal<object>();
+  return {
+    ...actual,
+    getClient: vi.fn(),
+    withIsolationScope: vi.fn((callback: (scope: unknown) => unknown) => callback(createMockScope())),
+    withScope: vi.fn((callback: (scope: unknown) => unknown) => callback(createMockScope())),
+    startSpan: vi.fn((opts, callback) => callback(createMockSpan())),
+    startNewTrace: vi.fn(callback => callback()),
+    captureException: vi.fn(),
+    flush: vi.fn().mockResolvedValue(true),
+    getActiveSpan: vi.fn(),
+  };
+});
+
+const mockedWithIsolationScope = vi.mocked(sentryCore.withIsolationScope);
+
+function createMockScope() {
+  return {
+    getClient: vi.fn(),
+    setClient: vi.fn(),
+  };
+}
+
+function createMockSpan() {
+  return {
+    setAttribute: vi.fn(),
+    setAttributes: vi.fn(),
+    addLinks: vi.fn(),
+    spanContext: vi.fn().mockReturnValue({
+      traceId: 'test-trace-id-12345678901234567890',
+      spanId: 'test-span-id',
+    }),
+  };
+}
+
+function createMockContext(options: { hasStorage?: boolean; hasWaitUntil?: boolean } = {}) {
+  const mockStorage = {
+    get: vi.fn().mockResolvedValue(undefined),
+    put: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(false),
+  };
+
+  return {
+    waitUntil: options.hasWaitUntil !== false ? vi.fn() : undefined,
+    storage: options.hasStorage !== false ? mockStorage : undefined,
+    originalStorage: options.hasStorage !== false ? mockStorage : undefined,
+  } as any;
+}
+
+describe('wrapMethodWithSentry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('basic wrapping', () => {
+    it('wraps a sync method and returns its result synchronously (not a Promise)', () => {
+      const handler = vi.fn().mockReturnValue('sync-result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      const result = wrapped();
+
+      expect(handler).toHaveBeenCalled();
+      expect(result).not.toBeInstanceOf(Promise);
+      expect(result).toBe('sync-result');
+    });
+
+    it('wraps a sync method with spanName and preserves sync behavior', () => {
+      const handler = vi.fn().mockReturnValue('sync-result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+        spanName: 'test-span',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      const result = wrapped();
+
+      expect(handler).toHaveBeenCalled();
+      expect(result).not.toBeInstanceOf(Promise);
+      expect(result).toBe('sync-result');
+    });
+
+    it('wraps a sync method with startNewTrace and preserves sync behavior', () => {
+      const handler = vi.fn().mockReturnValue('sync-result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+        spanName: 'test-span',
+        startNewTrace: true,
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      const result = wrapped();
+
+      expect(handler).toHaveBeenCalled();
+      expect(result).not.toBeInstanceOf(Promise);
+      expect(result).toBe('sync-result');
+    });
+
+    it('wraps an async method and returns a promise', async () => {
+      const handler = vi.fn().mockResolvedValue('async-result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      const result = wrapped();
+
+      expect(result).toBeInstanceOf(Promise);
+      await expect(result).resolves.toBe('async-result');
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('does not change sync/async behavior when startNewTrace is true (links are set via waitUntil)', () => {
+      const handler = vi.fn().mockReturnValue('sync-result');
+      const mockStorage = {
+        get: vi.fn().mockResolvedValue(undefined),
+        put: vi.fn().mockResolvedValue(undefined),
+      };
+      const waitUntilPromises: Promise<void>[] = [];
+      const context = {
+        waitUntil: vi.fn((p: Promise<void>) => waitUntilPromises.push(p)),
+        originalStorage: mockStorage,
+      } as any;
+
+      const options = {
+        options: {},
+        context,
+        spanName: 'alarm',
+        startNewTrace: true,
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      const result = wrapped();
+
+      // startNewTrace does not make the result async - links are set via waitUntil
+      expect(result).not.toBeInstanceOf(Promise);
+      expect(result).toBe('sync-result');
+
+      // The link fetching happens via waitUntil, not blocking the response
+      expect(context.waitUntil).toHaveBeenCalled();
+    });
+
+    it('marks handler as instrumented', () => {
+      const handler = vi.fn();
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      expect(getInstrumented(handler)).toBe(undefined);
+
+      wrapMethodWithSentry(options, handler);
+
+      expect(getInstrumented(handler)).toBeDefined();
+    });
+
+    it('does not re-wrap already instrumented handler', () => {
+      const handler = vi.fn();
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped1 = wrapMethodWithSentry(options, handler);
+      const wrapped2 = wrapMethodWithSentry(options, wrapped1);
+
+      // Should return the same wrapped function
+      expect(wrapped2).toBe(wrapped1);
+      expect(getInstrumented(handler)).toBe(wrapped1);
+    });
+
+    it('does not mark handler when noMark is true', () => {
+      const handler = vi.fn();
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      wrapMethodWithSentry(options, handler, undefined, true);
+
+      expect(getInstrumented(handler)).toBeUndefined();
+    });
+  });
+
+  describe('span creation', () => {
+    it('creates span with spanName when provided', async () => {
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+        spanName: 'test-span',
+        spanOp: 'test-op',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      expect(sentryCore.startSpan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'test-span',
+        }),
+        expect.any(Function),
+      );
+    });
+
+    it('does not create span when spanName is not provided', async () => {
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      // startSpan should not be called when no spanName is provided
+      expect(sentryCore.startSpan).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('error handling', () => {
+    it('captures exceptions from sync methods', async () => {
+      const error = new Error('Test sync error');
+      const handler = vi.fn().mockImplementation(() => {
+        throw error;
+      });
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+
+      await expect(async () => wrapped()).rejects.toThrow('Test sync error');
+      expect(sentryCore.captureException).toHaveBeenCalledWith(error, {
+        mechanism: {
+          type: 'auto.faas.cloudflare.durable_object',
+          handled: false,
+        },
+      });
+    });
+
+    it('captures exceptions from async methods', async () => {
+      const error = new Error('Test async error');
+      const handler = vi.fn().mockRejectedValue(error);
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+
+      await expect(wrapped()).rejects.toThrow('Test async error');
+      expect(sentryCore.captureException).toHaveBeenCalledWith(error, {
+        mechanism: {
+          type: 'auto.faas.cloudflare.durable_object',
+          handled: false,
+        },
+      });
+    });
+  });
+
+  describe('startNewTrace option', () => {
+    it('uses withIsolationScope when startNewTrace is true', async () => {
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+        startNewTrace: true,
+        spanName: 'alarm',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      expect(sentryCore.withIsolationScope).toHaveBeenCalled();
+    });
+
+    it('uses startNewTrace when startNewTrace is true and spanName is set', async () => {
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+        startNewTrace: true,
+        spanName: 'alarm',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      expect(sentryCore.startNewTrace).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    it('does not use startNewTrace when startNewTrace is false', async () => {
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+        startNewTrace: false,
+        spanName: 'test-span',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      expect(sentryCore.startNewTrace).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('span linking', () => {
+    it('retrieves stored span context when startNewTrace is true', async () => {
+      const storedContext = {
+        traceId: 'previous-trace-id-1234567890123456',
+        spanId: 'previous-span-id',
+      };
+      const mockStorage = {
+        get: vi.fn().mockResolvedValue(storedContext),
+        put: vi.fn().mockResolvedValue(undefined),
+      };
+      const context = {
+        waitUntil: vi.fn(),
+        originalStorage: mockStorage,
+      } as any;
+
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context,
+        startNewTrace: true,
+        spanName: 'alarm',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      expect(mockStorage.get).toHaveBeenCalledWith('__SENTRY_TRACE_LINK__alarm');
+    });
+
+    it('builds span links from stored context', async () => {
+      const storedContext = {
+        traceId: 'previous-trace-id-1234567890123456',
+        spanId: 'previous-span-id',
+      };
+      const mockStorage = {
+        get: vi.fn().mockResolvedValue(storedContext),
+        put: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const mockSpan = createMockSpan();
+      vi.mocked(sentryCore.startSpan).mockImplementation((opts, callback) => callback(mockSpan as any));
+
+      const waitUntilPromises: Promise<void>[] = [];
+      const context = {
+        waitUntil: vi.fn((p: Promise<void>) => waitUntilPromises.push(p)),
+        originalStorage: mockStorage,
+      } as any;
+
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context,
+        startNewTrace: true,
+        spanName: 'alarm',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      // Wait for waitUntil promises to resolve (setSpanLinks is called via waitUntil)
+      await Promise.all(waitUntilPromises);
+
+      // addLinks should be called on the span with the stored context
+      expect(mockSpan.addLinks).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            context: expect.objectContaining({
+              traceId: 'previous-trace-id-1234567890123456',
+              spanId: 'previous-span-id',
+            }),
+            attributes: { 'sentry.link.type': 'previous_trace' },
+          }),
+        ]),
+      );
+    });
+
+    it('stores span context after execution when startNewTrace is true', async () => {
+      vi.mocked(sentryCore.getActiveSpan).mockReturnValue({
+        spanContext: vi.fn().mockReturnValue({
+          traceId: 'current-trace-id-123456789012345678',
+          spanId: 'current-span-id',
+        }),
+      } as any);
+
+      const mockStorage = {
+        get: vi.fn().mockResolvedValue(undefined),
+        put: vi.fn().mockResolvedValue(undefined),
+      };
+      const context = {
+        waitUntil: vi.fn(),
+        originalStorage: mockStorage,
+      } as any;
+
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context,
+        startNewTrace: true,
+        spanName: 'alarm',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      // Should store span context for future linking
+      expect(mockStorage.put).toHaveBeenCalledWith('__SENTRY_TRACE_LINK__alarm', expect.any(Object));
+    });
+
+    it('does not store span context when startNewTrace is false', async () => {
+      vi.mocked(sentryCore.getActiveSpan).mockReturnValue({
+        spanContext: vi.fn().mockReturnValue({
+          traceId: 'current-trace-id-123456789012345678',
+          spanId: 'current-span-id',
+        }),
+      } as any);
+
+      const mockStorage = {
+        get: vi.fn().mockResolvedValue(undefined),
+        put: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const waitUntilPromises: Promise<void>[] = [];
+      const context = {
+        waitUntil: vi.fn((p: Promise<void>) => waitUntilPromises.push(p)),
+        originalStorage: mockStorage,
+      } as any;
+
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context,
+        startNewTrace: false,
+        spanName: 'alarm',
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      // Wait for all waitUntil promises to resolve
+      await Promise.all(waitUntilPromises);
+
+      // Should NOT store span context when startNewTrace is false
+      expect(mockStorage.put).not.toHaveBeenCalledWith('__SENTRY_TRACE_LINK__alarm', expect.any(Object));
+    });
+  });
+
+  describe('callback execution', () => {
+    it('executes callback before handler', async () => {
+      const callOrder: string[] = [];
+      const handler = vi.fn().mockImplementation(() => {
+        callOrder.push('handler');
+        return 'result';
+      });
+      const callback = vi.fn().mockImplementation(() => {
+        callOrder.push('callback');
+      });
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler, callback);
+      await wrapped('arg1', 'arg2');
+
+      expect(callback).toHaveBeenCalledWith('arg1', 'arg2');
+      expect(callOrder).toEqual(['callback', 'handler']);
+    });
+  });
+
+  describe('waitUntil flush', () => {
+    it('calls waitUntil with flushAndDispose when context has waitUntil', async () => {
+      const waitUntil = vi.fn();
+      const context = {
+        waitUntil,
+        originalStorage: undefined,
+      } as any;
+
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context,
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      expect(waitUntil).toHaveBeenCalled();
+      expect(mocks.flush).toHaveBeenCalledWith(2000);
+    });
+
+    it('handles missing waitUntil gracefully', async () => {
+      const context = {
+        originalStorage: undefined,
+      } as any;
+
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context,
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+
+      // Should not throw
+      await expect(wrapped()).resolves.toBeDefined();
+    });
+  });
+
+  describe('argument passing', () => {
+    it('passes arguments to handler', async () => {
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped('arg1', 'arg2', { key: 'value' });
+
+      expect(handler).toHaveBeenCalledWith('arg1', 'arg2', { key: 'value' });
+    });
+
+    it('preserves this context', async () => {
+      const thisArg = { name: 'test-context' };
+      const handler = vi.fn(function (this: any) {
+        return this.name;
+      });
+      const options = {
+        options: {},
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped.call(thisArg);
+
+      expect(handler.mock.instances[0]).toBe(thisArg);
+    });
+  });
+
+  describe('client re-initialization', () => {
+    it('creates a new client when scope has no client', async () => {
+      const scope = new sentryCore.Scope();
+
+      mockedWithIsolationScope.mockImplementation(vi.fn(callback => callback(scope)));
+
+      const spyClient = vi.spyOn(scope, 'setClient');
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: { dsn: 'https://test@sentry.io/123' },
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+
+      await wrapped();
+
+      expect(sdk.init).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dsn: 'https://test@sentry.io/123',
+        }),
+      );
+      expect(spyClient).toHaveBeenCalled();
+    });
+
+    it('creates a new client when existing client has no transport (disposed)', async () => {
+      const disposedClient = {
+        getOptions: () => ({}),
+        on: vi.fn(),
+        dispose: vi.fn(),
+        flush: vi.fn().mockResolvedValue(true),
+        getTransport: vi.fn().mockReturnValue(undefined),
+      } as unknown as sentryCore.Client;
+
+      const scope = new sentryCore.Scope();
+
+      scope.setClient(disposedClient);
+      mockedWithIsolationScope.mockImplementation(vi.fn(callback => callback(scope)));
+
+      const spyClient = vi.spyOn(scope, 'setClient');
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: { dsn: 'https://test@sentry.io/123' },
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+      await wrapped();
+
+      expect(sdk.init).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dsn: 'https://test@sentry.io/123',
+        }),
+      );
+      expect(spyClient).toHaveBeenCalled();
+    });
+
+    it('does not create a new client when existing client has valid transport', async () => {
+      const validClient = {
+        getOptions: () => ({}),
+        on: vi.fn(),
+        dispose: vi.fn(),
+        flush: vi.fn().mockResolvedValue(true),
+        getTransport: vi.fn().mockReturnValue({ send: vi.fn() }),
+      } as unknown as sentryCore.Client;
+
+      const scope = new sentryCore.Scope();
+
+      scope.setClient(validClient);
+      mockedWithIsolationScope.mockImplementation(vi.fn(callback => callback(scope)));
+      vi.mocked(sdk.init).mockClear();
+
+      const spyClient = vi.spyOn(scope, 'setClient');
+      const handler = vi.fn().mockResolvedValue('result');
+      const options = {
+        options: { dsn: 'https://test@sentry.io/123' },
+        context: createMockContext(),
+      };
+
+      const wrapped = wrapMethodWithSentry(options, handler);
+
+      await wrapped();
+
+      expect(sdk.init).not.toHaveBeenCalled();
+      expect(spyClient).not.toHaveBeenCalled();
+    });
+  });
+});

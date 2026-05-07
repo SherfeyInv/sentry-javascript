@@ -1,12 +1,14 @@
-import { getClient, withScope } from './currentScopes';
+import { getClient, withIsolationScope } from './currentScopes';
 import { captureException } from './exports';
 import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE } from './semanticAttributes';
 import { startSpanManual } from './tracing';
-import { normalize } from './utils-hoist/normalize';
+import { normalize } from './utils/normalize';
+import { setNormalizationDepthOverrideHint } from './utils/normalizationHints';
 
 interface SentryTrpcMiddlewareOptions {
   /** Whether to include procedure inputs in reported events. Defaults to `false`. */
   attachRpcInput?: boolean;
+  forceTransaction?: boolean;
 }
 
 export interface SentryTrpcMiddlewareArguments<T> {
@@ -17,7 +19,7 @@ export interface SentryTrpcMiddlewareArguments<T> {
   getRawInput?: () => Promise<unknown>;
 }
 
-const trpcCaptureContext = { mechanism: { handled: false, data: { function: 'trpcMiddleware' } } };
+const trpcCaptureContext = { mechanism: { handled: false, type: 'auto.rpc.trpc.middleware' } };
 
 function captureIfError(nextResult: unknown): void {
   // TODO: Set span status based on what TRPCError was encountered
@@ -44,14 +46,20 @@ export function trpcMiddleware(options: SentryTrpcMiddlewareOptions = {}) {
     const { path, type, next, rawInput, getRawInput } = opts;
 
     const client = getClient();
-    const clientOptions = client && client.getOptions();
+    const clientOptions = client?.getOptions();
 
     const trpcContext: Record<string, unknown> = {
       procedure_path: path,
       procedure_type: type,
     };
 
-    if (options.attachRpcInput !== undefined ? options.attachRpcInput : clientOptions && clientOptions.sendDefaultPii) {
+    setNormalizationDepthOverrideHint(
+      trpcContext,
+      1 + // 1 for context.input + the normal normalization depth
+        (clientOptions?.normalizeDepth ?? 5), // 5 is a sane depth
+    );
+
+    if (options.attachRpcInput !== undefined ? options.attachRpcInput : clientOptions?.sendDefaultPii) {
       if (rawInput !== undefined) {
         trpcContext.input = normalize(rawInput);
       }
@@ -61,13 +69,13 @@ export function trpcMiddleware(options: SentryTrpcMiddlewareOptions = {}) {
           const rawRes = await getRawInput();
 
           trpcContext.input = normalize(rawRes);
-        } catch (err) {
+        } catch {
           // noop
         }
       }
     }
 
-    return withScope(scope => {
+    return withIsolationScope(scope => {
       scope.setContext('trpc', trpcContext);
       return startSpanManual(
         {
@@ -77,6 +85,7 @@ export function trpcMiddleware(options: SentryTrpcMiddlewareOptions = {}) {
             [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.rpc.trpc',
           },
+          forceTransaction: !!options.forceTransaction,
         },
         async span => {
           try {

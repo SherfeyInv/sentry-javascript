@@ -13,6 +13,10 @@ test('Sends exception to Sentry', async ({ baseURL }) => {
 
   expect(errorEvent.exception?.values).toHaveLength(1);
   expect(errorEvent.exception?.values?.[0]?.value).toBe('This is an exception with id 123');
+  expect(errorEvent.exception?.values?.[0]?.mechanism).toEqual({
+    handled: false,
+    type: 'auto.http.nestjs.global_filter',
+  });
 
   expect(errorEvent.request).toEqual({
     method: 'GET',
@@ -27,6 +31,24 @@ test('Sends exception to Sentry', async ({ baseURL }) => {
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
+  });
+});
+
+test('Sends AxiosError to Sentry', async ({ baseURL }) => {
+  const errorEventPromise = waitForError('nestjs-basic', event => {
+    return !event.type && event.exception?.values?.[0]?.value === 'This is an axios error with id 123';
+  });
+
+  const response = await fetch(`${baseURL}/test-axios-error/123`);
+  expect(response.status).toBe(500);
+
+  const errorEvent = await errorEventPromise;
+
+  expect(errorEvent.exception?.values).toHaveLength(1);
+  expect(errorEvent.exception?.values?.[0]?.value).toBe('This is an axios error with id 123');
+  expect(errorEvent.exception?.values?.[0]?.mechanism).toEqual({
+    handled: false,
+    type: 'auto.http.nestjs.global_filter',
   });
 });
 

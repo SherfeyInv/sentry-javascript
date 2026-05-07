@@ -1,3 +1,6 @@
+// import/export got a false positive, and affects most of our index barrel files
+// can be removed once following issue is fixed: https://github.com/import-js/eslint-plugin-import/issues/703
+/* eslint-disable import/export */
 // Node SDK exports
 // Unfortunately, we cannot `export * from '@sentry/node'` because in prod builds,
 // Vite puts these exports into a `default` property (Sentry.default) rather than
@@ -7,10 +10,10 @@ export {
   addBreadcrumb,
   addEventProcessor,
   addIntegration,
-  // eslint-disable-next-line deprecation/deprecation
-  addRequestDataToEvent,
   amqplibIntegration,
+  // eslint-disable-next-line deprecation/deprecation
   anrIntegration,
+  // eslint-disable-next-line deprecation/deprecation
   disableAnrDetectionForCallback,
   captureCheckIn,
   captureConsoleIntegration,
@@ -28,13 +31,10 @@ export {
   createTransport,
   cron,
   dedupeIntegration,
-  DEFAULT_USER_INCLUDES,
   defaultStackParser,
   endSession,
   expressErrorHandler,
   expressIntegration,
-  // eslint-disable-next-line deprecation/deprecation
-  extractRequestData,
   extraErrorDataIntegration,
   fastifyIntegration,
   flush,
@@ -44,8 +44,6 @@ export {
   getActiveSpan,
   getAutoPerformanceIntegrations,
   getClient,
-  // eslint-disable-next-line deprecation/deprecation
-  getCurrentHub,
   getCurrentScope,
   getDefaultIntegrations,
   getGlobalScope,
@@ -57,9 +55,14 @@ export {
   graphqlIntegration,
   hapiIntegration,
   httpIntegration,
+  httpServerIntegration,
+  httpServerSpansIntegration,
+  // eslint-disable-next-line deprecation/deprecation
   inboundFiltersIntegration,
+  eventFiltersIntegration,
   initOpenTelemetry,
   isInitialized,
+  isEnabled,
   knexIntegration,
   kafkaIntegration,
   koaIntegration,
@@ -79,6 +82,7 @@ export {
   onUnhandledRejectionIntegration,
   parameterize,
   postgresIntegration,
+  postgresJsIntegration,
   prismaIntegration,
   redisIntegration,
   requestDataIntegration,
@@ -119,7 +123,15 @@ export {
   withIsolationScope,
   withMonitor,
   withScope,
+  supabaseIntegration,
+  instrumentSupabaseClient,
   zodErrorsIntegration,
+  logger,
+  consoleLoggingIntegration,
+  createConsolaReporter,
+  createSentryWinstonTransport,
+  spanStreamingIntegration,
+  withStreamedSpan,
 } from '@sentry/node';
 
 // We can still leave this for the carrier init and type exports

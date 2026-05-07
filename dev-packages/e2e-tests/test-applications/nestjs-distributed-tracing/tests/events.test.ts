@@ -21,7 +21,10 @@ test('Event emitter', async () => {
         type: 'Error',
         value: 'Test error from event handler',
         stacktrace: expect.any(Object),
-        mechanism: expect.any(Object),
+        mechanism: {
+          handled: false,
+          type: 'auto.event.nestjs',
+        },
       },
     ],
   });
@@ -32,7 +35,6 @@ test('Event emitter', async () => {
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     data: {
       'sentry.source': 'custom',
-      'sentry.sample_rate': 1,
       'sentry.op': 'event.nestjs',
       'sentry.origin': 'auto.event.nestjs',
     },
@@ -40,4 +42,54 @@ test('Event emitter', async () => {
     op: 'event.nestjs',
     status: 'ok',
   });
+});
+
+test('Event handler breadcrumbs do not leak into subsequent HTTP requests', async () => {
+  // The app emits 'test-isolation.breadcrumb' every 2s via setInterval (outside HTTP context).
+  // The handler adds a breadcrumb. Without isolation scope forking, this breadcrumb leaks
+  // into the default isolation scope and gets cloned into subsequent HTTP requests.
+
+  // Wait for at least one setInterval tick to fire and add the breadcrumb
+  await new Promise(resolve => setTimeout(resolve, 3000));
+
+  const transactionPromise = waitForTransaction('nestjs-distributed-tracing', transactionEvent => {
+    return transactionEvent.transaction === 'GET /events/test-isolation';
+  });
+
+  await fetch('http://localhost:3050/events/test-isolation');
+
+  const transaction = await transactionPromise;
+
+  const leakedBreadcrumb = (transaction.breadcrumbs || []).find(
+    (b: any) => b.message === 'leaked-breadcrumb-from-event-handler',
+  );
+  expect(leakedBreadcrumb).toBeUndefined();
+});
+
+test('Multiple OnEvent decorators', async () => {
+  const firstTxPromise = waitForTransaction('nestjs-distributed-tracing', transactionEvent => {
+    return transactionEvent.transaction === 'event multiple.first|multiple.second';
+  });
+  const secondTxPromise = waitForTransaction('nestjs-distributed-tracing', transactionEvent => {
+    return transactionEvent.transaction === 'event multiple.first|multiple.second';
+  });
+  const rootPromise = waitForTransaction('nestjs-distributed-tracing', transactionEvent => {
+    return transactionEvent.transaction === 'GET /events/emit-multiple';
+  });
+
+  const eventsUrl = `http://localhost:3050/events/emit-multiple`;
+  await fetch(eventsUrl);
+
+  const firstTx = await firstTxPromise;
+  const secondTx = await secondTxPromise;
+  const rootTx = await rootPromise;
+
+  expect(firstTx).toBeDefined();
+  expect(secondTx).toBeDefined();
+
+  // Tags should be on the event handler transactions, not the root HTTP transaction
+  expect(firstTx.tags?.['test-first'] || firstTx.tags?.['test-second']).toBe(true);
+  expect(secondTx.tags?.['test-first'] || secondTx.tags?.['test-second']).toBe(true);
+  expect(rootTx.tags?.['test-first']).toBeUndefined();
+  expect(rootTx.tags?.['test-second']).toBeUndefined();
 });

@@ -1,8 +1,12 @@
+import {
+  browserTracingIntegrationShim,
+  consoleLoggingIntegrationShim,
+  feedbackIntegrationShim,
+  loggerShim,
+  spanStreamingIntegrationShim,
+} from '@sentry-internal/integration-shims';
 import { describe, expect, it } from 'vitest';
-
-import { browserTracingIntegrationShim, feedbackIntegrationShim } from '@sentry-internal/integration-shims';
 import { replayIntegration } from '../src';
-
 import * as ReplayBundle from '../src/index.bundle.replay';
 
 describe('index.bundle.replay', () => {
@@ -11,5 +15,9 @@ describe('index.bundle.replay', () => {
     expect(ReplayBundle.feedbackAsyncIntegration).toBe(feedbackIntegrationShim);
     expect(ReplayBundle.feedbackIntegration).toBe(feedbackIntegrationShim);
     expect(ReplayBundle.replayIntegration).toBe(replayIntegration);
+    expect(ReplayBundle.spanStreamingIntegration).toBe(spanStreamingIntegrationShim);
+
+    expect(ReplayBundle.logger).toBe(loggerShim);
+    expect(ReplayBundle.consoleLoggingIntegration).toBe(consoleLoggingIntegrationShim);
   });
 });

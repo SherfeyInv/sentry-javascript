@@ -1,33 +1,23 @@
-import type {
-  BaseTransportOptions,
-  CheckIn,
-  ClientOptions,
-  DynamicSamplingContext,
-  Event,
-  EventHint,
-  MonitorConfig,
-  ParameterizedString,
-  SerializedCheckIn,
-  SeverityLevel,
-  TraceContext,
-} from './types-hoist';
-
-import { BaseClient } from './baseclient';
 import { createCheckInEnvelope } from './checkin';
-import { getIsolationScope, getTraceContextFromScope } from './currentScopes';
+import { Client } from './client';
+import { getIsolationScope } from './currentScopes';
 import { DEBUG_BUILD } from './debug-build';
 import type { Scope } from './scope';
-import {
-  getDynamicSamplingContextFromScope,
-  getDynamicSamplingContextFromSpan,
-  registerSpanErrorInstrumentation,
-} from './tracing';
-import { eventFromMessage, eventFromUnknownInput } from './utils-hoist/eventbuilder';
-import { logger } from './utils-hoist/logger';
-import { uuid4 } from './utils-hoist/misc';
-import { resolvedSyncPromise } from './utils-hoist/syncpromise';
-import { _getSpanForScope } from './utils/spanOnScope';
-import { spanToTraceContext } from './utils/spanUtils';
+import { registerSpanErrorInstrumentation } from './tracing';
+import { DEFAULT_TRANSPORT_BUFFER_SIZE } from './transports/base';
+import { addUserAgentToTransportHeaders } from './transports/userAgent';
+import type { CheckIn, MonitorConfig, SerializedCheckIn } from './types-hoist/checkin';
+import type { Event, EventHint } from './types-hoist/event';
+import type { ClientOptions } from './types-hoist/options';
+import type { ParameterizedString } from './types-hoist/parameterize';
+import type { SeverityLevel } from './types-hoist/severity';
+import type { BaseTransportOptions, Transport } from './types-hoist/transport';
+import { debug } from './utils/debug-logger';
+import { eventFromMessage, eventFromUnknownInput } from './utils/eventbuilder';
+import { uuid4 } from './utils/misc';
+import { makePromiseBuffer } from './utils/promisebuffer';
+import { resolvedSyncPromise } from './utils/syncpromise';
+import { _getTraceInfoFromScope } from './utils/trace-info';
 
 export interface ServerRuntimeClientOptions extends ClientOptions<BaseTransportOptions> {
   platform?: string;
@@ -40,7 +30,9 @@ export interface ServerRuntimeClientOptions extends ClientOptions<BaseTransportO
  */
 export class ServerRuntimeClient<
   O extends ClientOptions & ServerRuntimeClientOptions = ServerRuntimeClientOptions,
-> extends BaseClient<O> {
+> extends Client<O> {
+  private _disposeCallbacks: (() => void)[] = [];
+
   /**
    * Creates a new Edge SDK instance.
    * @param options Configuration options for this SDK.
@@ -49,7 +41,11 @@ export class ServerRuntimeClient<
     // Server clients always support tracing
     registerSpanErrorInstrumentation();
 
+    addUserAgentToTransportHeaders(options);
+
     super(options);
+
+    this._setUpMetricsProcessing();
   }
 
   /**
@@ -88,7 +84,7 @@ export class ServerRuntimeClient<
    */
   public captureEvent(event: Event, hint?: EventHint, scope?: Scope): string {
     // If the event is of type Exception, then a request session should be captured
-    const isException = !event.type && event.exception && event.exception.values && event.exception.values.length > 0;
+    const isException = !event.type && event.exception?.values && event.exception.values.length > 0;
     if (isException) {
       setCurrentRequestSessionErroredOrCrashed(hint);
     }
@@ -106,7 +102,7 @@ export class ServerRuntimeClient<
   public captureCheckIn(checkIn: CheckIn, monitorConfig?: MonitorConfig, scope?: Scope): string {
     const id = 'checkInId' in checkIn && checkIn.checkInId ? checkIn.checkInId : uuid4();
     if (!this._isEnabled()) {
-      DEBUG_BUILD && logger.warn('SDK not enabled, will not capture check-in.');
+      DEBUG_BUILD && debug.warn('SDK not enabled, will not capture check-in.');
       return id;
     }
 
@@ -136,7 +132,7 @@ export class ServerRuntimeClient<
       };
     }
 
-    const [dynamicSamplingContext, traceContext] = this._getTraceInfoFromScope(scope);
+    const [dynamicSamplingContext, traceContext] = _getTraceInfoFromScope(this, scope);
     if (traceContext) {
       serializedCheckIn.contexts = {
         trace: traceContext,
@@ -151,7 +147,7 @@ export class ServerRuntimeClient<
       this.getDsn(),
     );
 
-    DEBUG_BUILD && logger.info('Sending checkin:', checkIn.monitorSlug, checkIn.status);
+    DEBUG_BUILD && debug.log('Sending checkin:', checkIn.monitorSlug, checkIn.status);
 
     // sendEnvelope should not throw
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -163,11 +159,54 @@ export class ServerRuntimeClient<
   /**
    * @inheritDoc
    */
+  public override registerCleanup(callback: () => void): void {
+    this._disposeCallbacks.push(callback);
+  }
+
+  /**
+   * Disposes of the client and releases all resources.
+   *
+   * This method clears all internal state to allow the client to be garbage collected.
+   * It clears hooks, event processors, integrations, transport, and other internal references.
+   *
+   * Call this method after flushing to allow the client to be garbage collected.
+   * After calling dispose(), the client should not be used anymore.
+   *
+   * Subclasses should override this method to clean up their own resources and call `super.dispose()`.
+   */
+  public override dispose(): void {
+    DEBUG_BUILD && debug.log('Disposing client...');
+
+    // Run all registered cleanup callbacks
+    for (const callback of this._disposeCallbacks) {
+      try {
+        callback();
+      } catch {
+        // Ignore errors in cleanup callbacks
+      }
+    }
+    this._disposeCallbacks.length = 0;
+
+    for (const hookName of Object.keys(this._hooks)) {
+      this._hooks[hookName]?.clear();
+    }
+
+    this._hooks = {};
+    this._eventProcessors.length = 0;
+    this._integrations = {};
+    this._outcomes = {};
+    (this as unknown as { _transport?: Transport })._transport = undefined;
+    this._promiseBuffer = makePromiseBuffer(DEFAULT_TRANSPORT_BUFFER_SIZE);
+  }
+
+  /**
+   * @inheritDoc
+   */
   protected _prepareEvent(
     event: Event,
     hint: EventHint,
-    scope?: Scope,
-    isolationScope?: Scope,
+    currentScope: Scope,
+    isolationScope: Scope,
   ): PromiseLike<Event | null> {
     if (this._options.platform) {
       event.platform = event.platform || this._options.platform;
@@ -176,7 +215,7 @@ export class ServerRuntimeClient<
     if (this._options.runtime) {
       event.contexts = {
         ...event.contexts,
-        runtime: (event.contexts || {}).runtime || this._options.runtime,
+        runtime: event.contexts?.runtime || this._options.runtime,
       };
     }
 
@@ -184,24 +223,21 @@ export class ServerRuntimeClient<
       event.server_name = event.server_name || this._options.serverName;
     }
 
-    return super._prepareEvent(event, hint, scope, isolationScope);
+    return super._prepareEvent(event, hint, currentScope, isolationScope);
   }
 
-  /** Extract trace information from scope */
-  protected _getTraceInfoFromScope(
-    scope: Scope | undefined,
-  ): [dynamicSamplingContext: Partial<DynamicSamplingContext> | undefined, traceContext: TraceContext | undefined] {
-    if (!scope) {
-      return [undefined, undefined];
-    }
-
-    const span = _getSpanForScope(scope);
-
-    const traceContext = span ? spanToTraceContext(span) : getTraceContextFromScope(scope);
-    const dynamicSamplingContext = span
-      ? getDynamicSamplingContextFromSpan(span)
-      : getDynamicSamplingContextFromScope(this, scope);
-    return [dynamicSamplingContext, traceContext];
+  /**
+   * Process a server-side metric before it is captured.
+   */
+  private _setUpMetricsProcessing(): void {
+    this.on('processMetric', metric => {
+      if (this._options.serverName) {
+        metric.attributes = {
+          'server.address': this._options.serverName,
+          ...metric.attributes,
+        };
+      }
+    });
   }
 }
 

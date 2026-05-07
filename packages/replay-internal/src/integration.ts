@@ -1,5 +1,5 @@
 import type { BrowserClientReplayOptions, Client, Integration, IntegrationFn, ReplayRecordingMode } from '@sentry/core';
-import { consoleSandbox, dropUndefinedKeys, isBrowser, parseSampleRate } from '@sentry/core';
+import { consoleSandbox, GLOBAL_OBJ, isBrowser, parseSampleRate } from '@sentry/core';
 import {
   DEFAULT_FLUSH_MAX_DELAY,
   DEFAULT_FLUSH_MIN_DELAY,
@@ -24,7 +24,44 @@ const MEDIA_SELECTORS =
 
 const DEFAULT_NETWORK_HEADERS = ['content-length', 'content-type', 'accept'];
 
+// Symbol to store the original body on Request objects
+const ORIGINAL_BODY = Symbol.for('sentry__originalRequestBody');
+
 let _initialized = false;
+let _isRequestInstrumented = false;
+
+/**
+ * Instruments the global Request constructor to store the original body.
+ * This allows us to retrieve the original body value later, since Request
+ * converts string bodies to ReadableStreams.
+ */
+export function _INTERNAL_instrumentRequestInterface(): void {
+  if (typeof Request === 'undefined' || _isRequestInstrumented) {
+    return;
+  }
+
+  const OriginalRequest = Request;
+
+  try {
+    const SentryRequest = function (input: RequestInfo | URL, init?: RequestInit): Request {
+      const request = new OriginalRequest(input, init);
+      if (init?.body != null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any,@typescript-eslint/no-unsafe-member-access
+        (request as any)[ORIGINAL_BODY] = init.body;
+      }
+      return request;
+    };
+
+    SentryRequest.prototype = OriginalRequest.prototype;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any,@typescript-eslint/no-unsafe-member-access
+    (GLOBAL_OBJ as any).Request = SentryRequest;
+
+    _isRequestInstrumented = true;
+  } catch {
+    // Fail silently if Request is frozen
+  }
+}
 
 /**
  * Sentry integration for [Session Replay](https://sentry.io/for/session-replay/).
@@ -46,16 +83,8 @@ export const replayIntegration = ((options?: ReplayConfiguration) => {
 
 /**
  * Replay integration
- *
- * TODO: Rewrite this to be functional integration
- * Exported for tests.
  */
 export class Replay implements Integration {
-  /**
-   * @inheritDoc
-   */
-  public static id: string = 'Replay';
-
   /**
    * @inheritDoc
    */
@@ -103,7 +132,7 @@ export class Replay implements Integration {
     networkResponseHeaders = [],
 
     mask = [],
-    maskAttributes = ['title', 'placeholder'],
+    maskAttributes = ['title', 'placeholder', 'aria-label'],
     unmask = [],
     block = [],
     unblock = [],
@@ -113,8 +142,9 @@ export class Replay implements Integration {
     beforeAddRecordingEvent,
     beforeErrorSampling,
     onError,
+    attachRawBodyFromRequest = false,
   }: ReplayConfiguration = {}) {
-    this.name = Replay.id;
+    this.name = 'Replay';
 
     const privacyOptions = getPrivacyOptions({
       mask,
@@ -153,11 +183,13 @@ export class Replay implements Integration {
       errorHandler: (err: Error & { __rrweb__?: boolean }) => {
         try {
           err.__rrweb__ = true;
-        } catch (error) {
+        } catch {
           // ignore errors here
           // this can happen if the error is frozen or does not allow mutation for other reasons
         }
       },
+      // experimental support for recording iframes from different origins
+      recordCrossOriginIframes: Boolean(_experiments.recordCrossOriginIframes),
     };
 
     this._initialOptions = {
@@ -183,6 +215,7 @@ export class Replay implements Integration {
       beforeAddRecordingEvent,
       beforeErrorSampling,
       onError,
+      attachRawBodyFromRequest,
 
       _experiments,
     };
@@ -193,6 +226,7 @@ export class Replay implements Integration {
       this._recordingOptions.blockSelector = !this._recordingOptions.blockSelector
         ? MEDIA_SELECTORS
         : `${this._recordingOptions.blockSelector},${MEDIA_SELECTORS}`;
+      this._recordingOptions.ignoreCSSAttributes = new Set(['background-image']);
     }
 
     if (this._isInitialized && isBrowser()) {
@@ -218,6 +252,10 @@ export class Replay implements Integration {
   public afterAllSetup(client: Client): void {
     if (!isBrowser() || this._replay) {
       return;
+    }
+
+    if (this._initialOptions.attachRawBodyFromRequest) {
+      _INTERNAL_instrumentRequestInterface();
     }
 
     this._setup(client);
@@ -259,7 +297,7 @@ export class Replay implements Integration {
       return Promise.resolve();
     }
 
-    return this._replay.stop({ forceFlush: this._replay.recordingMode === 'session' });
+    return this._replay.stop({ forceFlush: this._replay.recordingMode === 'session', reason: 'manual' });
   }
 
   /**
@@ -286,13 +324,16 @@ export class Replay implements Integration {
 
   /**
    * Get the current session ID.
+   *
+   * @param onlyIfSampled - If true, will only return the session ID if the session is sampled.
+   *
    */
-  public getReplayId(): string | undefined {
-    if (!this._replay || !this._replay.isEnabled()) {
+  public getReplayId(onlyIfSampled?: boolean): string | undefined {
+    if (!this._replay?.isEnabled()) {
       return;
     }
 
-    return this._replay.getSessionId();
+    return this._replay.getSessionId(onlyIfSampled);
   }
 
   /**
@@ -304,7 +345,7 @@ export class Replay implements Integration {
    *   - or calling `flush()` to send the replay
    */
   public getRecordingMode(): ReplayRecordingMode | undefined {
-    if (!this._replay || !this._replay.isEnabled()) {
+    if (!this._replay?.isEnabled()) {
       return;
     }
 
@@ -362,7 +403,7 @@ function loadReplayOptionsFromClient(initialOptions: InitialReplayPluginOptions,
   const finalOptions: ReplayPluginOptions = {
     sessionSampleRate: 0,
     errorSampleRate: 0,
-    ...dropUndefinedKeys(initialOptions),
+    ...initialOptions,
   };
 
   const replaysSessionSampleRate = parseSampleRate(opt.replaysSessionSampleRate);

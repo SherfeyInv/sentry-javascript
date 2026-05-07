@@ -1,4 +1,4 @@
-import type { Client } from './client';
+import type { Client } from '../client';
 import type { DebugImage } from './debugMeta';
 import type { Integration } from './integration';
 import type { MeasurementUnit } from './measurement';
@@ -9,12 +9,19 @@ export interface ContinuousProfiler<T extends Client> {
   stop(): void;
 }
 
-export interface ProfilingIntegration<T extends Client> extends Integration {
+export interface ProfilingIntegration<T extends Client = Client> extends Integration {
   _profiler: ContinuousProfiler<T>;
 }
 
 export interface Profiler {
+  /**
+   * Starts the profiler.
+   */
   startProfiler(): void;
+
+  /**
+   * Stops the profiler.
+   */
   stopProfiler(): void;
 }
 

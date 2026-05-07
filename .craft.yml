@@ -1,18 +1,21 @@
 minVersion: '0.23.1'
-changelogPolicy: simple
+changelog:
+  policy: simple
 preReleaseCommand: bash scripts/craft-pre-release.sh
 targets:
   # NPM Targets
   ## 1. Base Packages, node or browser SDKs depend on
-  ## 1.1 Types
-  # TODO(v9): Remove
-  - name: npm
-    id: '@sentry/types'
-    includeNames: /^sentry-types-\d.*\.tgz$/
-  ## 1.2 Core SDK
+  ## 1.1 Core SDKs
   - name: npm
     id: '@sentry/core'
     includeNames: /^sentry-core-\d.*\.tgz$/
+    ## 1.2 Types
+  - name: npm
+    id: '@sentry/types'
+    includeNames: /^sentry-types-\d.*\.tgz$/
+  - name: npm
+    id: '@sentry/node-core'
+    includeNames: /^sentry-node-core-\d.*\.tgz$/
   ## 1.3 Browser Utils package
   - name: npm
     id: '@sentry-internal/browser-utils'
@@ -44,6 +47,9 @@ targets:
   - name: npm
     id: '@sentry/profiling-node'
     includeNames: /^sentry-profiling-node-\d.*\.tgz$/
+  - name: npm
+    id: '@sentry/node-native'
+    includeNames: /^sentry-node-native-\d.*\.tgz$/
 
   ## 3 Browser-based Packages
   - name: npm
@@ -78,14 +84,6 @@ targets:
   - name: npm
     id: '@sentry/deno'
     includeNames: /^sentry-deno-\d.*\.tgz$/
-  - name: commit-on-git-repository
-    # This will publish on the Deno registry
-    id: getsentry/deno
-    archive: /^sentry-deno-\d.*\.tgz$/
-    repositoryUrl: https://github.com/getsentry/sentry-deno.git
-    stripComponents: 1
-    branch: main
-    createTag: true
 
   ## 5. Node-based Packages
   - name: npm
@@ -98,8 +96,17 @@ targets:
     id: '@sentry/bun'
     includeNames: /^sentry-bun-\d.*\.tgz$/
   - name: npm
+    id: '@sentry/elysia'
+    includeNames: /^sentry-elysia-\d.*\.tgz$/
+  - name: npm
+    id: '@sentry/hono'
+    includeNames: /^sentry-hono-\d.*\.tgz$/
+  - name: npm
     id: '@sentry/nestjs'
     includeNames: /^sentry-nestjs-\d.*\.tgz$/
+  - name: npm
+    id: '@sentry/effect'
+    includeNames: /^sentry-effect-\d.*\.tgz$/
 
   ## 6. Fullstack/Meta Frameworks (depending on Node and Browser or Framework SDKs)
   - name: npm
@@ -118,11 +125,23 @@ targets:
     id: '@sentry/sveltekit'
     includeNames: /^sentry-sveltekit-\d.*\.tgz$/
   - name: npm
+    id: '@sentry/tanstackstart'
+    includeNames: /^sentry-tanstackstart-\d.*\.tgz$/
+  - name: npm
+    id: '@sentry/tanstackstart-react'
+    includeNames: /^sentry-tanstackstart-react-\d.*\.tgz$/
+  - name: npm
     id: '@sentry/gatsby'
     includeNames: /^sentry-gatsby-\d.*\.tgz$/
   - name: npm
     id: '@sentry/astro'
     includeNames: /^sentry-astro-\d.*\.tgz$/
+  - name: npm
+    id: '@sentry/react-router'
+    includeNames: /^sentry-react-router-\d.*\.tgz$/
+  - name: npm
+    id: '@sentry/nitro'
+    includeNames: /^sentry-nitro-\d.*\.tgz$/
 
   ## 7. Other Packages
   ## 7.1
@@ -138,20 +157,17 @@ targets:
     includeNames: /^sentry-internal-eslint-config-sdk-\d.*\.tgz$/
 
   # AWS Lambda Layer target
-  # TODO(v9): Once stable, re-add this target to publish the AWS Lambda layer
-  # - name: aws-lambda-layer
-  #   includeNames: /^sentry-node-serverless-\d+.\d+.\d+(-(beta|alpha|rc)\.\d+)?\.zip$/
-  #   layerName: SentryNodeServerlessSDK
-  #   compatibleRuntimes:
-  #     - name: node
-  #       versions:
-  #         - nodejs10.x
-  #         - nodejs12.x
-  #         - nodejs14.x
-  #         - nodejs16.x
-  #         - nodejs18.x
-  #         - nodejs20.x
-  #   license: MIT
+  - name: aws-lambda-layer
+    includeNames: /^sentry-node-serverless-\d+.\d+.\d+(-(beta|alpha|rc)\.\d+)?\.zip$/
+    layerName: SentryNodeServerlessSDKv{{{major}}}
+    compatibleRuntimes:
+      - name: node
+        versions:
+          - nodejs18.x
+          - nodejs20.x
+          - nodejs22.x
+          - nodejs24.x
+    license: MIT
 
   # CDN Bundle Target
   - name: gcs
@@ -194,12 +210,25 @@ targets:
         onlyIfPresent: /^sentry-gatsby-\d.*\.tgz$/
       'npm:@sentry/google-cloud-serverless':
         onlyIfPresent: /^sentry-google-cloud-serverless-\d.*\.tgz$/
+      'npm:@sentry/hono':
+        name: 'Sentry Hono SDK'
+        packageUrl: 'https://www.npmjs.com/package/@sentry/hono'
+        mainDocsUrl: 'https://docs.sentry.io/platforms/javascript/guides/hono/'
+        onlyIfPresent: /^sentry-hono-\d.*\.tgz$/
+      'npm:@sentry/nestjs':
+        onlyIfPresent: /^sentry-nestjs-\d.*\.tgz$/
       'npm:@sentry/nextjs':
         onlyIfPresent: /^sentry-nextjs-\d.*\.tgz$/
+      'npm:@sentry/nuxt':
+        onlyIfPresent: /^sentry-nuxt-\d.*\.tgz$/
       'npm:@sentry/node':
         onlyIfPresent: /^sentry-node-\d.*\.tgz$/
+      'npm:@sentry/node-core':
+        onlyIfPresent: /^sentry-node-core-\d.*\.tgz$/
       'npm:@sentry/react':
         onlyIfPresent: /^sentry-react-\d.*\.tgz$/
+      'npm:@sentry/react-router':
+        onlyIfPresent: /^sentry-react-router-\d.*\.tgz$/
       'npm:@sentry/remix':
         onlyIfPresent: /^sentry-remix-\d.*\.tgz$/
       'npm:@sentry/solid':
@@ -210,9 +239,29 @@ targets:
         onlyIfPresent: /^sentry-svelte-\d.*\.tgz$/
       'npm:@sentry/sveltekit':
         onlyIfPresent: /^sentry-sveltekit-\d.*\.tgz$/
+      'npm:@sentry/tanstackstart-react':
+        onlyIfPresent: /^sentry-tanstackstart-react-\d.*\.tgz$/
       'npm:@sentry/vercel-edge':
         onlyIfPresent: /^sentry-vercel-edge-\d.*\.tgz$/
       'npm:@sentry/vue':
         onlyIfPresent: /^sentry-vue-\d.*\.tgz$/
       'npm:@sentry/wasm':
         onlyIfPresent: /^sentry-wasm-\d.*\.tgz$/
+      'npm:@sentry/effect':
+        name: 'Sentry Effect SDK'
+        sdkName: 'sentry.javascript.effect'
+        packageUrl: 'https://www.npmjs.com/package/@sentry/effect'
+        mainDocsUrl: 'https://docs.sentry.io/platforms/javascript/guides/effect/'
+        onlyIfPresent: /^sentry-effect-\d.*\.tgz$/
+      'npm:@sentry/elysia':
+        name: 'Sentry Elysia SDK'
+        sdkName: 'sentry.javascript.elysia'
+        packageUrl: 'https://www.npmjs.com/package/@sentry/elysia'
+        mainDocsUrl: 'https://docs.sentry.io/platforms/javascript/guides/elysia/'
+        onlyIfPresent: /^sentry-elysia-\d.*\.tgz$/
+      'npm:@sentry/nitro':
+        name: 'Sentry Nitro SDK'
+        sdkName: 'sentry.javascript.nitro'
+        packageUrl: 'https://www.npmjs.com/package/@sentry/nitro'
+        mainDocsUrl: 'https://docs.sentry.io/platforms/javascript/guides/nitro/'
+        onlyIfPresent: /^sentry-nitro-\d.*\.tgz$/

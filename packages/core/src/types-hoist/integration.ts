@@ -1,15 +1,6 @@
-import type { Client } from './client';
+import type { Client } from '../client';
 import type { Event, EventHint } from './event';
-
-/** Integration Class Interface */
-export interface IntegrationClass<T> {
-  /**
-   * Property that holds the integration name
-   */
-  id: string;
-
-  new (...args: any[]): T;
-}
+import type { StreamedSpanJSON } from './span';
 
 /** Integration interface */
 export interface Integration {
@@ -23,6 +14,15 @@ export interface Integration {
    * It does not receives any arguments, and should only use for e.g. global monkey patching and similar things.
    */
   setupOnce?(): void;
+
+  /**
+   * Called before the `setup` hook of any integration is called.
+   * This is useful if an integration needs to e.g. modify client options prior to other integrations
+   * reading client options.
+   *
+   * @param client
+   */
+  beforeSetup?(client: Client): void;
 
   /**
    * Set up an integration for the given client.
@@ -51,10 +51,25 @@ export interface Integration {
    * This receives the client that the integration was installed for as third argument.
    */
   processEvent?(event: Event, hint: EventHint, client: Client): Event | null | PromiseLike<Event | null>;
+
+  /**
+   * An optional hook that allows modifications to a span. This hook runs after the span is ended,
+   * during `captureSpan` and before the span is passed to users' `beforeSendSpan` callback.
+   * Use this hook to modify a span in-place.
+   */
+  processSpan?(span: StreamedSpanJSON, client: Client): void;
+
+  /**
+   * An optional hook that allows modifications to a segment span. This hook runs after the segment span is ended,
+   * during `captureSpan` and before the segment span is passed to users' `beforeSendSpan` callback.
+   * Use this hook to modify a segment span in-place.
+   */
+  processSegmentSpan?(span: StreamedSpanJSON, client: Client): void;
 }
 
 /**
  * An integration in function form.
  * This is expected to return an integration.
  */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type IntegrationFn<IntegrationType = Integration> = (...rest: any[]) => IntegrationType;

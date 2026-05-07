@@ -1,5 +1,5 @@
 import type { Event, IntegrationFn, StackFrame } from '@sentry/core';
-import { GLOBAL_OBJ, addContextToFrame, defineIntegration, stripUrlQueryAndFragment } from '@sentry/core';
+import { addContextToFrame, defineIntegration, GLOBAL_OBJ, stripUrlQueryAndFragment } from '@sentry/core';
 
 const WINDOW = GLOBAL_OBJ as typeof GLOBAL_OBJ & Window;
 
@@ -51,8 +51,8 @@ function addSourceContext(event: Event, contextLines: number): Event {
     return event;
   }
 
-  const exceptions = event.exception && event.exception.values;
-  if (!exceptions || !exceptions.length) {
+  const exceptions = event.exception?.values;
+  if (!exceptions?.length) {
     return event;
   }
 
@@ -65,7 +65,7 @@ function addSourceContext(event: Event, contextLines: number): Event {
 
   exceptions.forEach(exception => {
     const stacktrace = exception.stacktrace;
-    if (stacktrace && stacktrace.frames) {
+    if (stacktrace?.frames) {
       stacktrace.frames = stacktrace.frames.map(frame =>
         applySourceContextToFrame(frame, htmlLines, htmlFilename, contextLines),
       );

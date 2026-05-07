@@ -1,30 +1,32 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Client } from '../../../src/';
 import {
-  SentrySpan,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
   getMainCarrier,
   getTraceData,
+  registerExternalPropagationContext,
+  Scope,
+  SentrySpan,
   setAsyncContextStrategy,
   setCurrentClient,
   withActiveSpan,
 } from '../../../src/';
 import { getAsyncContextStrategy } from '../../../src/asyncContext';
 import { freezeDscOnSpan } from '../../../src/tracing/dynamicSamplingContext';
-import type { Client, Span } from '../../../src/types-hoist';
-
+import type { Span } from '../../../src/types-hoist/span';
 import type { TestClientOptions } from '../../mocks/client';
-import { TestClient, getDefaultTestClientOptions } from '../../mocks/client';
+import { getDefaultTestClientOptions, TestClient } from '../../mocks/client';
 
 const dsn = 'https://123@sentry.io/42';
 
 const SCOPE_TRACE_ID = '12345678901234567890123456789012';
-const SCOPE_SPAN_ID = '1234567890123456';
 
 function setupClient(opts?: Partial<TestClientOptions>): Client {
   getCurrentScope().setPropagationContext({
     traceId: SCOPE_TRACE_ID,
-    spanId: SCOPE_SPAN_ID,
+    sampleRand: Math.random(),
   });
 
   const options = getDefaultTestClientOptions({
@@ -49,7 +51,7 @@ describe('getTraceData', () => {
   });
 
   afterEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('uses the ACS implementation, if available', () => {
@@ -57,7 +59,7 @@ describe('getTraceData', () => {
 
     const carrier = getMainCarrier();
 
-    const customFn = jest.fn((options?: { span?: Span }) => {
+    const customFn = vi.fn((options?: { span?: Span }) => {
       expect(options).toEqual({ span: undefined });
       return {
         'sentry-trace': 'abc',
@@ -98,7 +100,7 @@ describe('getTraceData', () => {
       sampled: true,
     });
 
-    const customFn = jest.fn((options?: { span?: Span }) => {
+    const customFn = vi.fn((options?: { span?: Span }) => {
       expect(options).toEqual({ span });
       return {
         'sentry-trace': 'abc',
@@ -158,26 +160,57 @@ describe('getTraceData', () => {
     });
   });
 
+  it('allows to pass a scope & client directly', () => {
+    // this default client & scope should not be used!
+    setupClient();
+    getCurrentScope().setPropagationContext({
+      traceId: '12345678901234567890123456789099',
+      sampleRand: 0.44,
+    });
+
+    const options = getDefaultTestClientOptions({
+      dsn: 'https://567@sentry.io/42',
+      tracesSampleRate: 1,
+    });
+    const customClient = new TestClient(options);
+
+    const scope = new Scope();
+    scope.setPropagationContext({
+      traceId: '12345678901234567890123456789012',
+      sampleRand: 0.42,
+    });
+    scope.setClient(customClient);
+
+    const traceData = getTraceData({ client: customClient, scope });
+
+    expect(traceData['sentry-trace']).toMatch(/^12345678901234567890123456789012-[a-f0-9]{16}$/);
+    expect(traceData.baggage).toEqual(
+      'sentry-environment=production,sentry-public_key=567,sentry-trace_id=12345678901234567890123456789012',
+    );
+  });
+
   it('returns propagationContext DSC data if no span is available', () => {
     setupClient();
 
     getCurrentScope().setPropagationContext({
       traceId: '12345678901234567890123456789012',
       sampled: true,
-      spanId: '1234567890123456',
+      parentSpanId: '1234567890123456',
+      sampleRand: 0.42,
       dsc: {
         environment: 'staging',
         public_key: 'key',
         trace_id: '12345678901234567890123456789012',
+        sample_rand: '0.42',
       },
     });
 
     const traceData = getTraceData();
 
-    expect(traceData).toEqual({
-      'sentry-trace': '12345678901234567890123456789012-1234567890123456-1',
-      baggage: 'sentry-environment=staging,sentry-public_key=key,sentry-trace_id=12345678901234567890123456789012',
-    });
+    expect(traceData['sentry-trace']).toMatch(/^12345678901234567890123456789012-[a-f0-9]{16}-1$/);
+    expect(traceData.baggage).toEqual(
+      'sentry-environment=staging,sentry-public_key=key,sentry-trace_id=12345678901234567890123456789012,sentry-sample_rand=0.42',
+    );
   });
 
   it('returns frozen DSC from SentrySpan if available', () => {
@@ -278,5 +311,84 @@ describe('getTraceData', () => {
     const traceData = getTraceData();
 
     expect(traceData).toEqual({});
+  });
+
+  it('returns traceparent from span if propagateTraceparent is true', () => {
+    setupClient();
+
+    const span = new SentrySpan({
+      traceId: '12345678901234567890123456789012',
+      spanId: '1234567890123456',
+      sampled: true,
+    });
+
+    withActiveSpan(span, () => {
+      const data = getTraceData({ propagateTraceparent: true });
+
+      expect(data).toEqual({
+        'sentry-trace': '12345678901234567890123456789012-1234567890123456-1',
+        baggage:
+          'sentry-environment=production,sentry-public_key=123,sentry-trace_id=12345678901234567890123456789012,sentry-sampled=true',
+        traceparent: '00-12345678901234567890123456789012-1234567890123456-01',
+      });
+    });
+  });
+
+  it('returns traceparent from scope in TwP config if propagateTraceparent is true', () => {
+    setupClient();
+
+    getCurrentScope().setPropagationContext({
+      traceId: '12345678901234567890123456789099',
+      sampled: undefined,
+      sampleRand: 0.44,
+    });
+
+    const traceData = getTraceData({ propagateTraceparent: true });
+
+    expect(traceData.traceparent).toBeDefined();
+    expect(traceData.traceparent).toMatch(/00-12345678901234567890123456789099-[0-9a-f]{16}-00/);
+  });
+
+  it('returns empty object when no span and external propagation context is registered', () => {
+    setupClient();
+
+    registerExternalPropagationContext(() => ({
+      traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+      spanId: 'bbbbbbbbbbbbbb01',
+    }));
+
+    const traceData = getTraceData();
+    expect(traceData).toEqual({});
+
+    // Clean up
+    registerExternalPropagationContext(() => undefined);
+  });
+
+  it('still returns trace data from span even when external propagation context is registered', () => {
+    setupClient();
+
+    registerExternalPropagationContext(() => ({
+      traceId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+      spanId: 'bbbbbbbbbbbbbb01',
+    }));
+
+    const span = new SentrySpan({
+      traceId: '12345678901234567890123456789012',
+      spanId: '1234567890123456',
+      sampled: true,
+    });
+
+    withActiveSpan(span, () => {
+      const data = getTraceData();
+
+      expect(data).toEqual({
+        'sentry-trace': '12345678901234567890123456789012-1234567890123456-1',
+        baggage:
+          'sentry-environment=production,sentry-public_key=123,sentry-trace_id=12345678901234567890123456789012,sentry-sampled=true',
+      });
+    });
+
+    // Clean up
+    registerExternalPropagationContext(() => undefined);
   });
 });

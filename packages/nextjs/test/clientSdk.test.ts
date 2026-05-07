@@ -1,14 +1,14 @@
-import { getGlobalScope, getIsolationScope } from '@sentry/core';
-import { logger } from '@sentry/core';
 import type { Integration } from '@sentry/core';
+import { debug, getGlobalScope, getIsolationScope, SentryNonRecordingSpan } from '@sentry/core';
 import * as SentryReact from '@sentry/react';
-import { WINDOW, getClient, getCurrentScope } from '@sentry/react';
+import { getClient, getCurrentScope, WINDOW } from '@sentry/react';
 import { JSDOM } from 'jsdom';
-
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { breadcrumbsIntegration, browserTracingIntegration, init } from '../src/client';
+import { INCOMPLETE_APP_ROUTER_INSTRUMENTATION_TRANSACTION_NAME } from '../src/client/routing/appRouterRoutingInstrumentation';
 
-const reactInit = jest.spyOn(SentryReact, 'init');
-const loggerLogSpy = jest.spyOn(logger, 'log');
+const reactInit = vi.spyOn(SentryReact, 'init');
+const debugLogSpy = vi.spyOn(debug, 'log');
 
 // We're setting up JSDom here because the Next.js routing instrumentations requires a few things to be present on pageload:
 // 1. Access to window.document API for `window.document.getElementById`
@@ -20,6 +20,7 @@ Object.defineProperty(global, 'addEventListener', { value: () => undefined, writ
 
 const originalGlobalDocument = WINDOW.document;
 const originalGlobalLocation = WINDOW.location;
+const originalNavigator = WINDOW.navigator;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const originalGlobalAddEventListener = WINDOW.addEventListener;
 
@@ -27,6 +28,7 @@ afterAll(() => {
   // Clean up JSDom
   Object.defineProperty(WINDOW, 'document', { value: originalGlobalDocument });
   Object.defineProperty(WINDOW, 'location', { value: originalGlobalLocation });
+  Object.defineProperty(WINDOW, 'navigator', { value: originalNavigator, writable: true, configurable: true });
   Object.defineProperty(WINDOW, 'addEventListener', { value: originalGlobalAddEventListener });
 });
 
@@ -38,12 +40,13 @@ const TEST_DSN = 'https://public@dsn.ingest.sentry.io/1337';
 
 describe('Client init()', () => {
   afterEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     getGlobalScope().clear();
     getIsolationScope().clear();
     getCurrentScope().clear();
     getCurrentScope().setClient(undefined);
+    Object.defineProperty(WINDOW, 'navigator', { value: originalNavigator, writable: true, configurable: true });
   });
 
   it('inits the React SDK', () => {
@@ -66,6 +69,9 @@ describe('Client init()', () => {
                 version: expect.any(String),
               },
             ],
+            settings: {
+              infer_ip: 'never',
+            },
           },
         },
         environment: 'test',
@@ -78,20 +84,68 @@ describe('Client init()', () => {
     );
   });
 
-  it('adds 404 transaction filter', () => {
-    init({
-      dsn: 'https://dogsarebadatkeepingsecrets@squirrelchasers.ingest.sentry.io/12312012',
-      tracesSampleRate: 1.0,
-    });
-    const transportSend = jest.spyOn(getClient()!.getTransport()!, 'send');
+  describe('transaction filtering', () => {
+    const TEST_DSN_404 = 'https://dogsarebadatkeepingsecrets@squirrelchasers.ingest.sentry.io/12312012';
 
-    // Ensure we have no current span, so our next span is a transaction
-    SentryReact.withActiveSpan(null, () => {
-      SentryReact.startInactiveSpan({ name: '/404' })?.end();
+    it('drops /404 transactions', () => {
+      init({ dsn: TEST_DSN_404, tracesSampleRate: 1.0 });
+      const transportSend = vi.spyOn(getClient()!.getTransport()!, 'send');
+
+      // Ensure we have no current span, so our next span is a transaction
+      SentryReact.withActiveSpan(null, () => {
+        SentryReact.startInactiveSpan({ name: '/404' })?.end();
+      });
+
+      expect(transportSend).not.toHaveBeenCalled();
+      expect(debugLogSpy).toHaveBeenCalledWith(expect.stringContaining('matches `ignoreSpans`'));
     });
 
-    expect(transportSend).not.toHaveBeenCalled();
-    expect(loggerLogSpy).toHaveBeenCalledWith('An event processor returned `null`, will not send event.');
+    it('drops incomplete navigation transactions', () => {
+      init({ dsn: TEST_DSN_404, tracesSampleRate: 1.0 });
+      const transportSend = vi.spyOn(getClient()!.getTransport()!, 'send');
+
+      // Ensure we have no current span, so our next span is a transaction
+      SentryReact.withActiveSpan(null, () => {
+        SentryReact.startInactiveSpan({ name: INCOMPLETE_APP_ROUTER_INSTRUMENTATION_TRANSACTION_NAME })?.end();
+      });
+
+      expect(transportSend).not.toHaveBeenCalled();
+      expect(debugLogSpy).toHaveBeenCalledWith(expect.stringContaining('matches `ignoreSpans`'));
+    });
+
+    describe('span streaming', () => {
+      it('drops /404 segment spans', () => {
+        init({ dsn: TEST_DSN_404, tracesSampleRate: 1.0, traceLifecycle: 'stream' });
+
+        // Ensure we have no current span, so our next span is a segment span
+        const span = SentryReact.withActiveSpan(null, () => SentryReact.startInactiveSpan({ name: '/404' }));
+
+        expect(span).toBeInstanceOf(SentryNonRecordingSpan);
+        expect(debugLogSpy).toHaveBeenCalledWith(expect.stringContaining('matches `ignoreSpans`'));
+      });
+
+      it('drops incomplete navigation segment spans', () => {
+        init({ dsn: TEST_DSN_404, tracesSampleRate: 1.0, traceLifecycle: 'stream' });
+
+        // Ensure we have no current span, so our next span is a segment span
+        const span = SentryReact.withActiveSpan(null, () =>
+          SentryReact.startInactiveSpan({ name: INCOMPLETE_APP_ROUTER_INSTRUMENTATION_TRANSACTION_NAME }),
+        );
+
+        expect(span).toBeInstanceOf(SentryNonRecordingSpan);
+        expect(debugLogSpy).toHaveBeenCalledWith(expect.stringContaining('matches `ignoreSpans`'));
+      });
+
+      it('drops /404 non-segment spans', () => {
+        init({ dsn: TEST_DSN_404, tracesSampleRate: 1.0, traceLifecycle: 'stream' });
+
+        SentryReact.startSpan({ name: 'parent' }, parent => {
+          expect(parent).not.toBeInstanceOf(SentryNonRecordingSpan);
+          const child = SentryReact.startInactiveSpan({ name: '/404' });
+          expect(child).toBeInstanceOf(SentryNonRecordingSpan);
+        });
+      });
+    });
   });
 
   describe('integrations', () => {
@@ -158,10 +212,114 @@ describe('Client init()', () => {
         // @ts-expect-error Test setup for build-time flag
         delete globalThis.__SENTRY_TRACING__;
       });
+
+      it("doesn't run Next.js router instrumentation for bot user agents", () => {
+        Object.defineProperty(WINDOW, 'navigator', {
+          value: {
+            userAgent: 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+          },
+          writable: true,
+          configurable: true,
+        });
+
+        const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+        init({
+          dsn: TEST_DSN,
+          tracesSampleRate: 1.0,
+        });
+
+        expect(setIntervalSpy).not.toHaveBeenCalled();
+      });
     });
   });
 
   it('returns client from init', () => {
     expect(init({})).not.toBeUndefined();
+  });
+
+  describe('environment option', () => {
+    const originalEnv = process.env.SENTRY_ENVIRONMENT;
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.SENTRY_ENVIRONMENT = originalEnv;
+      } else {
+        delete process.env.SENTRY_ENVIRONMENT;
+      }
+      if (originalNodeEnv !== undefined) {
+        process.env.NODE_ENV = originalNodeEnv;
+      } else {
+        delete process.env.NODE_ENV;
+      }
+    });
+
+    it('uses environment from options when provided', () => {
+      delete process.env.SENTRY_ENVIRONMENT;
+      process.env.NODE_ENV = 'development';
+
+      init({
+        dsn: TEST_DSN,
+        environment: 'custom-env',
+      });
+
+      expect(reactInit).toHaveBeenCalledTimes(1);
+      const callArgs = reactInit.mock.calls[0]?.[0];
+      expect(callArgs?.environment).toBe('custom-env');
+    });
+
+    it('uses SENTRY_ENVIRONMENT env var when options.environment is not provided', () => {
+      process.env.SENTRY_ENVIRONMENT = 'env-from-variable';
+      process.env.NODE_ENV = 'development';
+
+      init({
+        dsn: TEST_DSN,
+      });
+
+      expect(reactInit).toHaveBeenCalledTimes(1);
+      const callArgs = reactInit.mock.calls[0]?.[0];
+      expect(callArgs?.environment).toBe('env-from-variable');
+    });
+
+    it('uses NODE_ENV as fallback when neither options.environment nor SENTRY_ENVIRONMENT is provided', () => {
+      delete process.env.SENTRY_ENVIRONMENT;
+      process.env.NODE_ENV = 'production';
+
+      init({
+        dsn: TEST_DSN,
+      });
+
+      expect(reactInit).toHaveBeenCalledTimes(1);
+      const callArgs = reactInit.mock.calls[0]?.[0];
+      expect(callArgs?.environment).toBe('production');
+    });
+
+    it('prioritizes options.environment over SENTRY_ENVIRONMENT env var', () => {
+      process.env.SENTRY_ENVIRONMENT = 'env-from-variable';
+      process.env.NODE_ENV = 'development';
+
+      init({
+        dsn: TEST_DSN,
+        environment: 'options-env',
+      });
+
+      expect(reactInit).toHaveBeenCalledTimes(1);
+      const callArgs = reactInit.mock.calls[0]?.[0];
+      expect(callArgs?.environment).toBe('options-env');
+    });
+
+    it('prioritizes SENTRY_ENVIRONMENT over NODE_ENV', () => {
+      process.env.SENTRY_ENVIRONMENT = 'sentry-env';
+      process.env.NODE_ENV = 'development';
+
+      init({
+        dsn: TEST_DSN,
+      });
+
+      expect(reactInit).toHaveBeenCalledTimes(1);
+      const callArgs = reactInit.mock.calls[0]?.[0];
+      expect(callArgs?.environment).toBe('sentry-env');
+    });
   });
 });

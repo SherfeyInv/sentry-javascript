@@ -1,16 +1,15 @@
 import {
-  WINDOW,
   browserTracingIntegration,
   startBrowserTracingNavigationSpan,
   startBrowserTracingPageLoadSpan,
+  WINDOW,
 } from '@sentry/browser';
+import type { Integration, TransactionSource } from '@sentry/core';
 import {
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
 } from '@sentry/core';
-import type { Integration, TransactionSource } from '@sentry/core';
-
 import type { Location } from './types';
 
 // Many of the types below had to be mocked out to prevent typescript issues
@@ -57,7 +56,7 @@ export function reactRouterV3BrowserTracingIntegration(
     afterAllSetup(client) {
       integration.afterAllSetup(client);
 
-      if (instrumentPageLoad && WINDOW && WINDOW.location) {
+      if (instrumentPageLoad && WINDOW.location) {
         normalizeTransactionName(
           routes,
           WINDOW.location as unknown as Location,
@@ -145,15 +144,14 @@ function getRouteStringFromRoutes(routes: Route[]): string {
   for (let x = routesWithPaths.length - 1; x >= 0; x--) {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const route = routesWithPaths[x]!;
-    if (route.path && route.path.startsWith('/')) {
+    if (route.path?.startsWith('/')) {
       index = x;
       break;
     }
   }
 
-  return routesWithPaths
-    .slice(index)
-    .filter(({ path }) => !!path)
-    .map(({ path }) => path)
-    .join('');
+  return routesWithPaths.slice(index).reduce((acc, { path }) => {
+    const pathSegment = acc === '/' || acc === '' ? path : `/${path}`;
+    return `${acc}${pathSegment}`;
+  }, '');
 }

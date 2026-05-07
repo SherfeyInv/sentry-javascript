@@ -65,13 +65,12 @@ test('Should record a transaction for route with parameters', async ({ request }
     data: {
       'express.name': 'query',
       'express.type': 'middleware',
-      'http.route': '/',
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
     },
     op: 'middleware.express',
     description: 'query',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -84,13 +83,12 @@ test('Should record a transaction for route with parameters', async ({ request }
     data: {
       'express.name': 'expressInit',
       'express.type': 'middleware',
-      'http.route': '/',
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
     },
     op: 'middleware.express',
     description: 'expressInit',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -104,12 +102,12 @@ test('Should record a transaction for route with parameters', async ({ request }
       'express.name': '/test-transaction/:param',
       'express.type': 'request_handler',
       'http.route': '/test-transaction/:param',
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'request_handler.express',
     },
     op: 'request_handler.express',
     description: '/test-transaction/:param',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -119,9 +117,7 @@ test('Should record a transaction for route with parameters', async ({ request }
   });
 });
 
-// This fails https://github.com/getsentry/sentry-javascript/pull/12587#issuecomment-2181019422
-// Skipping this for now so we don't block releases
-test.skip('Should record spans from http instrumentation', async ({ request }) => {
+test('Should record spans from http instrumentation', async ({ request }) => {
   const transactionEventPromise = waitForTransaction('node-express-esm-preload', transactionEvent => {
     return transactionEvent.contexts?.trace?.data?.['http.target'] === '/http-req';
   });
@@ -135,12 +131,11 @@ test.skip('Should record spans from http instrumentation', async ({ request }) =
   expect(httpClientSpan).toEqual({
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-    data: {
+    data: expect.objectContaining({
       'http.flavor': '1.1',
-      'http.host': 'example.com:80',
+      'http.host': 'example.com',
       'http.method': 'GET',
       'http.response.status_code': 200,
-      'http.response_content_length_uncompressed': expect.any(Number),
       'http.status_code': 200,
       'http.status_text': 'OK',
       'http.target': '/',
@@ -151,15 +146,15 @@ test.skip('Should record spans from http instrumentation', async ({ request }) =
       'net.transport': 'ip_tcp',
       'otel.kind': 'CLIENT',
       'sentry.op': 'http.client',
-      'sentry.origin': 'auto.http.otel.http',
+      'sentry.origin': 'auto.http.client',
       url: 'http://example.com/',
-    },
+    }),
     description: 'GET http://example.com/',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
     timestamp: expect.any(Number),
     status: 'ok',
     op: 'http.client',
-    origin: 'auto.http.otel.http',
+    origin: 'auto.http.client',
   });
 });

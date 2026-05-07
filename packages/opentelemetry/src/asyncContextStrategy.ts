@@ -6,9 +6,9 @@ import {
   SENTRY_FORK_SET_ISOLATION_SCOPE_CONTEXT_KEY,
   SENTRY_FORK_SET_SCOPE_CONTEXT_KEY,
 } from './constants';
-import { continueTrace, startInactiveSpan, startSpan, startSpanManual, withActiveSpan } from './trace';
+import { continueTrace, startInactiveSpan, startNewTrace, startSpan, startSpanManual, withActiveSpan } from './trace';
 import type { CurrentScopes } from './types';
-import { getScopesFromContext } from './utils/contextData';
+import { getContextFromScope, getScopesFromContext } from './utils/contextData';
 import { getActiveSpan } from './utils/getActiveSpan';
 import { getTraceData } from './utils/getTraceData';
 import { suppressTracing } from './utils/suppressTracing';
@@ -48,7 +48,7 @@ export function setOpenTelemetryContextAsyncContextStrategy(): void {
   }
 
   function withSetScope<T>(scope: Scope, callback: (scope: Scope) => T): T {
-    const ctx = api.context.active();
+    const ctx = getContextFromScope(scope) || api.context.active();
 
     // We depend on the otelContextManager to handle the context/hub
     // We set the `SENTRY_FORK_SET_SCOPE_CONTEXT_KEY` context value, which is picked up by
@@ -104,6 +104,7 @@ export function setOpenTelemetryContextAsyncContextStrategy(): void {
     suppressTracing,
     getTraceData,
     continueTrace,
+    startNewTrace,
     // The types here don't fully align, because our own `Span` type is narrower
     // than the OTEL one - but this is OK for here, as we now we'll only have OTEL spans passed around
     withActiveSpan: withActiveSpan as typeof defaultWithActiveSpan,

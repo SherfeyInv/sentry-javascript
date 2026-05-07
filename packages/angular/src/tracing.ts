@@ -1,6 +1,6 @@
+import type { AfterViewInit, OnDestroy, OnInit } from '@angular/core';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { ElementRef } from '@angular/core';
-import type { AfterViewInit, OnDestroy, OnInit } from '@angular/core';
 import { Directive, Injectable, Input, NgModule } from '@angular/core';
 import type { ActivatedRouteSnapshot, Event, RouterState } from '@angular/router';
 // Duplicated import to work around a TypeScript bug where it'd complain that `Router` isn't imported as a type.
@@ -9,23 +9,22 @@ import type { ActivatedRouteSnapshot, Event, RouterState } from '@angular/router
 import { NavigationCancel, NavigationError, Router } from '@angular/router';
 import { NavigationEnd, NavigationStart, ResolveEnd } from '@angular/router';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   browserTracingIntegration as originalBrowserTracingIntegration,
   getActiveSpan,
   getClient,
   getCurrentScope,
   getRootSpan,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   spanToJSON,
   startBrowserTracingNavigationSpan,
   startInactiveSpan,
 } from '@sentry/browser';
-import { logger, stripUrlQueryAndFragment, timestampInSeconds } from '@sentry/core';
 import type { Integration, Span } from '@sentry/core';
+import { debug, stripUrlQueryAndFragment, timestampInSeconds } from '@sentry/core';
 import type { Observable } from 'rxjs';
 import { Subscription } from 'rxjs';
 import { filter, tap } from 'rxjs/operators';
-
 import { ANGULAR_INIT_OP, ANGULAR_OP, ANGULAR_ROUTING_OP } from './constants';
 import { IS_DEBUG_BUILD } from './flags';
 import { runOutsideAngular } from './zone';
@@ -76,7 +75,7 @@ export class TraceService implements OnDestroy {
     tap(navigationEvent => {
       if (!instrumentationInitialized) {
         IS_DEBUG_BUILD &&
-          logger.error('Angular integration has tracing enabled, but Tracing integration is not configured');
+          debug.error('Angular integration has tracing enabled, but Tracing integration is not configured');
         return;
       }
 
@@ -322,7 +321,7 @@ export function TraceClass(options?: TraceClassOptions): ClassDecorator {
       tracingSpan = runOutsideAngular(() =>
         startInactiveSpan({
           onlyIfParent: true,
-          name: `<${options && options.name ? options.name : 'unnamed'}>`,
+          name: `<${options?.name || 'unnamed'}>`,
           op: ANGULAR_INIT_OP,
           attributes: {
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.angular.trace_class_decorator',
@@ -367,7 +366,7 @@ export function TraceMethod(options?: TraceMethodOptions): MethodDecorator {
       runOutsideAngular(() => {
         startInactiveSpan({
           onlyIfParent: true,
-          name: `<${options && options.name ? options.name : 'unnamed'}>`,
+          name: `<${options?.name ? options.name : 'unnamed'}>`,
           op: `${ANGULAR_OP}.${String(propertyKey)}`,
           startTime: now,
           attributes: {
@@ -397,9 +396,9 @@ export function TraceMethod(options?: TraceMethodOptions): MethodDecorator {
 export function getParameterizedRouteFromSnapshot(route?: ActivatedRouteSnapshot | null): string {
   const parts: string[] = [];
 
-  let currentRoute = route && route.firstChild;
+  let currentRoute = route?.firstChild;
   while (currentRoute) {
-    const path = currentRoute && currentRoute.routeConfig && currentRoute.routeConfig.path;
+    const path = currentRoute?.routeConfig && currentRoute.routeConfig.path;
     if (path === null || path === undefined) {
       break;
     }

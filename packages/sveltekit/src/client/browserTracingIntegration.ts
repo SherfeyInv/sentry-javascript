@@ -1,14 +1,14 @@
-import { navigating, page } from '$app/stores';
 import type { Client, Integration, Span } from '@sentry/core';
-import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, dropUndefinedKeys } from '@sentry/core';
+import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE } from '@sentry/core';
 import {
-  WINDOW,
   browserTracingIntegration as originalBrowserTracingIntegration,
   getCurrentScope,
   startBrowserTracingNavigationSpan,
   startBrowserTracingPageLoadSpan,
   startInactiveSpan,
+  WINDOW,
 } from '@sentry/svelte';
+import { navigating, page } from '$app/stores';
 
 /**
  * A custom `BrowserTracing` integration for SvelteKit.
@@ -41,7 +41,7 @@ export function browserTracingIntegration(
 }
 
 function _instrumentPageload(client: Client): void {
-  const initialPath = WINDOW && WINDOW.location && WINDOW.location.pathname;
+  const initialPath = WINDOW.location?.pathname;
 
   const pageloadSpan = startBrowserTracingPageLoadSpan(client, {
     name: initialPath,
@@ -55,12 +55,14 @@ function _instrumentPageload(client: Client): void {
     return;
   }
 
+  // TODO(v11): require svelte 5 or newer to switch to `page` from `$app/state`
+  // eslint-disable-next-line deprecation/deprecation
   page.subscribe(page => {
     if (!page) {
       return;
     }
 
-    const routeId = page.route && page.route.id;
+    const routeId = page.route?.id;
 
     if (routeId) {
       pageloadSpan.updateName(routeId);
@@ -76,6 +78,8 @@ function _instrumentPageload(client: Client): void {
 function _instrumentNavigations(client: Client): void {
   let routingSpan: Span | undefined;
 
+  // TODO(v11): require svelte 5 or newer to switch to `navigating` from `$app/state`
+  // eslint-disable-next-line deprecation/deprecation
   navigating.subscribe(navigation => {
     if (!navigation) {
       // `navigating` emits a 'null' value when the navigation is completed.
@@ -92,9 +96,9 @@ function _instrumentNavigations(client: Client): void {
     const to = navigation.to;
 
     // for the origin we can fall back to window.location.pathname because in this emission, it still is set to the origin path
-    const rawRouteOrigin = (from && from.url.pathname) || (WINDOW && WINDOW.location && WINDOW.location.pathname);
+    const rawRouteOrigin = from?.url.pathname || WINDOW.location?.pathname;
 
-    const rawRouteDestination = to && to.url.pathname;
+    const rawRouteDestination = to?.url.pathname;
 
     // We don't want to create transactions for navigations of same origin and destination.
     // We need to look at the raw URL here because parameterized routes can still differ in their raw parameters.
@@ -102,8 +106,8 @@ function _instrumentNavigations(client: Client): void {
       return;
     }
 
-    const parameterizedRouteOrigin = from && from.route.id;
-    const parameterizedRouteDestination = to && to.route.id;
+    const parameterizedRouteOrigin = from?.route.id;
+    const parameterizedRouteDestination = to?.route.id;
 
     if (routingSpan) {
       // If a routing span is still open from a previous navigation, we finish it.
@@ -113,7 +117,7 @@ function _instrumentNavigations(client: Client): void {
       routingSpan.end();
     }
 
-    const navigationInfo = dropUndefinedKeys({
+    const navigationInfo = {
       //  `navigation.type` denotes the origin of the navigation. e.g.:
       //   - link (clicking on a link)
       //   - goto (programmatic via goto() or redirect())
@@ -121,7 +125,7 @@ function _instrumentNavigations(client: Client): void {
       'sentry.sveltekit.navigation.type': navigation.type,
       'sentry.sveltekit.navigation.from': parameterizedRouteOrigin || undefined,
       'sentry.sveltekit.navigation.to': parameterizedRouteDestination || undefined,
-    });
+    };
 
     startBrowserTracingNavigationSpan(client, {
       name: parameterizedRouteDestination || rawRouteDestination || 'unknown',

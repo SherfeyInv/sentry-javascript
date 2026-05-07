@@ -1,27 +1,26 @@
-import { isWrapped } from '@opentelemetry/core';
 import type { InstrumentationConfig } from '@opentelemetry/instrumentation';
 import {
   InstrumentationBase,
   InstrumentationNodeModuleDefinition,
   InstrumentationNodeModuleFile,
+  isWrapped,
 } from '@opentelemetry/instrumentation';
-import { SDK_VERSION, captureException, startSpan } from '@sentry/core';
+import { captureException, SDK_VERSION, startSpan, withIsolationScope } from '@sentry/core';
 import { getEventSpanOptions } from './helpers';
 import type { OnEventTarget } from './types';
 
 const supportedVersions = ['>=2.0.0'];
+const COMPONENT = '@nestjs/event-emitter';
 
 /**
  * Custom instrumentation for nestjs event-emitter
  *
  * This hooks into the `OnEvent` decorator, which is applied on event handlers.
+ * Wrapped handlers run inside a forked isolation scope to ensure event-scoped data
+ * (breadcrumbs, tags, etc.) does not leak between concurrent event invocations
+ * or into subsequent HTTP requests.
  */
 export class SentryNestEventInstrumentation extends InstrumentationBase {
-  public static readonly COMPONENT = '@nestjs/event-emitter';
-  public static readonly COMMON_ATTRIBUTES = {
-    component: SentryNestEventInstrumentation.COMPONENT,
-  };
-
   public constructor(config: InstrumentationConfig = {}) {
     super('sentry-nestjs-event', SDK_VERSION, config);
   }
@@ -30,10 +29,7 @@ export class SentryNestEventInstrumentation extends InstrumentationBase {
    * Initializes the instrumentation by defining the modules to be patched.
    */
   public init(): InstrumentationNodeModuleDefinition {
-    const moduleDef = new InstrumentationNodeModuleDefinition(
-      SentryNestEventInstrumentation.COMPONENT,
-      supportedVersions,
-    );
+    const moduleDef = new InstrumentationNodeModuleDefinition(COMPONENT, supportedVersions);
 
     moduleDef.files.push(this._getOnEventFileInstrumentation(supportedVersions));
     return moduleDef;
@@ -65,43 +61,80 @@ export class SentryNestEventInstrumentation extends InstrumentationBase {
   private _createWrapOnEvent() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return function wrapOnEvent(original: any) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return function wrappedOnEvent(event: any, options?: any) {
-        const eventName = Array.isArray(event)
-          ? event.join(',')
-          : typeof event === 'string' || typeof event === 'symbol'
-            ? event.toString()
-            : '<unknown_event>';
-
+      return function wrappedOnEvent(event: unknown, options?: unknown) {
         // Get the original decorator result
         const decoratorResult = original(event, options);
 
         // Return a new decorator function that wraps the handler
-        return function (target: OnEventTarget, propertyKey: string | symbol, descriptor: PropertyDescriptor) {
-          if (!descriptor.value || typeof descriptor.value !== 'function' || target.__SENTRY_INTERNAL__) {
+        return (target: OnEventTarget, propertyKey: string | symbol, descriptor: PropertyDescriptor) => {
+          if (
+            !descriptor.value ||
+            typeof descriptor.value !== 'function' ||
+            target.__SENTRY_INTERNAL__ ||
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            descriptor.value.__SENTRY_INSTRUMENTED__
+          ) {
             return decoratorResult(target, propertyKey, descriptor);
           }
 
-          // Get the original handler
+          function eventNameFromEvent(event: unknown): string {
+            if (typeof event === 'string') {
+              return event;
+            } else if (Array.isArray(event)) {
+              return event.map(eventNameFromEvent).join(',');
+            } else return String(event);
+          }
+
           const originalHandler = descriptor.value;
           // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
           const handlerName = originalHandler.name || propertyKey;
+          let eventName = eventNameFromEvent(event);
 
-          // Instrument the handler
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          descriptor.value = async function (...args: any[]) {
-            return startSpan(getEventSpanOptions(eventName), async () => {
-              try {
-                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-                const result = await originalHandler.apply(this, args);
-                return result;
-              } catch (error) {
-                // exceptions from event handlers are not caught by global error filter
-                captureException(error);
-                throw error;
+          // Instrument the actual handler
+          descriptor.value = async function (...args: unknown[]) {
+            // When multiple @OnEvent decorators are used on a single method, we need to get all event names
+            // from the reflector metadata as there is no information during execution which event triggered it
+            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+            // @ts-ignore - reflect-metadata of nestjs adds these methods to Reflect
+            if (Reflect.getMetadataKeys(descriptor.value).includes('EVENT_LISTENER_METADATA')) {
+              // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+              // @ts-ignore - reflect-metadata of nestjs adds these methods to Reflect
+              const eventData = Reflect.getMetadata('EVENT_LISTENER_METADATA', descriptor.value);
+              if (Array.isArray(eventData)) {
+                eventName = eventData
+                  .map((data: unknown) => {
+                    if (data && typeof data === 'object' && 'event' in data && data.event) {
+                      return eventNameFromEvent(data.event);
+                    }
+                    return '';
+                  })
+                  .reverse() // decorators are evaluated bottom to top
+                  .join('|');
               }
+            }
+
+            return withIsolationScope(() => {
+              return startSpan(getEventSpanOptions(eventName), async () => {
+                try {
+                  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                  const result = await originalHandler.apply(this, args);
+                  return result;
+                } catch (error) {
+                  // exceptions from event handlers are not caught by global error filter
+                  captureException(error, {
+                    mechanism: {
+                      handled: false,
+                      type: 'auto.event.nestjs',
+                    },
+                  });
+                  throw error;
+                }
+              });
             });
           };
+
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+          descriptor.value.__SENTRY_INSTRUMENTED__ = true;
 
           // Preserve the original function name
           Object.defineProperty(descriptor.value, 'name', {

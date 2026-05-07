@@ -48,7 +48,7 @@ import * as Sentry from '@sentry/remix';
 Sentry.init({
   dsn: '__DSN__',
   tracesSampleRate: 1,
-  integrations: [new Sentry.Integrations.Prisma({ client: prisma })],
+  integrations: [Sentry.prismaIntegration()],
   // ...
 });
 ```
@@ -90,23 +90,6 @@ function App() {
 export default withSentry(App);
 ```
 
-You can disable or configure `ErrorBoundary` using a second parameter to `withSentry`.
-
-```ts
-
-withSentry(App, {
-  wrapWithErrorBoundary: false
-});
-
-// or
-
-withSentry(App, {
-  errorBoundaryOptions: {
-    fallback: <p>An error has occurred</p>
-  }
-});
-```
-
 To set context information or send manual events, use the exported functions of `@sentry/remix`.
 
 ```ts
@@ -139,8 +122,13 @@ Sentry.captureEvent({
 The Remix SDK provides a script that automatically creates a release and uploads sourcemaps. To generate sourcemaps with
 Remix, you need to call `remix build` with the `--sourcemap` option.
 
-On release, call `sentry-upload-sourcemaps` to upload source maps and create a release. To see more details on how to
-use the command, call `sentry-upload-sourcemaps --help`.
+On release, call the upload sourcemaps command to upload source maps and create a release:
+
+```bash
+npx @sentry/remix --upload-sourcemaps
+```
+
+To see more details on how to use the command, run `npx @sentry/remix --upload-sourcemaps --help`.
 
 For more advanced configuration,
 [directly use `sentry-cli` to upload source maps.](https://github.com/getsentry/sentry-cli).

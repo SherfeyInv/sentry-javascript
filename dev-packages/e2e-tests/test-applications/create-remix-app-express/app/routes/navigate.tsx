@@ -10,11 +10,11 @@ export const loader: LoaderFunction = async ({ params: { id } }) => {
 };
 
 export default function LoaderError() {
-  const data = useLoaderData();
+  const data = useLoaderData() as { test?: string };
 
   return (
     <div>
-      <h1>{data && data.test ? data.test : 'Not Found'}</h1>
+      <h1>{data?.test ? data.test : 'Not Found'}</h1>
     </div>
   );
 }

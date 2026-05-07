@@ -1,11 +1,11 @@
 import type * as common from '@google-cloud/common';
 import type { Client, IntegrationFn } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SentryNonRecordingSpan,
   defineIntegration,
   fill,
   getClient,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SentryNonRecordingSpan,
 } from '@sentry/core';
 import { startInactiveSpan } from '@sentry/node';
 
@@ -70,5 +70,5 @@ function wrapRequestFunction(orig: RequestFunction): RequestFunction {
 /** Identifies service by its base url */
 function identifyService(apiEndpoint: string): string {
   const match = apiEndpoint.match(/^https:\/\/(\w+)\.googleapis.com$/);
-  return match && match[1] ? match[1] : apiEndpoint.replace(/^(http|https)?:\/\//, '');
+  return match?.[1] || apiEndpoint.replace(/^(http|https)?:\/\//, '');
 }

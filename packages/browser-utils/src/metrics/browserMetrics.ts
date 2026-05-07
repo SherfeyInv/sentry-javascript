@@ -1,30 +1,34 @@
 /* eslint-disable max-lines */
-import type { Measurements, Span, SpanAttributes, StartSpanOptions } from '@sentry/core';
+import type { Client, Measurements, Span, SpanAttributes, SpanAttributeValue, StartSpanOptions } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   browserPerformanceTimeOrigin,
+  debug,
   getActiveSpan,
   getComponentName,
   htmlTreeAsString,
+  isPrimitive,
   parseUrl,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   setMeasurement,
   spanToJSON,
+  stringMatchesSomePattern,
 } from '@sentry/core';
 import { WINDOW } from '../types';
 import { trackClsAsStandaloneSpan } from './cls';
 import {
-  type PerformanceLongAnimationFrameTiming,
   addClsInstrumentationHandler,
-  addFidInstrumentationHandler,
   addLcpInstrumentationHandler,
   addPerformanceInstrumentationHandler,
   addTtfbInstrumentationHandler,
+  type PerformanceLongAnimationFrameTiming,
 } from './instrument';
+import { isValidLcpMetric, trackLcpAsStandaloneSpan } from './lcp';
+import { resourceTimingToSpanAttributes } from './resourceTiming';
 import { getBrowserPerformanceAPI, isMeasurementValue, msToSec, startAndEndSpan } from './utils';
 import { getActivationStart } from './web-vitals/lib/getActivationStart';
 import { getNavigationEntry } from './web-vitals/lib/getNavigationEntry';
 import { getVisibilityWatcher } from './web-vitals/lib/getVisibilityWatcher';
-
+import { DEBUG_BUILD } from '../debug-build';
 interface NavigatorNetworkInformation {
   readonly connection?: NetworkInformation;
 }
@@ -72,32 +76,58 @@ let _lcpEntry: LargestContentfulPaint | undefined;
 let _clsEntry: LayoutShift | undefined;
 
 interface StartTrackingWebVitalsOptions {
-  recordClsStandaloneSpans: boolean;
+  /**
+   * When `true`, CLS is tracked as a standalone span. When `false`, CLS is
+   * recorded as a measurement on the pageload span. When `undefined`, CLS
+   * tracking is skipped entirely (e.g. because span streaming handles it).
+   */
+  recordClsStandaloneSpans: boolean | undefined;
+  /**
+   * When `true`, LCP is tracked as a standalone span. When `false`, LCP is
+   * recorded as a measurement on the pageload span. When `undefined`, LCP
+   * tracking is skipped entirely (e.g. because span streaming handles it).
+   */
+  recordLcpStandaloneSpans: boolean | undefined;
+  client: Client;
 }
 
 /**
  * Start tracking web vitals.
  * The callback returned by this function can be used to stop tracking & ensure all measurements are final & captured.
  *
+ * @deprecated this function will be removed and streamlined once we stop supporting standalone v1
  * @returns A function that forces web vitals collection
  */
-export function startTrackingWebVitals({ recordClsStandaloneSpans }: StartTrackingWebVitalsOptions): () => void {
+export function startTrackingWebVitals({
+  recordClsStandaloneSpans,
+  recordLcpStandaloneSpans,
+  client,
+}: StartTrackingWebVitalsOptions): () => void {
   const performance = getBrowserPerformanceAPI();
-  if (performance && browserPerformanceTimeOrigin) {
+  if (performance && browserPerformanceTimeOrigin()) {
     // @ts-expect-error we want to make sure all of these are available, even if TS is sure they are
     if (performance.mark) {
       WINDOW.performance.mark('sentry-tracing-init');
     }
-    const fidCleanupCallback = _trackFID();
-    const lcpCleanupCallback = _trackLCP();
+
+    const lcpCleanupCallback = recordLcpStandaloneSpans
+      ? trackLcpAsStandaloneSpan(client)
+      : recordLcpStandaloneSpans === false
+        ? _trackLCP()
+        : undefined;
+
+    const clsCleanupCallback = recordClsStandaloneSpans
+      ? trackClsAsStandaloneSpan(client)
+      : recordClsStandaloneSpans === false
+        ? _trackCLS()
+        : undefined;
+
     const ttfbCleanupCallback = _trackTtfb();
-    const clsCleanupCallback = recordClsStandaloneSpans ? trackClsAsStandaloneSpan() : _trackCLS();
 
     return (): void => {
-      fidCleanupCallback();
-      lcpCleanupCallback();
       ttfbCleanupCallback();
-      clsCleanupCallback && clsCleanupCallback();
+      lcpCleanupCallback?.();
+      clsCleanupCallback?.();
     };
   }
 
@@ -117,7 +147,7 @@ export function startTrackingLongTasks(): void {
     const { op: parentOp, start_timestamp: parentStartTimestamp } = spanToJSON(parent);
 
     for (const entry of entries) {
-      const startTime = msToSec((browserPerformanceTimeOrigin as number) + entry.startTime);
+      const startTime = msToSec((browserPerformanceTimeOrigin() as number) + entry.startTime);
       const duration = msToSec(entry.duration);
 
       if (parentOp === 'navigation' && parentStartTimestamp && startTime < parentStartTimestamp) {
@@ -156,7 +186,7 @@ export function startTrackingLongAnimationFrames(): void {
         continue;
       }
 
-      const startTime = msToSec((browserPerformanceTimeOrigin as number) + entry.startTime);
+      const startTime = msToSec((browserPerformanceTimeOrigin() as number) + entry.startTime);
 
       const { start_timestamp: parentStartTimestamp, op: parentOp } = spanToJSON(parent);
 
@@ -167,7 +197,6 @@ export function startTrackingLongAnimationFrames(): void {
         // routing instrumentations
         continue;
       }
-
       const duration = msToSec(entry.duration);
 
       const attributes: SpanAttributes = {
@@ -210,7 +239,7 @@ export function startTrackingInteractions(): void {
     }
     for (const entry of entries) {
       if (entry.name === 'click') {
-        const startTime = msToSec((browserPerformanceTimeOrigin as number) + entry.startTime);
+        const startTime = msToSec((browserPerformanceTimeOrigin() as number) + entry.startTime);
         const duration = msToSec(entry.duration);
 
         const spanOptions: StartSpanOptions & Required<Pick<StartSpanOptions, 'attributes'>> = {
@@ -254,28 +283,13 @@ function _trackCLS(): () => void {
 function _trackLCP(): () => void {
   return addLcpInstrumentationHandler(({ metric }) => {
     const entry = metric.entries[metric.entries.length - 1];
-    if (!entry) {
+    if (!entry || !isValidLcpMetric(metric.value)) {
       return;
     }
 
     _measurements['lcp'] = { value: metric.value, unit: 'millisecond' };
     _lcpEntry = entry as LargestContentfulPaint;
   }, true);
-}
-
-/** Starts tracking the First Input Delay on the current page. */
-function _trackFID(): () => void {
-  return addFidInstrumentationHandler(({ metric }) => {
-    const entry = metric.entries[metric.entries.length - 1];
-    if (!entry) {
-      return;
-    }
-
-    const timeOrigin = msToSec(browserPerformanceTimeOrigin as number);
-    const startTime = msToSec(entry.startTime);
-    _measurements['fid'] = { value: metric.value, unit: 'millisecond' };
-    _measurements['mark.fid'] = { value: timeOrigin + startTime, unit: 'second' };
-  });
 }
 
 function _trackTtfb(): () => void {
@@ -291,21 +305,63 @@ function _trackTtfb(): () => void {
 
 interface AddPerformanceEntriesOptions {
   /**
-   * Flag to determine if CLS should be recorded as a measurement on the span or
+   * Flag to determine if CLS should be recorded as a measurement on the pageload span or
    * sent as a standalone span instead.
+   * Sending it as a standalone span will yield more accurate LCP values.
+   *
+   * Default: `false` for backwards compatibility.
    */
   recordClsOnPageloadSpan: boolean;
+
+  /**
+   * Flag to determine if LCP should be recorded as a measurement on the pageload span or
+   * sent as a standalone span instead.
+   * Sending it as a standalone span will yield more accurate LCP values.
+   *
+   * Default: `false` for backwards compatibility.
+   */
+  recordLcpOnPageloadSpan: boolean;
+
+  /**
+   * Resource spans with `op`s matching strings in the array will not be emitted.
+   *
+   * Default: []
+   */
+  ignoreResourceSpans: Array<'resouce.script' | 'resource.css' | 'resource.img' | 'resource.other' | string>;
+
+  /**
+   * Performance spans created from browser Performance APIs,
+   * `performance.mark(...)` nand `performance.measure(...)`
+   * with `name`s matching strings in the array will not be emitted.
+   *
+   * Default: []
+   */
+  ignorePerformanceApiSpans: Array<string | RegExp>;
+
+  /**
+   * Whether span streaming is enabled.
+   */
+  spanStreamingEnabled?: boolean;
 }
 
 /** Add performance related spans to a transaction */
 export function addPerformanceEntries(span: Span, options: AddPerformanceEntriesOptions): void {
   const performance = getBrowserPerformanceAPI();
-  if (!performance || !performance.getEntries || !browserPerformanceTimeOrigin) {
+  const origin = browserPerformanceTimeOrigin();
+  if (!performance?.getEntries || !origin) {
     // Gatekeeper if performance API not available
     return;
   }
 
-  const timeOrigin = msToSec(browserPerformanceTimeOrigin);
+  const {
+    spanStreamingEnabled,
+    ignorePerformanceApiSpans,
+    ignoreResourceSpans,
+    recordClsOnPageloadSpan,
+    recordLcpOnPageloadSpan,
+  } = options;
+
+  const timeOrigin = msToSec(origin);
 
   const performanceEntries = performance.getEntries();
 
@@ -333,7 +389,7 @@ export function addPerformanceEntries(span: Span, options: AddPerformanceEntries
       case 'mark':
       case 'paint':
       case 'measure': {
-        _addMeasureSpans(span, entry, startTime, duration, timeOrigin);
+        _addMeasureSpans(span, entry, startTime, duration, timeOrigin, ignorePerformanceApiSpans);
 
         // capture web vitals
         const firstHidden = getVisibilityWatcher();
@@ -349,7 +405,15 @@ export function addPerformanceEntries(span: Span, options: AddPerformanceEntries
         break;
       }
       case 'resource': {
-        _addResourceSpans(span, entry as PerformanceResourceTiming, entry.name, startTime, duration, timeOrigin);
+        _addResourceSpans(
+          span,
+          entry as PerformanceResourceTiming,
+          entry.name,
+          startTime,
+          duration,
+          timeOrigin,
+          ignoreResourceSpans,
+        );
         break;
       }
       // Ignore other entry types.
@@ -358,40 +422,50 @@ export function addPerformanceEntries(span: Span, options: AddPerformanceEntries
 
   _performanceCursor = Math.max(performanceEntries.length - 1, 0);
 
-  _trackNavigator(span);
+  _trackNavigator(span, spanStreamingEnabled);
 
   // Measurements are only available for pageload transactions
   if (op === 'pageload') {
     _addTtfbRequestTimeToMeasurements(_measurements);
 
-    const fidMark = _measurements['mark.fid'];
-    if (fidMark && _measurements['fid']) {
-      // create span for FID
-      startAndEndSpan(span, fidMark.value, fidMark.value + msToSec(_measurements['fid'].value), {
-        name: 'first input delay',
-        op: 'ui.action',
-        attributes: {
-          [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.browser.metrics',
-        },
+    if (spanStreamingEnabled) {
+      const setAttr = (shortWebVitalName: string, value: number, customAttrName?: string) => {
+        const attrKey = customAttrName ?? `browser.web_vital.${shortWebVitalName}.value`;
+        span.setAttribute(attrKey, value);
+        DEBUG_BUILD && debug.log('Setting web vital attribute', { [attrKey]: value }, 'on pageload span');
+      };
+      // for streamed pageload spans, we add the web vital measurements as attributes.
+      // We omit LCP, CLS and INP because they're tracked separately as spans
+      ['ttfb', 'fp', 'fcp'].forEach(measurementName => {
+        if (_measurements[measurementName]) {
+          setAttr(measurementName, _measurements[measurementName].value);
+        }
+      });
+      if (_measurements['ttfb.requestTime']) {
+        setAttr('ttfb.requestTime', _measurements['ttfb.requestTime'].value, 'browser.web_vital.ttfb.request_time');
+      }
+    } else {
+      // TODO (V11): Remove this else branch once we remove v1 standalone spans and transactions
+
+      // If CLS standalone spans are enabled, don't record CLS as a measurement
+      if (!recordClsOnPageloadSpan) {
+        delete _measurements.cls;
+      }
+
+      // If LCP standalone spans are enabled, don't record LCP as a measurement
+      if (!recordLcpOnPageloadSpan) {
+        delete _measurements.lcp;
+      }
+
+      Object.entries(_measurements).forEach(([measurementName, measurement]) => {
+        setMeasurement(measurementName, measurement.value, measurement.unit);
       });
 
-      // Delete mark.fid as we don't want it to be part of final payload
-      delete _measurements['mark.fid'];
+      _setWebVitalAttributes(span, options);
     }
-
-    // If FCP is not recorded we should not record the cls value
-    // according to the new definition of CLS.
-    // TODO: Check if the first condition is still necessary: `onCLS` already only fires once `onFCP` was called.
-    if (!('fcp' in _measurements) || !options.recordClsOnPageloadSpan) {
-      delete _measurements.cls;
-    }
-
-    Object.entries(_measurements).forEach(([measurementName, measurement]) => {
-      setMeasurement(measurementName, measurement.value, measurement.unit);
-    });
 
     // Set timeOrigin which denotes the timestamp which to base the LCP/FCP/FP/TTFB measurements on
-    span.setAttribute('performance.timeOrigin', timeOrigin);
+    span.setAttribute(spanStreamingEnabled ? 'browser.performance.time_origin' : 'performance.timeOrigin', timeOrigin);
 
     // In prerendering scenarios, where a page might be prefetched and pre-rendered before the user clicks the link,
     // the navigation starts earlier than when the user clicks it. Web Vitals should always be based on the
@@ -399,14 +473,33 @@ export function addPerformanceEntries(span: Span, options: AddPerformanceEntries
     // time where the user actively started the navigation, for example by clicking a link.
     // This is user action is called "activation" and the time between navigation and activation is stored in
     // the `activationStart` attribute of the "navigation" PerformanceEntry.
-    span.setAttribute('performance.activationStart', getActivationStart());
-
-    _setWebVitalAttributes(span);
+    span.setAttribute(
+      spanStreamingEnabled ? 'browser.performance.navigation.activation_start' : 'performance.activationStart',
+      getActivationStart(),
+    );
   }
 
   _lcpEntry = undefined;
   _clsEntry = undefined;
   _measurements = {};
+}
+
+/**
+ * React 19.2+ creates performance.measure entries for component renders.
+ * We can identify them by the `detail.devtools.track` property being set to 'Components ⚛'.
+ * see: https://react.dev/reference/dev-tools/react-performance-tracks
+ * see: https://github.com/facebook/react/blob/06fcc8f380c6a905c7bc18d94453f623cf8cbc81/packages/react-reconciler/src/ReactFiberPerformanceTrack.js#L454-L473
+ */
+function isReact19MeasureEntry(entry: PerformanceEntry | null): boolean | void {
+  if (entry?.entryType !== 'measure') {
+    return;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    return (entry as PerformanceMeasure).detail.devtools.track === 'Components ⚛';
+  } catch {
+    return;
+  }
 }
 
 /**
@@ -419,8 +512,21 @@ export function _addMeasureSpans(
   startTime: number,
   duration: number,
   timeOrigin: number,
-): number {
+  ignorePerformanceApiSpans: AddPerformanceEntriesOptions['ignorePerformanceApiSpans'],
+): void {
+  if (isReact19MeasureEntry(entry)) {
+    return;
+  }
+
+  if (
+    ['mark', 'measure'].includes(entry.entryType) &&
+    stringMatchesSomePattern(entry.name, ignorePerformanceApiSpans)
+  ) {
+    return;
+  }
+
   const navEntry = getNavigationEntry(false);
+
   const requestTime = msToSec(navEntry ? navEntry.requestStart : 0);
   // Because performance.measure accepts arbitrary timestamps it can produce
   // spans that happen before the browser even makes a request for the page.
@@ -444,17 +550,67 @@ export function _addMeasureSpans(
     attributes['sentry.browser.measure_start_time'] = measureStartTimestamp;
   }
 
-  startAndEndSpan(span, measureStartTimestamp, measureEndTimestamp, {
-    name: entry.name as string,
-    op: entry.entryType as string,
-    attributes,
-  });
+  _addDetailToSpanAttributes(attributes, entry as PerformanceMeasure);
 
-  return measureStartTimestamp;
+  // Measurements from third parties can be off, which would create invalid spans, dropping transactions in the process.
+  if (measureStartTimestamp <= measureEndTimestamp) {
+    startAndEndSpan(span, measureStartTimestamp, measureEndTimestamp, {
+      name: entry.name,
+      op: entry.entryType,
+      attributes,
+    });
+  }
 }
 
-/** Instrument navigation entries */
-function _addNavigationSpans(span: Span, entry: PerformanceNavigationTiming, timeOrigin: number): void {
+function _addDetailToSpanAttributes(attributes: SpanAttributes, performanceMeasure: PerformanceMeasure): void {
+  try {
+    // Accessing detail might throw in some browsers (e.g., Firefox) due to security restrictions
+    const detail = performanceMeasure.detail;
+
+    if (!detail) {
+      return;
+    }
+
+    // Process detail based on its type
+    if (typeof detail === 'object') {
+      // Handle object details
+      for (const [key, value] of Object.entries(detail)) {
+        if (value && isPrimitive(value)) {
+          attributes[`sentry.browser.measure.detail.${key}`] = value as SpanAttributeValue;
+        } else if (value !== undefined) {
+          try {
+            // This is user defined so we can't guarantee it's serializable
+            attributes[`sentry.browser.measure.detail.${key}`] = JSON.stringify(value);
+          } catch {
+            // Skip values that can't be stringified
+          }
+        }
+      }
+      return;
+    }
+
+    if (isPrimitive(detail)) {
+      // Handle primitive details
+      attributes['sentry.browser.measure.detail'] = detail as SpanAttributeValue;
+      return;
+    }
+
+    try {
+      attributes['sentry.browser.measure.detail'] = JSON.stringify(detail);
+    } catch {
+      // Skip if stringification fails
+    }
+  } catch {
+    // Silently ignore any errors when accessing detail
+    // This handles the Firefox "Permission denied to access object" error
+  }
+}
+
+/**
+ * Instrument navigation entries
+ * exported only for tests
+ */
+export function _addNavigationSpans(span: Span, entry: PerformanceNavigationTiming, timeOrigin: number): void {
   (['unloadEvent', 'redirect', 'domContentLoadedEvent', 'loadEvent', 'connect'] as const).forEach(event => {
     _addPerformanceNavigationTiming(span, entry, event, timeOrigin);
   });
@@ -476,7 +632,6 @@ type StartEventName =
   | 'loadEvent';
 
 type EndEventName =
-  | 'connectEnd'
   | 'domainLookupStart'
   | 'domainLookupEnd'
   | 'unloadEventEnd'
@@ -504,6 +659,7 @@ function _addPerformanceNavigationTiming(
     name: entry.name,
     attributes: {
       [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.browser.metrics',
+      ...(event === 'redirect' && entry.redirectCount != null ? { 'http.redirect_count': entry.redirectCount } : {}),
     },
   });
 }
@@ -520,9 +676,9 @@ function _getEndPropertyNameForNavigationTiming(event: StartEventName): EndEvent
 
 /** Create request and response related spans */
 function _addRequest(span: Span, entry: PerformanceNavigationTiming, timeOrigin: number): void {
-  const requestStartTimestamp = timeOrigin + msToSec(entry.requestStart as number);
-  const responseEndTimestamp = timeOrigin + msToSec(entry.responseEnd as number);
-  const responseStartTimestamp = timeOrigin + msToSec(entry.responseStart as number);
+  const requestStartTimestamp = timeOrigin + msToSec(entry.requestStart);
+  const responseEndTimestamp = timeOrigin + msToSec(entry.responseEnd);
+  const responseStartTimestamp = timeOrigin + msToSec(entry.responseStart);
   if (entry.responseEnd) {
     // It is possible that we are collecting these metrics when the page hasn't finished loading yet, for example when the HTML slowly streams in.
     // In this case, ie. when the document request hasn't finished yet, `entry.responseEnd` will be 0.
@@ -557,6 +713,7 @@ export function _addResourceSpans(
   startTime: number,
   duration: number,
   timeOrigin: number,
+  ignoredResourceSpanOps?: Array<string>,
 ): void {
   // we already instrument based on fetch and xhr, so we don't need to
   // duplicate spans here.
@@ -564,27 +721,16 @@ export function _addResourceSpans(
     return;
   }
 
-  const parsedUrl = parseUrl(resourceUrl);
+  const op = entry.initiatorType ? `resource.${entry.initiatorType}` : 'resource.other';
+  if (ignoredResourceSpanOps?.includes(op)) {
+    return;
+  }
 
   const attributes: SpanAttributes = {
     [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.resource.browser.metrics',
   };
-  setResourceEntrySizeData(attributes, entry, 'transferSize', 'http.response_transfer_size');
-  setResourceEntrySizeData(attributes, entry, 'encodedBodySize', 'http.response_content_length');
-  setResourceEntrySizeData(attributes, entry, 'decodedBodySize', 'http.decoded_response_content_length');
 
-  // `deliveryType` is experimental and does not exist everywhere
-  const deliveryType = (entry as { deliveryType?: 'cache' | 'navigational-prefetch' | '' }).deliveryType;
-  if (deliveryType != null) {
-    attributes['http.response_delivery_type'] = deliveryType;
-  }
-
-  // Types do not reflect this property yet
-  const renderBlockingStatus = (entry as { renderBlockingStatus?: 'render-blocking' | 'non-render-blocking' })
-    .renderBlockingStatus;
-  if (renderBlockingStatus) {
-    attributes['resource.render_blocking_status'] = renderBlockingStatus;
-  }
+  const parsedUrl = parseUrl(resourceUrl);
 
   if (parsedUrl.protocol) {
     attributes['url.scheme'] = parsedUrl.protocol.split(':').pop(); // the protocol returned by parseUrl includes a :, but OTEL spec does not, so we remove it.
@@ -596,20 +742,38 @@ export function _addResourceSpans(
 
   attributes['url.same_origin'] = resourceUrl.includes(WINDOW.location.origin);
 
+  _setResourceRequestAttributes(entry, attributes, [
+    // https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming/responseStatus
+    ['responseStatus', 'http.response.status_code'],
+
+    ['transferSize', 'http.response_transfer_size'],
+    ['encodedBodySize', 'http.response_content_length'],
+    ['decodedBodySize', 'http.decoded_response_content_length'],
+
+    // https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming/renderBlockingStatus
+    ['renderBlockingStatus', 'resource.render_blocking_status'],
+
+    // https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming/deliveryType
+    ['deliveryType', 'http.response_delivery_type'],
+  ]);
+
+  const attributesWithResourceTiming: SpanAttributes = { ...attributes, ...resourceTimingToSpanAttributes(entry) };
+
   const startTimestamp = timeOrigin + startTime;
   const endTimestamp = startTimestamp + duration;
 
   startAndEndSpan(span, startTimestamp, endTimestamp, {
     name: resourceUrl.replace(WINDOW.location.origin, ''),
-    op: entry.initiatorType ? `resource.${entry.initiatorType}` : 'resource.other',
-    attributes,
+    op,
+    attributes: attributesWithResourceTiming,
   });
 }
 
 /**
  * Capture the information of the user agent.
+ * TODO v11: Remove non-span-streaming attributes and measurements once we removed transactions
  */
-function _trackNavigator(span: Span): void {
+function _trackNavigator(span: Span, spanStreamingEnabled: boolean | undefined): void {
   const navigator = WINDOW.navigator as null | (Navigator & NavigatorNetworkInformation & NavigatorDeviceMemory);
   if (!navigator) {
     return;
@@ -619,30 +783,45 @@ function _trackNavigator(span: Span): void {
   const connection = navigator.connection;
   if (connection) {
     if (connection.effectiveType) {
-      span.setAttribute('effectiveConnectionType', connection.effectiveType);
+      span.setAttribute(
+        spanStreamingEnabled ? 'network.connection.effective_type' : 'effectiveConnectionType',
+        connection.effectiveType,
+      );
     }
 
     if (connection.type) {
-      span.setAttribute('connectionType', connection.type);
+      span.setAttribute(spanStreamingEnabled ? 'network.connection.type' : 'connectionType', connection.type);
     }
 
     if (isMeasurementValue(connection.rtt)) {
       _measurements['connection.rtt'] = { value: connection.rtt, unit: 'millisecond' };
+      if (spanStreamingEnabled) {
+        span.setAttribute('network.connection.rtt', connection.rtt);
+      }
     }
   }
 
   if (isMeasurementValue(navigator.deviceMemory)) {
-    span.setAttribute('deviceMemory', `${navigator.deviceMemory} GB`);
+    if (spanStreamingEnabled) {
+      span.setAttribute('device.memory.estimated_capacity', navigator.deviceMemory);
+    } else {
+      span.setAttribute('deviceMemory', `${navigator.deviceMemory} GB`);
+    }
   }
 
   if (isMeasurementValue(navigator.hardwareConcurrency)) {
-    span.setAttribute('hardwareConcurrency', String(navigator.hardwareConcurrency));
+    if (spanStreamingEnabled) {
+      span.setAttribute('device.processor_count', navigator.hardwareConcurrency);
+    } else {
+      span.setAttribute('hardwareConcurrency', String(navigator.hardwareConcurrency));
+    }
   }
 }
 
 /** Add LCP / CLS data to span to allow debugging */
-function _setWebVitalAttributes(span: Span): void {
-  if (_lcpEntry) {
+function _setWebVitalAttributes(span: Span, options: AddPerformanceEntriesOptions): void {
+  // Only add LCP attributes if LCP is being recorded on the pageload span
+  if (_lcpEntry && options.recordLcpOnPageloadSpan) {
     // Capture Properties of the LCP element that contributes to the LCP.
 
     if (_lcpEntry.element) {
@@ -673,24 +852,45 @@ function _setWebVitalAttributes(span: Span): void {
     span.setAttribute('lcp.size', _lcpEntry.size);
   }
 
-  // See: https://developer.mozilla.org/en-US/docs/Web/API/LayoutShift
-  if (_clsEntry && _clsEntry.sources) {
+  // Only add CLS attributes if CLS is being recorded on the pageload span
+  if (_clsEntry?.sources && options.recordClsOnPageloadSpan) {
     _clsEntry.sources.forEach((source, index) =>
       span.setAttribute(`cls.source.${index + 1}`, htmlTreeAsString(source.node)),
     );
   }
 }
 
-function setResourceEntrySizeData(
+type ExperimentalResourceTimingProperty =
+  | 'renderBlockingStatus'
+  | 'deliveryType'
+  // For some reason, TS during build, errors on `responseStatus` not being a property of
+  // PerformanceResourceTiming while it actually is. Hence, we're adding it here.
+  // Perhaps because response status is not yet available in Webkit/Safari.
+  // https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming/responseStatus
+  | 'responseStatus';
+
+/**
+ * Use this to set any attributes we can take directly form the PerformanceResourceTiming entry.
+ *
+ * This is just a mapping function for entry->attribute to keep bundle-size minimal.
+ * Experimental properties are also accepted (see {@link ExperimentalResourceTimingProperty}).
+ * Assumes that all entry properties might be undefined for browser-specific differences.
+ * Only accepts string and number values for now and also sets 0-values.
+ */
+export function _setResourceRequestAttributes(
+  entry: Partial<PerformanceResourceTiming> & Partial<Record<ExperimentalResourceTimingProperty, number | string>>,
   attributes: SpanAttributes,
-  entry: PerformanceResourceTiming,
-  key: keyof Pick<PerformanceResourceTiming, 'transferSize' | 'encodedBodySize' | 'decodedBodySize'>,
-  dataKey: 'http.response_transfer_size' | 'http.response_content_length' | 'http.decoded_response_content_length',
+  properties: [keyof PerformanceResourceTiming | ExperimentalResourceTimingProperty, string][],
 ): void {
-  const entryVal = entry[key];
-  if (entryVal != null && entryVal < MAX_INT_AS_BYTES) {
-    attributes[dataKey] = entryVal;
-  }
+  properties.forEach(([entryKey, attributeKey]) => {
+    const entryVal = entry[entryKey];
+    if (
+      entryVal != null &&
+      ((typeof entryVal === 'number' && entryVal < MAX_INT_AS_BYTES) || typeof entryVal === 'string')
+    ) {
+      attributes[attributeKey] = entryVal;
+    }
+  });
 }
 
 /**

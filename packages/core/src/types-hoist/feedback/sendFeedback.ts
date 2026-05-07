@@ -19,6 +19,7 @@ interface FeedbackContext extends Record<string, unknown> {
   replay_id?: string;
   url?: string;
   associated_event_id?: string;
+  source?: string;
 }
 
 /**
@@ -46,7 +47,16 @@ export interface SendFeedbackParams {
   tags?: { [key: string]: Primitive };
 }
 
+export type FeedbackErrorCode =
+  | 'ERROR_EMPTY_MESSAGE'
+  | 'ERROR_NO_CLIENT'
+  | 'ERROR_TIMEOUT'
+  | 'ERROR_FORBIDDEN'
+  | 'ERROR_GENERIC';
+
+export type FeedbackErrorMessages = Partial<Record<FeedbackErrorCode, string>>;
+
 export type SendFeedback = (
   params: SendFeedbackParams,
-  hint?: EventHint & { includeReplay?: boolean },
+  hint?: EventHint & { includeReplay?: boolean; errorMessages?: FeedbackErrorMessages },
 ) => Promise<string>;

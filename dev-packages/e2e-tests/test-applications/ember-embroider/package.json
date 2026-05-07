@@ -50,8 +50,8 @@
     "loader.js": "^4.7.0",
     "tracked-built-ins": "^3.3.0",
     "webpack": "^5.91.0",
-    "@playwright/test": "^1.44.1",
-    "@sentry/ember": "latest || *",
+    "@playwright/test": "~1.56.0",
+    "@sentry/ember": "file:../../packed/sentry-ember-packed.tgz",
     "@sentry-internal/test-utils": "link:../../../test-utils",
     "@tsconfig/ember": "^3.0.6",
     "@types/node": "^18.19.1",
@@ -68,8 +68,5 @@
   },
   "volta": {
     "extends": "../../package.json"
-  },
-  "sentryTest": {
-    "skip": true
   }
 }

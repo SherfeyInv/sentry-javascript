@@ -1,21 +1,17 @@
+import type { WebFetchHeaders } from './webfetchapi';
+
 /**
  * Request data included in an event as sent to Sentry.
  */
 export interface RequestEventData {
   url?: string;
   method?: string;
-  data?: any;
+  data?: unknown;
   query_string?: QueryParams;
-  cookies?: { [key: string]: string };
-  env?: { [key: string]: string };
+  cookies?: Record<string, string>;
+  env?: Record<string, string>;
   headers?: { [key: string]: string };
 }
-
-/**
- * Request data included in an event as sent to Sentry.
- * @deprecated: This type will be removed in v9. Use `RequestEventData` instead.
- */
-export type Request = RequestEventData;
 
 export type QueryParams = string | { [key: string]: string } | Array<[string, string]>;
 
@@ -30,3 +26,19 @@ export type SanitizedRequestData = {
   'http.fragment'?: string;
   'http.query'?: string;
 };
+
+export interface RequestHookInfo {
+  headers?: WebFetchHeaders;
+}
+
+export interface ResponseHookInfo {
+  /**
+   * Headers from the response.
+   */
+  headers?: WebFetchHeaders;
+
+  /**
+   * Error that may have occurred during the request.
+   */
+  error?: unknown;
+}

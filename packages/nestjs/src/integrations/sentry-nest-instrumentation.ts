@@ -1,16 +1,15 @@
-import { isWrapped } from '@opentelemetry/core';
 import type { InstrumentationConfig } from '@opentelemetry/instrumentation';
 import {
   InstrumentationBase,
   InstrumentationNodeModuleDefinition,
   InstrumentationNodeModuleFile,
+  isWrapped,
 } from '@opentelemetry/instrumentation';
 import type { Span } from '@sentry/core';
 import {
-  SDK_VERSION,
-  addNonEnumerableProperty,
   getActiveSpan,
   isThenable,
+  SDK_VERSION,
   startInactiveSpan,
   startSpan,
   startSpanManual,
@@ -19,7 +18,8 @@ import {
 import { getMiddlewareSpanOptions, getNextProxy, instrumentObservable, isPatched } from './helpers';
 import type { CallHandler, CatchTarget, InjectableTarget, MinimalNestJsExecutionContext, Observable } from './types';
 
-const supportedVersions = ['>=8.0.0 <11'];
+const supportedVersions = ['>=8.0.0 <12'];
+const COMPONENT = '@nestjs/common';
 
 /**
  * Custom instrumentation for nestjs.
@@ -29,11 +29,6 @@ const supportedVersions = ['>=8.0.0 <11'];
  * 2. @Catch decorator, which is applied on exception filters.
  */
 export class SentryNestInstrumentation extends InstrumentationBase {
-  public static readonly COMPONENT = '@nestjs/common';
-  public static readonly COMMON_ATTRIBUTES = {
-    component: SentryNestInstrumentation.COMPONENT,
-  };
-
   public constructor(config: InstrumentationConfig = {}) {
     super('sentry-nestjs', SDK_VERSION, config);
   }
@@ -42,7 +37,7 @@ export class SentryNestInstrumentation extends InstrumentationBase {
    * Initializes the instrumentation by defining the modules to be patched.
    */
   public init(): InstrumentationNodeModuleDefinition {
-    const moduleDef = new InstrumentationNodeModuleDefinition(SentryNestInstrumentation.COMPONENT, supportedVersions);
+    const moduleDef = new InstrumentationNodeModuleDefinition(COMPONENT, supportedVersions);
 
     moduleDef.files.push(
       this._getInjectableFileInstrumentation(supportedVersions),
@@ -94,7 +89,9 @@ export class SentryNestInstrumentation extends InstrumentationBase {
   /**
    * Creates a wrapper function for the @Injectable decorator.
    */
-  private _createWrapInjectable() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _createWrapInjectable(): (original: any) => (options?: unknown) => (target: InjectableTarget) => any {
+    const SeenNestjsContextSet = new WeakSet<MinimalNestJsExecutionContext>();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return function wrapInjectable(original: any) {
       return function wrappedInjectable(options?: unknown) {
@@ -143,7 +140,7 @@ export class SentryNestInstrumentation extends InstrumentationBase {
                   return originalCanActivate.apply(thisArgCanActivate, argsCanActivate);
                 }
 
-                return startSpan(getMiddlewareSpanOptions(target), () => {
+                return startSpan(getMiddlewareSpanOptions(target, undefined, 'guard'), () => {
                   return originalCanActivate.apply(thisArgCanActivate, argsCanActivate);
                 });
               },
@@ -165,7 +162,7 @@ export class SentryNestInstrumentation extends InstrumentationBase {
                   return originalTransform.apply(thisArgTransform, argsTransform);
                 }
 
-                return startSpan(getMiddlewareSpanOptions(target), () => {
+                return startSpan(getMiddlewareSpanOptions(target, undefined, 'pipe'), () => {
                   return originalTransform.apply(thisArgTransform, argsTransform);
                 });
               },
@@ -186,79 +183,91 @@ export class SentryNestInstrumentation extends InstrumentationBase {
                 const parentSpan = getActiveSpan();
                 let afterSpan: Span | undefined;
 
-                // Check that we can reasonably assume that the target is an interceptor.
-                if (!context || !next || typeof next.handle !== 'function') {
+                if (
+                  !context ||
+                  !next ||
+                  typeof next.handle !== 'function' || // Check that we can reasonably assume that the target is an interceptor.
+                  target.name === 'SentryTracingInterceptor' // We don't want to trace this internal interceptor
+                ) {
                   return originalIntercept.apply(thisArgIntercept, argsIntercept);
                 }
 
-                return startSpanManual(getMiddlewareSpanOptions(target), (beforeSpan: Span) => {
-                  // eslint-disable-next-line @typescript-eslint/unbound-method
-                  next.handle = new Proxy(next.handle, {
-                    apply: (originalHandle, thisArgHandle, argsHandle) => {
-                      beforeSpan.end();
+                return startSpanManual(
+                  getMiddlewareSpanOptions(target, undefined, 'interceptor'),
+                  (beforeSpan: Span) => {
+                    // eslint-disable-next-line @typescript-eslint/unbound-method
+                    next.handle = new Proxy(next.handle, {
+                      apply: (originalHandle, thisArgHandle, argsHandle) => {
+                        beforeSpan.end();
 
-                      if (parentSpan) {
-                        return withActiveSpan(parentSpan, () => {
+                        if (parentSpan) {
+                          return withActiveSpan(parentSpan, () => {
+                            const handleReturnObservable = Reflect.apply(originalHandle, thisArgHandle, argsHandle);
+
+                            if (!SeenNestjsContextSet.has(context)) {
+                              SeenNestjsContextSet.add(context);
+                              afterSpan = startInactiveSpan(
+                                getMiddlewareSpanOptions(target, 'Interceptors - After Route', 'interceptor'),
+                              );
+                            }
+
+                            return handleReturnObservable;
+                          });
+                        } else {
                           const handleReturnObservable = Reflect.apply(originalHandle, thisArgHandle, argsHandle);
 
-                          if (!context._sentryInterceptorInstrumented) {
-                            addNonEnumerableProperty(context, '_sentryInterceptorInstrumented', true);
+                          if (!SeenNestjsContextSet.has(context)) {
+                            SeenNestjsContextSet.add(context);
                             afterSpan = startInactiveSpan(
-                              getMiddlewareSpanOptions(target, 'Interceptors - After Route'),
+                              getMiddlewareSpanOptions(target, 'Interceptors - After Route', 'interceptor'),
                             );
                           }
 
                           return handleReturnObservable;
-                        });
-                      } else {
-                        const handleReturnObservable = Reflect.apply(originalHandle, thisArgHandle, argsHandle);
-
-                        if (!context._sentryInterceptorInstrumented) {
-                          addNonEnumerableProperty(context, '_sentryInterceptorInstrumented', true);
-                          afterSpan = startInactiveSpan(getMiddlewareSpanOptions(target, 'Interceptors - After Route'));
                         }
+                      },
+                    });
 
-                        return handleReturnObservable;
-                      }
-                    },
-                  });
+                    let returnedObservableInterceptMaybePromise: Observable<unknown> | Promise<Observable<unknown>>;
 
-                  let returnedObservableInterceptMaybePromise: Observable<unknown> | Promise<Observable<unknown>>;
+                    try {
+                      returnedObservableInterceptMaybePromise = originalIntercept.apply(
+                        thisArgIntercept,
+                        argsIntercept,
+                      );
+                    } catch (e) {
+                      beforeSpan.end();
+                      afterSpan?.end();
+                      throw e;
+                    }
 
-                  try {
-                    returnedObservableInterceptMaybePromise = originalIntercept.apply(thisArgIntercept, argsIntercept);
-                  } catch (e) {
-                    beforeSpan.end();
-                    afterSpan?.end();
-                    throw e;
-                  }
+                    if (!afterSpan) {
+                      return returnedObservableInterceptMaybePromise;
+                    }
 
-                  if (!afterSpan) {
+                    // handle async interceptor
+                    if (isThenable(returnedObservableInterceptMaybePromise)) {
+                      return returnedObservableInterceptMaybePromise.then(
+                        observable => {
+                          instrumentObservable(observable, afterSpan ?? parentSpan);
+                          return observable;
+                        },
+                        e => {
+                          beforeSpan.end();
+                          afterSpan?.end();
+                          throw e;
+                        },
+                      );
+                    }
+
+                    // handle sync interceptor
+                    if (typeof returnedObservableInterceptMaybePromise.subscribe === 'function') {
+                      instrumentObservable(returnedObservableInterceptMaybePromise, afterSpan);
+                    }
+
                     return returnedObservableInterceptMaybePromise;
-                  }
-
-                  // handle async interceptor
-                  if (isThenable(returnedObservableInterceptMaybePromise)) {
-                    return returnedObservableInterceptMaybePromise.then(
-                      observable => {
-                        instrumentObservable(observable, afterSpan ?? parentSpan);
-                        return observable;
-                      },
-                      e => {
-                        beforeSpan.end();
-                        afterSpan?.end();
-                        throw e;
-                      },
-                    );
-                  }
-
-                  // handle sync interceptor
-                  if (typeof returnedObservableInterceptMaybePromise.subscribe === 'function') {
-                    instrumentObservable(returnedObservableInterceptMaybePromise, afterSpan);
-                  }
-
-                  return returnedObservableInterceptMaybePromise;
-                });
+                  },
+                );
               },
             });
           }
@@ -292,7 +301,7 @@ export class SentryNestInstrumentation extends InstrumentationBase {
                   return originalCatch.apply(thisArgCatch, argsCatch);
                 }
 
-                return startSpan(getMiddlewareSpanOptions(target), () => {
+                return startSpan(getMiddlewareSpanOptions(target, undefined, 'exception_filter'), () => {
                   return originalCatch.apply(thisArgCatch, argsCatch);
                 });
               },

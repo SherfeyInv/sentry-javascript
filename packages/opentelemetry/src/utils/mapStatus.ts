@@ -4,9 +4,8 @@ import {
   SEMATTRS_HTTP_STATUS_CODE,
   SEMATTRS_RPC_GRPC_STATUS_CODE,
 } from '@opentelemetry/semantic-conventions';
-import { SPAN_STATUS_ERROR, SPAN_STATUS_OK, getSpanStatusFromHttpCode } from '@sentry/core';
 import type { SpanAttributes, SpanStatus } from '@sentry/core';
-
+import { getSpanStatusFromHttpCode, SPAN_STATUS_ERROR, SPAN_STATUS_OK } from '@sentry/core';
 import type { AbstractSpan } from '../types';
 import { spanHasAttributes, spanHasStatus } from './spanTypes';
 
@@ -57,7 +56,7 @@ export function mapStatus(span: AbstractSpan): SpanStatus {
       if (status.message && isStatusErrorMessageValid(status.message)) {
         return { code: SPAN_STATUS_ERROR, message: status.message };
       } else {
-        return { code: SPAN_STATUS_ERROR, message: 'unknown_error' };
+        return { code: SPAN_STATUS_ERROR, message: 'internal_error' };
       }
     }
   }
@@ -70,7 +69,7 @@ export function mapStatus(span: AbstractSpan): SpanStatus {
   }
 
   // We default to setting the spans status to ok.
-  if (status && status.code === SpanStatusCode.UNSET) {
+  if (status?.code === SpanStatusCode.UNSET) {
     return { code: SPAN_STATUS_OK };
   } else {
     return { code: SPAN_STATUS_ERROR, message: 'unknown_error' };

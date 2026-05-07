@@ -1,5 +1,3 @@
-import { BaseClient, createTransport, initAndBind } from '@sentry/core';
-import { resolvedSyncPromise } from '@sentry/core';
 import type {
   BrowserClientReplayOptions,
   ClientOptions,
@@ -7,10 +5,11 @@ import type {
   ParameterizedString,
   SeverityLevel,
 } from '@sentry/core';
+import { Client, createTransport, initAndBind, resolvedSyncPromise } from '@sentry/core';
 
 export interface TestClientOptions extends ClientOptions, BrowserClientReplayOptions {}
 
-export class TestClient extends BaseClient<TestClientOptions> {
+export class TestClient extends Client<TestClientOptions> {
   public constructor(options: TestClientOptions) {
     super(options);
   }

@@ -1,6 +1,11 @@
-import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SPAN_STATUS_ERROR, handleCallbackErrors } from '@sentry/core';
-import { SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, captureException, getActiveSpan, spanToJSON, startSpan } from '@sentry/node';
-import { flushIfServerless, isRedirect } from './utils';
+import {
+  flushIfServerless,
+  handleCallbackErrors,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SPAN_STATUS_ERROR,
+} from '@sentry/core';
+import { captureException, getActiveSpan, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, spanToJSON, startSpan } from '@sentry/node';
+import { isRedirect } from './utils';
 
 /**
  * Wraps a server action (functions that use the 'use server' directive)
@@ -37,13 +42,14 @@ export async function withServerActionInstrumentation<A extends (...args: unknow
         },
       },
       async span => {
+        // oxlint-disable-next-line typescript/await-thenable -- callback may be async at runtime
         const result = await handleCallbackErrors(callback, error => {
           if (!isRedirect(error)) {
             span.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
             captureException(error, {
               mechanism: {
                 handled: false,
-                type: 'solidstart',
+                type: 'auto.function.solidstart',
               },
             });
           }

@@ -8,6 +8,7 @@ import type {
   StackParser,
 } from '@sentry/core';
 import {
+  _INTERNAL_enhanceErrorWithSentryInfo,
   addExceptionMechanism,
   addExceptionTypeValue,
   extractExceptionKeysForMessage,
@@ -55,7 +56,7 @@ function eventFromPlainObject(
   isUnhandledRejection?: boolean,
 ): Event {
   const client = getClient();
-  const normalizeDepth = client && client.getOptions().normalizeDepth;
+  const normalizeDepth = client?.getOptions().normalizeDepth;
 
   // If we can, we extract an exception from the object properties
   const errorFromProp = getErrorPropertyFromObject(exception);
@@ -120,7 +121,7 @@ function parseStackFrames(
 
   try {
     return stackParser(stacktrace, skipLines, framesToPop);
-  } catch (e) {
+  } catch {
     // no-empty
   }
 
@@ -164,6 +165,7 @@ function getPopFirstTopFrames(ex: Error & { framesToPop?: unknown }): number {
 function isWebAssemblyException(exception: unknown): exception is WebAssembly.Exception {
   // Check for support
   // @ts-expect-error - WebAssembly.Exception is a valid class
+  // oxlint-disable-next-line typescript/prefer-optional-chain
   if (typeof WebAssembly !== 'undefined' && typeof WebAssembly.Exception !== 'undefined') {
     // @ts-expect-error - WebAssembly.Exception is a valid class
     return exception instanceof WebAssembly.Exception;
@@ -178,7 +180,7 @@ function isWebAssemblyException(exception: unknown): exception is WebAssembly.Ex
  * Usually, this is the `name` property on Error objects but WASM errors need to be treated differently.
  */
 export function extractType(ex: Error & { message: { error?: Error } }): string | undefined {
-  const name = ex && ex.name;
+  const name = ex?.name;
 
   // The name for WebAssembly.Exception Errors needs to be extracted differently.
   // Context: https://github.com/getsentry/sentry-javascript/issues/13787
@@ -197,22 +199,25 @@ export function extractType(ex: Error & { message: { error?: Error } }): string 
  * In this specific case we try to extract stacktrace.message.error.message
  */
 export function extractMessage(ex: Error & { message: { error?: Error } }): string {
-  const message = ex && ex.message;
+  const message = ex?.message;
+
+  if (isWebAssemblyException(ex)) {
+    // For Node 18, Emscripten sets array[type, message] to the "message" property on the WebAssembly.Exception object
+    if (Array.isArray(ex.message) && ex.message.length == 2) {
+      return ex.message[1];
+    }
+    return 'wasm exception';
+  }
 
   if (!message) {
     return 'No error message';
   }
 
   if (message.error && typeof message.error.message === 'string') {
-    return message.error.message;
+    return _INTERNAL_enhanceErrorWithSentryInfo(message.error);
   }
 
-  // Emscripten sets array[type, message] to the "message" property on the WebAssembly.Exception object
-  if (isWebAssemblyException(ex) && Array.isArray(ex.message) && ex.message.length == 2) {
-    return ex.message[1];
-  }
-
-  return message;
+  return _INTERNAL_enhanceErrorWithSentryInfo(ex);
 }
 
 /**
@@ -225,11 +230,11 @@ export function eventFromException(
   hint?: EventHint,
   attachStacktrace?: boolean,
 ): PromiseLike<Event> {
-  const syntheticException = (hint && hint.syntheticException) || undefined;
+  const syntheticException = hint?.syntheticException || undefined;
   const event = eventFromUnknownInput(stackParser, exception, syntheticException, attachStacktrace);
   addExceptionMechanism(event); // defaults to { type: 'generic', handled: true }
   event.level = 'error';
-  if (hint && hint.event_id) {
+  if (hint?.event_id) {
     event.event_id = hint.event_id;
   }
   return resolvedSyncPromise(event);
@@ -246,10 +251,10 @@ export function eventFromMessage(
   hint?: EventHint,
   attachStacktrace?: boolean,
 ): PromiseLike<Event> {
-  const syntheticException = (hint && hint.syntheticException) || undefined;
+  const syntheticException = hint?.syntheticException || undefined;
   const event = eventFromString(stackParser, message, syntheticException, attachStacktrace);
   event.level = level;
-  if (hint && hint.event_id) {
+  if (hint?.event_id) {
     event.event_id = hint.event_id;
   }
   return resolvedSyncPromise(event);
@@ -306,7 +311,7 @@ export function eventFromUnknownInput(
     // If it's a plain object or an instance of `Event` (the built-in JS kind, not this SDK's `Event` type), serialize
     // it manually. This will allow us to group events based on top-level keys which is much better than creating a new
     // group on any key/value change.
-    const objectException = exception as Record<string, unknown>;
+    const objectException = exception;
     event = eventFromPlainObject(stackParser, objectException, syntheticException, isUnhandledRejection);
     addExceptionMechanism(event, {
       synthetic: true,
@@ -389,21 +394,12 @@ function getObjectClassName(obj: unknown): string | undefined | void {
   try {
     const prototype: Prototype | null = Object.getPrototypeOf(obj);
     return prototype ? prototype.constructor.name : undefined;
-  } catch (e) {
+  } catch {
     // ignore errors here
   }
 }
 
 /** If a plain object has a property that is an `Error`, return this error. */
 function getErrorPropertyFromObject(obj: Record<string, unknown>): Error | undefined {
-  for (const prop in obj) {
-    if (Object.prototype.hasOwnProperty.call(obj, prop)) {
-      const value = obj[prop];
-      if (value instanceof Error) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
+  return Object.values(obj).find((v): v is Error => v instanceof Error);
 }

@@ -38,6 +38,13 @@ test('Sends an API route transaction', async ({ baseURL }) => {
       'http.status_code': 200,
       'http.status_text': 'OK',
       'http.route': '/test-transaction',
+      'http.request.header.accept': '*/*',
+      'http.request.header.accept_encoding': 'gzip, deflate',
+      'http.request.header.accept_language': '*',
+      'http.request.header.connection': 'keep-alive',
+      'http.request.header.host': expect.any(String),
+      'http.request.header.sec_fetch_mode': 'cors',
+      'http.request.header.user_agent': 'node',
     },
     op: 'http.server',
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -62,17 +69,30 @@ test('Sends an API route transaction', async ({ baseURL }) => {
 
   const spans = transactionEvent.spans || [];
 
+  // Manually started span
+  expect(spans).toContainEqual({
+    data: { 'sentry.origin': 'manual' },
+    description: 'test-span',
+    origin: 'manual',
+    parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
+    span_id: expect.stringMatching(/[a-f0-9]{16}/),
+    start_timestamp: expect.any(Number),
+    status: 'ok',
+    timestamp: expect.any(Number),
+    trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+  });
+
+  // auto instrumented spans
   expect(spans).toContainEqual({
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
-      'http.route': '/',
       'express.name': 'query',
       'express.type': 'middleware',
     },
     description: 'query',
     op: 'middleware.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -83,15 +103,14 @@ test('Sends an API route transaction', async ({ baseURL }) => {
 
   expect(spans).toContainEqual({
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
-      'http.route': '/',
       'express.name': 'expressInit',
       'express.type': 'middleware',
     },
     description: 'expressInit',
     op: 'middleware.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -102,7 +121,7 @@ test('Sends an API route transaction', async ({ baseURL }) => {
 
   expect(spans).toContainEqual({
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'request_handler.express',
       'http.route': '/test-transaction',
       'express.name': '/test-transaction',
@@ -110,7 +129,7 @@ test('Sends an API route transaction', async ({ baseURL }) => {
     },
     description: '/test-transaction',
     op: 'request_handler.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -142,15 +161,14 @@ test('Sends an API route transaction for an errored route', async ({ baseURL }) 
 
   expect(spans).toContainEqual({
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
-      'http.route': '/',
       'express.name': 'query',
       'express.type': 'middleware',
     },
     description: 'query',
     op: 'middleware.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -161,15 +179,14 @@ test('Sends an API route transaction for an errored route', async ({ baseURL }) 
 
   expect(spans).toContainEqual({
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'middleware.express',
-      'http.route': '/',
       'express.name': 'expressInit',
       'express.type': 'middleware',
     },
     description: 'expressInit',
     op: 'middleware.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
@@ -180,7 +197,7 @@ test('Sends an API route transaction for an errored route', async ({ baseURL }) 
 
   expect(spans).toContainEqual({
     data: {
-      'sentry.origin': 'auto.http.otel.express',
+      'sentry.origin': 'auto.http.express',
       'sentry.op': 'request_handler.express',
       'http.route': '/test-exception/:id',
       'express.name': '/test-exception/:id',
@@ -188,12 +205,72 @@ test('Sends an API route transaction for an errored route', async ({ baseURL }) 
     },
     description: '/test-exception/:id',
     op: 'request_handler.express',
-    origin: 'auto.http.otel.express',
+    origin: 'auto.http.express',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
-    status: 'ok',
+    status: 'internal_error',
     timestamp: expect.any(Number),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
   });
+});
+
+test('Outgoing fetch spans include response headers when headersToSpanAttributes is configured', async ({
+  baseURL,
+}) => {
+  const transactionEventPromise = waitForTransaction('node-express', transactionEvent => {
+    return (
+      transactionEvent?.contexts?.trace?.op === 'http.server' &&
+      transactionEvent?.transaction === 'GET /test-outgoing-fetch'
+    );
+  });
+
+  await fetch(`${baseURL}/test-outgoing-fetch`);
+
+  const transactionEvent = await transactionEventPromise;
+
+  const spans = transactionEvent.spans || [];
+
+  // Find the outgoing fetch span (http.client operation from undici instrumentation)
+  const fetchSpan = spans.find(
+    span => span.op === 'http.client' && span.description?.includes('localhost:3030/test-success'),
+  );
+
+  expect(fetchSpan).toBeDefined();
+  expect(fetchSpan?.data).toEqual(
+    expect.objectContaining({
+      'http.response.header.content-length': [expect.any(String)],
+    }),
+  );
+});
+
+test('Extracts HTTP request headers as span attributes', async ({ baseURL }) => {
+  const transactionEventPromise = waitForTransaction('node-express', transactionEvent => {
+    return (
+      transactionEvent?.contexts?.trace?.op === 'http.server' &&
+      transactionEvent?.transaction === 'GET /test-transaction'
+    );
+  });
+
+  await fetch(`${baseURL}/test-transaction`, {
+    headers: {
+      'User-Agent': 'Custom-Agent/1.0 (Test)',
+      'Content-Type': 'application/json',
+      'X-Custom-Header': 'test-value',
+      Accept: 'application/json, text/plain',
+      'X-Request-ID': 'req-123',
+    },
+  });
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent.contexts?.trace?.data).toEqual(
+    expect.objectContaining({
+      'http.request.header.user_agent': 'Custom-Agent/1.0 (Test)',
+      'http.request.header.content_type': 'application/json',
+      'http.request.header.x_custom_header': 'test-value',
+      'http.request.header.accept': 'application/json, text/plain',
+      'http.request.header.x_request_id': 'req-123',
+    }),
+  );
 });

@@ -2,14 +2,13 @@ export type {
   Breadcrumb,
   BreadcrumbHint,
   PolymorphicRequest,
-  // eslint-disable-next-line deprecation/deprecation
-  Request,
   RequestEventData,
   SdkInfo,
   Event,
   EventHint,
   ErrorEvent,
   Exception,
+  FeatureFlagsIntegration,
   Session,
   SeverityLevel,
   Span,
@@ -17,8 +16,8 @@ export type {
   Stacktrace,
   Thread,
   User,
+  Metric,
 } from '@sentry/core';
-export type { AddRequestDataToEventOptions } from '@sentry/core';
 
 export type { VercelEdgeOptions } from './types';
 
@@ -36,6 +35,7 @@ export {
   flush,
   getClient,
   isInitialized,
+  isEnabled,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
@@ -68,7 +68,13 @@ export {
   getSpanDescendants,
   continueTrace,
   functionToStringIntegration,
+  // eslint-disable-next-line deprecation/deprecation
   inboundFiltersIntegration,
+  instrumentOpenAiClient,
+  instrumentLangGraph,
+  instrumentGoogleGenAIClient,
+  instrumentAnthropicAiClient,
+  eventFiltersIntegration,
   linkedErrorsIntegration,
   requestDataIntegration,
   extraErrorDataIntegration,
@@ -76,7 +82,10 @@ export {
   rewriteFramesIntegration,
   captureConsoleIntegration,
   moduleMetadataIntegration,
+  supabaseIntegration,
+  instrumentSupabaseClient,
   zodErrorsIntegration,
+  consoleIntegration,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
@@ -85,12 +94,20 @@ export {
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
+  wrapMcpServerWithSentry,
+  consoleLoggingIntegration,
+  createConsolaReporter,
+  createLangChainCallbackHandler,
+  instrumentLangChainEmbeddings,
+  featureFlagsIntegration,
+  logger,
+  metrics,
+  withStreamedSpan,
+  spanStreamingIntegration,
 } from '@sentry/core';
 
 export { VercelEdgeClient } from './client';
-export {
-  getDefaultIntegrations,
-  init,
-} from './sdk';
+export { getDefaultIntegrations, init } from './sdk';
 
 export { winterCGFetchIntegration } from './integrations/wintercg-fetch';
+export { vercelAIIntegration } from './integrations/tracing/vercelai';

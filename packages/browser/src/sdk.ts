@@ -1,122 +1,49 @@
+import type { Client, Integration, Options } from '@sentry/core';
 import {
-  consoleSandbox,
+  conversationIdIntegration,
   dedupeIntegration,
   functionToStringIntegration,
-  getCurrentScope,
   getIntegrationsToSetup,
-  getReportDialogEndpoint,
   inboundFiltersIntegration,
   initAndBind,
-  lastEventId,
-  logger,
   stackParserFromStackParserOptions,
-  supportsFetch,
 } from '@sentry/core';
-import type { Client, DsnLike, Integration, Options } from '@sentry/core';
 import type { BrowserClientOptions, BrowserOptions } from './client';
 import { BrowserClient } from './client';
-import { DEBUG_BUILD } from './debug-build';
-import { WINDOW } from './helpers';
 import { breadcrumbsIntegration } from './integrations/breadcrumbs';
 import { browserApiErrorsIntegration } from './integrations/browserapierrors';
 import { browserSessionIntegration } from './integrations/browsersession';
+import { cultureContextIntegration } from './integrations/culturecontext';
 import { globalHandlersIntegration } from './integrations/globalhandlers';
 import { httpContextIntegration } from './integrations/httpcontext';
 import { linkedErrorsIntegration } from './integrations/linkederrors';
+import { spotlightBrowserIntegration } from './integrations/spotlight';
 import { defaultStackParser } from './stack-parsers';
 import { makeFetchTransport } from './transports/fetch';
+import { checkAndWarnIfIsEmbeddedBrowserExtension } from './utils/detectBrowserExtension';
 
 /** Get the default integrations for the browser SDK. */
-export function getDefaultIntegrations(options: Options): Integration[] {
+export function getDefaultIntegrations(_options: Options): Integration[] {
   /**
    * Note: Please make sure this stays in sync with Angular SDK, which re-exports
    * `getDefaultIntegrations` but with an adjusted set of integrations.
    */
-  const integrations = [
+  return [
+    // TODO(v11): Replace with `eventFiltersIntegration` once we remove the deprecated `inboundFiltersIntegration`
+    // eslint-disable-next-line deprecation/deprecation
     inboundFiltersIntegration(),
     functionToStringIntegration(),
+    conversationIdIntegration(),
     browserApiErrorsIntegration(),
     breadcrumbsIntegration(),
     globalHandlersIntegration(),
     linkedErrorsIntegration(),
     dedupeIntegration(),
     httpContextIntegration(),
+    cultureContextIntegration(),
+    browserSessionIntegration(),
   ];
-
-  // eslint-disable-next-line deprecation/deprecation
-  if (options.autoSessionTracking !== false) {
-    integrations.push(browserSessionIntegration());
-  }
-
-  return integrations;
 }
-
-function applyDefaultOptions(optionsArg: BrowserOptions = {}): BrowserOptions {
-  const defaultOptions: BrowserOptions = {
-    defaultIntegrations: getDefaultIntegrations(optionsArg),
-    release:
-      typeof __SENTRY_RELEASE__ === 'string' // This allows build tooling to find-and-replace __SENTRY_RELEASE__ to inject a release value
-        ? __SENTRY_RELEASE__
-        : WINDOW.SENTRY_RELEASE && WINDOW.SENTRY_RELEASE.id // This supports the variable that sentry-webpack-plugin injects
-          ? WINDOW.SENTRY_RELEASE.id
-          : undefined,
-    autoSessionTracking: true,
-    sendClientReports: true,
-  };
-
-  // TODO: Instead of dropping just `defaultIntegrations`, we should simply
-  // call `dropUndefinedKeys` on the entire `optionsArg`.
-  // However, for this to work we need to adjust the `hasTracingEnabled()` logic
-  // first as it differentiates between `undefined` and the key not being in the object.
-  if (optionsArg.defaultIntegrations == null) {
-    delete optionsArg.defaultIntegrations;
-  }
-
-  return { ...defaultOptions, ...optionsArg };
-}
-
-type ExtensionProperties = {
-  chrome?: Runtime;
-  browser?: Runtime;
-  nw?: unknown;
-};
-type Runtime = {
-  runtime?: {
-    id?: string;
-  };
-};
-
-function shouldShowBrowserExtensionError(): boolean {
-  const windowWithMaybeExtension =
-    typeof WINDOW.window !== 'undefined' && (WINDOW as typeof WINDOW & ExtensionProperties);
-  if (!windowWithMaybeExtension) {
-    // No need to show the error if we're not in a browser window environment (e.g. service workers)
-    return false;
-  }
-
-  const extensionKey = windowWithMaybeExtension.chrome ? 'chrome' : 'browser';
-  const extensionObject = windowWithMaybeExtension[extensionKey];
-
-  const runtimeId = extensionObject && extensionObject.runtime && extensionObject.runtime.id;
-  const href = (WINDOW.location && WINDOW.location.href) || '';
-
-  const extensionProtocols = ['chrome-extension:', 'moz-extension:', 'ms-browser-extension:', 'safari-web-extension:'];
-
-  // Running the SDK in a dedicated extension page and calling Sentry.init is fine; no risk of data leakage
-  const isDedicatedExtensionPage =
-    !!runtimeId && WINDOW === WINDOW.top && extensionProtocols.some(protocol => href.startsWith(`${protocol}//`));
-
-  // Running the SDK in NW.js, which appears like a browser extension but isn't, is also fine
-  // see: https://github.com/getsentry/sentry-javascript/issues/12668
-  const isNWjs = typeof windowWithMaybeExtension.nw !== 'undefined';
-
-  return !!runtimeId && !isDedicatedExtensionPage && !isNWjs;
-}
-
-/**
- * A magic string that build tooling can leverage in order to inject a release value into the SDK.
- */
-declare const __SENTRY_RELEASE__: string | undefined;
 
 /**
  * The Sentry Browser SDK Client.
@@ -164,131 +91,34 @@ declare const __SENTRY_RELEASE__: string | undefined;
  *
  * @see {@link BrowserOptions} for documentation on configuration options.
  */
-export function init(browserOptions: BrowserOptions = {}): Client | undefined {
-  const options = applyDefaultOptions(browserOptions);
+export function init(options: BrowserOptions = {}): Client | undefined {
+  const shouldDisableBecauseIsBrowserExtenstion =
+    !options.skipBrowserExtensionCheck && checkAndWarnIfIsEmbeddedBrowserExtension();
 
-  if (!options.skipBrowserExtensionCheck && shouldShowBrowserExtensionError()) {
-    consoleSandbox(() => {
-      // eslint-disable-next-line no-console
-      console.error(
-        '[Sentry] You cannot run Sentry this way in a browser extension, check: https://docs.sentry.io/platforms/javascript/best-practices/browser-extensions/',
-      );
-    });
-    return;
-  }
+  let defaultIntegrations =
+    options.defaultIntegrations == null ? getDefaultIntegrations(options) : options.defaultIntegrations;
 
-  if (DEBUG_BUILD) {
-    if (!supportsFetch()) {
-      logger.warn(
-        'No Fetch API detected. The Sentry SDK requires a Fetch API compatible environment to send events. Please add a Fetch API polyfill.',
-      );
+  /* rollup-include-development-only */
+  if (options.spotlight) {
+    if (!defaultIntegrations) {
+      defaultIntegrations = [];
     }
+    const args = typeof options.spotlight === 'string' ? { sidecarUrl: options.spotlight } : undefined;
+    defaultIntegrations.push(spotlightBrowserIntegration(args));
   }
+  /* rollup-include-development-only-end */
+
   const clientOptions: BrowserClientOptions = {
     ...options,
+    enabled: shouldDisableBecauseIsBrowserExtenstion ? false : options.enabled,
     stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
-    integrations: getIntegrationsToSetup(options),
+    integrations: getIntegrationsToSetup({
+      integrations: options.integrations,
+      defaultIntegrations,
+    }),
     transport: options.transport || makeFetchTransport,
   };
-
   return initAndBind(BrowserClient, clientOptions);
-}
-
-/**
- * All properties the report dialog supports
- */
-export interface ReportDialogOptions {
-  // TODO(v9): Change this to  [key: string]: unknkown;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any;
-  eventId?: string;
-  dsn?: DsnLike;
-  user?: {
-    email?: string;
-    name?: string;
-  };
-  lang?: string;
-  title?: string;
-  subtitle?: string;
-  subtitle2?: string;
-  labelName?: string;
-  labelEmail?: string;
-  labelComments?: string;
-  labelClose?: string;
-  labelSubmit?: string;
-  errorGeneric?: string;
-  errorFormEntry?: string;
-  successMessage?: string;
-  /** Callback after reportDialog showed up */
-  onLoad?(this: void): void;
-  /** Callback after reportDialog closed */
-  onClose?(this: void): void;
-}
-
-/**
- * Present the user with a report dialog.
- *
- * @param options Everything is optional, we try to fetch all info need from the global scope.
- */
-export function showReportDialog(options: ReportDialogOptions = {}): void {
-  // doesn't work without a document (React Native)
-  if (!WINDOW.document) {
-    DEBUG_BUILD && logger.error('Global document not defined in showReportDialog call');
-    return;
-  }
-
-  const scope = getCurrentScope();
-  const client = scope.getClient();
-  const dsn = client && client.getDsn();
-
-  if (!dsn) {
-    DEBUG_BUILD && logger.error('DSN not configured for showReportDialog call');
-    return;
-  }
-
-  if (scope) {
-    options.user = {
-      ...scope.getUser(),
-      ...options.user,
-    };
-  }
-
-  if (!options.eventId) {
-    const eventId = lastEventId();
-    if (eventId) {
-      options.eventId = eventId;
-    }
-  }
-
-  const script = WINDOW.document.createElement('script');
-  script.async = true;
-  script.crossOrigin = 'anonymous';
-  script.src = getReportDialogEndpoint(dsn, options);
-
-  if (options.onLoad) {
-    script.onload = options.onLoad;
-  }
-
-  const { onClose } = options;
-  if (onClose) {
-    const reportDialogClosedMessageHandler = (event: MessageEvent): void => {
-      if (event.data === '__sentry_reportdialog_closed__') {
-        try {
-          onClose();
-        } finally {
-          WINDOW.removeEventListener('message', reportDialogClosedMessageHandler);
-        }
-      }
-    };
-    WINDOW.addEventListener('message', reportDialogClosedMessageHandler);
-  }
-
-  const injectionPoint = WINDOW.document.head || WINDOW.document.body;
-  if (injectionPoint) {
-    injectionPoint.appendChild(script);
-  } else {
-    DEBUG_BUILD && logger.error('Not injecting report dialog. No injection point found in HTML');
-  }
 }
 
 /**

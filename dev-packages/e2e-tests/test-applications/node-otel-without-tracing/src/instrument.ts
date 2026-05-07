@@ -17,18 +17,19 @@ Sentry.init({
   // Tracing is completely disabled
   // Custom OTEL setup
   skipOpenTelemetrySetup: true,
+  enableLogs: true,
 });
 
 // Create and configure NodeTracerProvider
-const provider = new NodeTracerProvider({});
-
-provider.addSpanProcessor(
-  new BatchSpanProcessor(
-    new OTLPTraceExporter({
-      url: 'http://localhost:3032/',
-    }),
-  ),
-);
+const provider = new NodeTracerProvider({
+  spanProcessors: [
+    new BatchSpanProcessor(
+      new OTLPTraceExporter({
+        url: 'http://localhost:3032/',
+      }),
+    ),
+  ],
+});
 
 // Initialize the provider
 provider.register({
@@ -37,5 +38,12 @@ provider.register({
 });
 
 registerInstrumentations({
-  instrumentations: [new UndiciInstrumentation(), new HttpInstrumentation()],
+  instrumentations: [
+    new UndiciInstrumentation({
+      headersToSpanAttributes: {
+        responseHeaders: ['content-length'],
+      },
+    }),
+    new HttpInstrumentation(),
+  ],
 });

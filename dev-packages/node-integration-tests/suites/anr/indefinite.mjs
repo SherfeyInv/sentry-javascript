@@ -1,7 +1,6 @@
+import * as Sentry from '@sentry/node';
 import * as assert from 'assert';
 import * as crypto from 'crypto';
-
-import * as Sentry from '@sentry/node';
 
 setTimeout(() => {
   process.exit();
@@ -10,7 +9,6 @@ setTimeout(() => {
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   release: '1.0',
-  autoSessionTracking: false,
   integrations: [Sentry.anrIntegration({ captureStackTrace: true, anrThreshold: 100 })],
 });
 

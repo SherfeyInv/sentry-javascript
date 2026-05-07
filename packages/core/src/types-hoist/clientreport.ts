@@ -8,7 +8,11 @@ export type EventDropReason =
   | 'ratelimit_backoff'
   | 'sample_rate'
   | 'send_error'
-  | 'internal_sdk_error';
+  | 'internal_sdk_error'
+  | 'buffer_overflow'
+  | 'ignored'
+  | 'invalid'
+  | 'no_parent_span';
 
 export type Outcome = {
   reason: EventDropReason;

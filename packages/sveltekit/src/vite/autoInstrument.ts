@@ -1,10 +1,11 @@
+import { tsPlugin } from '@sveltejs/acorn-typescript';
+import * as acorn from 'acorn';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ExportNamedDeclaration } from '@babel/types';
-import { parseModule } from 'magicast';
 import type { Plugin } from 'vite';
+import { WRAPPED_MODULE_SUFFIX } from '../common/utils';
 
-export const WRAPPED_MODULE_SUFFIX = '?sentry-auto-wrap';
+const AcornParser = acorn.Parser.extend(tsPlugin());
 
 export type AutoInstrumentSelection = {
   /**
@@ -27,6 +28,7 @@ export type AutoInstrumentSelection = {
 
 type AutoInstrumentPluginOptions = AutoInstrumentSelection & {
   debug: boolean;
+  onlyInstrumentClient: boolean;
 };
 
 /**
@@ -41,12 +43,26 @@ type AutoInstrumentPluginOptions = AutoInstrumentSelection & {
 export function makeAutoInstrumentationPlugin(options: AutoInstrumentPluginOptions): Plugin {
   const { load: wrapLoadEnabled, serverLoad: wrapServerLoadEnabled, debug } = options;
 
+  let isServerBuild: boolean | undefined = undefined;
+
   return {
     name: 'sentry-auto-instrumentation',
     // This plugin needs to run as early as possible, before the SvelteKit plugin virtualizes all paths and ids
     enforce: 'pre',
 
+    configResolved: config => {
+      // The SvelteKit plugins trigger additional builds within the main (SSR) build.
+      // We just need a mechanism to upload source maps only once.
+      // `config.build.ssr` is `true` for that first build and `false` in the other ones.
+      // Hence we can use it as a switch to upload source maps only once in main build.
+      isServerBuild = !!config.build.ssr;
+    },
+
     async load(id) {
+      if (options.onlyInstrumentClient && isServerBuild) {
+        return null;
+      }
+
       const applyUniversalLoadWrapper =
         wrapLoadEnabled &&
         /^\+(page|layout)\.(js|ts|mjs|mts)$/.test(path.basename(id)) &&
@@ -56,6 +72,12 @@ export function makeAutoInstrumentationPlugin(options: AutoInstrumentPluginOptio
         // eslint-disable-next-line no-console
         debug && console.log(`Wrapping ${id} with Sentry load wrapper`);
         return getWrapperCode('wrapLoadWithSentry', `${id}${WRAPPED_MODULE_SUFFIX}`);
+      }
+
+      if (options.onlyInstrumentClient) {
+        // Now that we've checked universal files, we can early return and avoid further
+        // regexp checks below for server-only files, in case `onlyInstrumentClient` is `true`.
+        return null;
       }
 
       const applyServerLoadWrapper =
@@ -102,26 +124,32 @@ export async function canWrapLoad(id: string, debug: boolean): Promise<boolean> 
 
   const code = (await fs.promises.readFile(id, 'utf8')).toString();
 
-  const mod = parseModule(code);
-
-  const program = mod.$ast.type === 'Program' && mod.$ast;
-  if (!program) {
+  let program: acorn.Program;
+  try {
+    program = AcornParser.parse(code, {
+      sourceType: 'module',
+      ecmaVersion: 'latest',
+      locations: true,
+    });
+  } catch {
     // eslint-disable-next-line no-console
     debug && console.log(`Skipping wrapping ${id} because it doesn't contain valid JavaScript or TypeScript`);
     return false;
   }
 
   const hasLoadDeclaration = program.body
-    .filter((statement): statement is ExportNamedDeclaration => statement.type === 'ExportNamedDeclaration')
+    .filter((statement): statement is acorn.ExportNamedDeclaration => statement.type === 'ExportNamedDeclaration')
     .find(exportDecl => {
       // find `export const load = ...`
-      if (exportDecl.declaration && exportDecl.declaration.type === 'VariableDeclaration') {
+      if (exportDecl.declaration?.type === 'VariableDeclaration') {
         const variableDeclarations = exportDecl.declaration.declarations;
-        return variableDeclarations.find(decl => decl.id.type === 'Identifier' && decl.id.name === 'load');
+        return variableDeclarations.find(
+          decl => decl.type === 'VariableDeclarator' && decl.id.type === 'Identifier' && decl.id.name === 'load',
+        );
       }
 
       // find `export function load = ...`
-      if (exportDecl.declaration && exportDecl.declaration.type === 'FunctionDeclaration') {
+      if (exportDecl.declaration?.type === 'FunctionDeclaration') {
         const functionId = exportDecl.declaration.id;
         return functionId?.name === 'load';
       }
@@ -131,7 +159,8 @@ export async function canWrapLoad(id: string, debug: boolean): Promise<boolean> 
         return exportDecl.specifiers.find(specifier => {
           return (
             (specifier.exported.type === 'Identifier' && specifier.exported.name === 'load') ||
-            (specifier.exported.type === 'StringLiteral' && specifier.exported.value === 'load')
+            // ESTree/acorn represents `export { x as "load" }` with a Literal node (not Babel's StringLiteral)
+            (specifier.exported.type === 'Literal' && specifier.exported.value === 'load')
           );
         });
       }

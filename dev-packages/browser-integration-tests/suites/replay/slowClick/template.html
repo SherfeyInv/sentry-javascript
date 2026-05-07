@@ -6,10 +6,11 @@
   <body>
     <button id="mutationButton">Trigger mutation</button>
     <div id="mutationDiv">Trigger mutation</div>
+    <button id="next-question-button" data-testid="next-question-button">Next question</button>
     <button id="mutationButtonImmediately">Trigger mutation immediately</button>
     <button
       id="mutationButtonInline"
-      onclick="() =>  document.getElementById('out').innerHTML += 'mutationButtonInline clicked<br>'"
+      onclick="() => (document.getElementById('out').innerHTML += 'mutationButtonInline clicked<br>')"
     >
       Trigger mutation immediately
     </button>
@@ -76,7 +77,7 @@
         document.getElementById('out').innerHTML += 'mutationButton clicked<br>';
       });
       document.getElementById('windowOpenButton').addEventListener('click', () => {
-        window.open('https://example.com/', '_blank');
+        window.open('https://github.com/', '_blank');
       });
 
       // Do nothing on these elements

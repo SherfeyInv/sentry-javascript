@@ -1,5 +1,5 @@
-import { defineIntegration } from '@sentry/core';
-import { WINDOW } from '../helpers';
+import { defineIntegration, safeSetSpanJSONAttributes } from '@sentry/core';
+import { getHttpRequestData, WINDOW } from '../helpers';
 
 /**
  * Collects information about HTTP request headers and
@@ -14,19 +14,33 @@ export const httpContextIntegration = defineIntegration(() => {
         return;
       }
 
-      // grab as much info as exists and add it to the event
-      const url = (event.request && event.request.url) || (WINDOW.location && WINDOW.location.href);
-      const { referrer } = WINDOW.document || {};
-      const { userAgent } = WINDOW.navigator || {};
-
+      const reqData = getHttpRequestData();
       const headers = {
-        ...(event.request && event.request.headers),
-        ...(referrer && { Referer: referrer }),
-        ...(userAgent && { 'User-Agent': userAgent }),
+        ...reqData.headers,
+        ...event.request?.headers,
       };
-      const request = { ...event.request, ...(url && { url }), headers };
 
-      event.request = request;
+      event.request = {
+        ...reqData,
+        ...event.request,
+        headers,
+      };
+    },
+    processSegmentSpan(span) {
+      // if none of the information we want exists, don't bother
+      if (!WINDOW.navigator && !WINDOW.location && !WINDOW.document) {
+        return;
+      }
+
+      const reqData = getHttpRequestData();
+
+      safeSetSpanJSONAttributes(span, {
+        // Coerce empty string to undefined so the helper's nullish check drops it,
+        // rather than writing an empty `url.full` attribute onto the span.
+        'url.full': reqData.url || undefined,
+        'http.request.header.user_agent': reqData.headers['User-Agent'],
+        'http.request.header.referer': reqData.headers['Referer'],
+      });
     },
   };
 });

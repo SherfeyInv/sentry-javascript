@@ -1,6 +1,7 @@
-import type { AttributeValue, Attributes } from '@opentelemetry/api';
+import type { Attributes, AttributeValue } from '@opentelemetry/api';
 import { SpanKind } from '@opentelemetry/api';
 import {
+  ATTR_DB_SYSTEM_NAME,
   ATTR_HTTP_REQUEST_METHOD,
   ATTR_HTTP_ROUTE,
   ATTR_URL_FULL,
@@ -15,12 +16,12 @@ import {
 } from '@opentelemetry/semantic-conventions';
 import type { SpanAttributes, TransactionSource } from '@sentry/core';
 import {
+  getSanitizedUrlString,
+  parseUrl,
   SEMANTIC_ATTRIBUTE_SENTRY_CUSTOM_SPAN_NAME,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  getSanitizedUrlString,
-  parseUrl,
   stripUrlQueryAndFragment,
 } from '@sentry/core';
 import { SEMANTIC_ATTRIBUTE_SENTRY_GRAPHQL_OPERATION } from '../semanticAttributes';
@@ -47,7 +48,7 @@ export function inferSpanData(spanName: string, attributes: SpanAttributes, kind
   }
 
   // eslint-disable-next-line deprecation/deprecation
-  const dbSystem = attributes[SEMATTRS_DB_SYSTEM];
+  const dbSystem = attributes[ATTR_DB_SYSTEM_NAME] || attributes[SEMATTRS_DB_SYSTEM];
   const opIsCache =
     typeof attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP] === 'string' &&
     attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP].startsWith('cache.');
@@ -219,6 +220,7 @@ export function descriptionForHttpMethod(
 
 function getGraphqlOperationNamesFromAttribute(attr: AttributeValue): string {
   if (Array.isArray(attr)) {
+    // oxlint-disable-next-line typescript/require-array-sort-compare
     const sorted = attr.slice().sort();
 
     // Up to 5 items, we just add all of them
@@ -255,8 +257,8 @@ export function getSanitizedUrl(
 
   const parsedUrl = typeof httpUrl === 'string' ? parseUrl(httpUrl) : undefined;
   const url = parsedUrl ? getSanitizedUrlString(parsedUrl) : undefined;
-  const query = parsedUrl && parsedUrl.search ? parsedUrl.search : undefined;
-  const fragment = parsedUrl && parsedUrl.hash ? parsedUrl.hash : undefined;
+  const query = parsedUrl?.search || undefined;
+  const fragment = parsedUrl?.hash || undefined;
 
   if (typeof httpRoute === 'string') {
     return { urlPath: httpRoute, url, query, fragment, hasRoute: true };

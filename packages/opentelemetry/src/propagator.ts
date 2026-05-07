@@ -1,63 +1,32 @@
 import type { Baggage, Context, Span, SpanContext, TextMapGetter, TextMapSetter } from '@opentelemetry/api';
-import { INVALID_TRACEID, TraceFlags, context, propagation, trace } from '@opentelemetry/api';
-import { W3CBaggagePropagator, isTracingSuppressed } from '@opentelemetry/core';
+import { context, INVALID_TRACEID, propagation, trace, TraceFlags } from '@opentelemetry/api';
+import { isTracingSuppressed, W3CBaggagePropagator } from '@opentelemetry/core';
 import { ATTR_URL_FULL, SEMATTRS_HTTP_URL } from '@opentelemetry/semantic-conventions';
-import type { DynamicSamplingContext, Options, PropagationContext, continueTrace } from '@sentry/core';
+import type { Client, continueTrace, DynamicSamplingContext, Scope } from '@sentry/core';
 import {
-  LRUMap,
-  SENTRY_BAGGAGE_KEY_PREFIX,
   baggageHeaderToDynamicSamplingContext,
+  debug,
   generateSentryTraceHeader,
-  generateSpanId,
+  generateTraceparentHeader,
   getClient,
   getCurrentScope,
   getDynamicSamplingContextFromScope,
   getDynamicSamplingContextFromSpan,
   getIsolationScope,
-  getRootSpan,
-  logger,
+  LRUMap,
   parseBaggageHeader,
   propagationContextFromHeaders,
+  SENTRY_BAGGAGE_KEY_PREFIX,
+  shouldContinueTrace,
+  shouldPropagateTraceForUrl,
   spanToJSON,
-  stringMatchesSomePattern,
 } from '@sentry/core';
-import {
-  SENTRY_BAGGAGE_HEADER,
-  SENTRY_TRACE_HEADER,
-  SENTRY_TRACE_STATE_DSC,
-  SENTRY_TRACE_STATE_URL,
-} from './constants';
+import { SENTRY_BAGGAGE_HEADER, SENTRY_TRACE_HEADER, SENTRY_TRACE_STATE_URL } from './constants';
 import { DEBUG_BUILD } from './debug-build';
 import { getScopesFromContext, setScopesOnContext } from './utils/contextData';
 import { getSamplingDecision } from './utils/getSamplingDecision';
 import { makeTraceState } from './utils/makeTraceState';
 import { setIsSetup } from './utils/setupCheck';
-import { spanHasParentId } from './utils/spanTypes';
-
-/** Get the Sentry propagation context from a span context. */
-export function getPropagationContextFromSpan(span: Span): PropagationContext {
-  const spanContext = span.spanContext();
-  const { traceId, spanId, traceState } = spanContext;
-
-  // When we have a dsc trace state, it means this came from the incoming trace
-  // Then this takes presedence over the root span
-  const dscString = traceState ? traceState.get(SENTRY_TRACE_STATE_DSC) : undefined;
-  const traceStateDsc = dscString ? baggageHeaderToDynamicSamplingContext(dscString) : undefined;
-
-  const parentSpanId = spanHasParentId(span) ? span.parentSpanId : undefined;
-  const sampled = getSamplingDecision(spanContext);
-
-  // No trace state? --> Take DSC from root span
-  const dsc = traceStateDsc || getDynamicSamplingContextFromSpan(getRootSpan(span));
-
-  return {
-    traceId,
-    spanId,
-    sampled,
-    parentSpanId,
-    dsc,
-  };
-}
 
 /**
  * Injects and extracts `sentry-trace` and `baggage` headers from carriers.
@@ -79,24 +48,23 @@ export class SentryPropagator extends W3CBaggagePropagator {
    */
   public inject(context: Context, carrier: unknown, setter: TextMapSetter): void {
     if (isTracingSuppressed(context)) {
-      DEBUG_BUILD && logger.log('[Tracing] Not injecting trace data for url because tracing is suppressed.');
+      DEBUG_BUILD && debug.log('[Tracing] Not injecting trace data for url because tracing is suppressed.');
       return;
     }
 
     const activeSpan = trace.getSpan(context);
     const url = activeSpan && getCurrentURL(activeSpan);
 
-    const tracePropagationTargets = getClient()?.getOptions()?.tracePropagationTargets;
+    const { tracePropagationTargets, propagateTraceparent } = getClient()?.getOptions() || {};
     if (!shouldPropagateTraceForUrl(url, tracePropagationTargets, this._urlMatchesTargetsMap)) {
       DEBUG_BUILD &&
-        logger.log(
-          '[Tracing] Not injecting trace data for url because it does not match tracePropagationTargets:',
-          url,
-        );
+        debug.log('[Tracing] Not injecting trace data for url because it does not match tracePropagationTargets:', url);
       return;
     }
 
     const existingBaggageHeader = getExistingBaggage(carrier);
+    const existingSentryTraceHeader = getExistingSentryTrace(carrier);
+
     let baggage = propagation.getBaggage(context) || propagation.createBaggage({});
 
     const { dynamicSamplingContext, traceId, spanId, sampled } = getInjectionData(context);
@@ -106,12 +74,18 @@ export class SentryPropagator extends W3CBaggagePropagator {
 
       if (baggageEntries) {
         Object.entries(baggageEntries).forEach(([key, value]) => {
+          if (!existingSentryTraceHeader && key.startsWith(SENTRY_BAGGAGE_KEY_PREFIX)) {
+            // Edge case: A baggage header with sentry- keys was added previously but no
+            // sentry-trace header. In this case we remove the old sentry-keys and add new
+            // ones below.
+            return;
+          }
           baggage = baggage.setEntry(key, { value });
         });
       }
     }
 
-    if (dynamicSamplingContext) {
+    if (!existingSentryTraceHeader && dynamicSamplingContext) {
       baggage = Object.entries(dynamicSamplingContext).reduce<Baggage>((b, [dscKey, dscValue]) => {
         if (dscValue) {
           return b.setEntry(`${SENTRY_BAGGAGE_KEY_PREFIX}${dscKey}`, { value: dscValue });
@@ -121,8 +95,12 @@ export class SentryPropagator extends W3CBaggagePropagator {
     }
 
     // We also want to avoid setting the default OTEL trace ID, if we get that for whatever reason
-    if (traceId && traceId !== INVALID_TRACEID) {
+    if (!existingSentryTraceHeader && traceId && traceId !== INVALID_TRACEID) {
       setter.set(carrier, SENTRY_TRACE_HEADER, generateSentryTraceHeader(traceId, spanId, sampled));
+
+      if (propagateTraceparent) {
+        setter.set(carrier, 'traceparent', generateTraceparentHeader(traceId, spanId, sampled));
+      }
     }
 
     super.inject(propagation.setBaggage(context, baggage), carrier, setter);
@@ -150,44 +128,21 @@ export class SentryPropagator extends W3CBaggagePropagator {
    * @inheritDoc
    */
   public fields(): string[] {
-    return [SENTRY_TRACE_HEADER, SENTRY_BAGGAGE_HEADER];
+    return [SENTRY_TRACE_HEADER, SENTRY_BAGGAGE_HEADER, 'traceparent'];
   }
 }
 
-const NOT_PROPAGATED_MESSAGE =
-  '[Tracing] Not injecting trace data for url because it does not match tracePropagationTargets:';
-
-/**
- * Check if a given URL should be propagated to or not.
- * If no url is defined, or no trace propagation targets are defined, this will always return `true`.
- * You can also optionally provide a decision map, to cache decisions and avoid repeated regex lookups.
- */
-export function shouldPropagateTraceForUrl(
-  url: string | undefined,
-  tracePropagationTargets: Options['tracePropagationTargets'],
-  decisionMap?: LRUMap<string, boolean>,
-): boolean {
-  if (typeof url !== 'string' || !tracePropagationTargets) {
-    return true;
-  }
-
-  const cachedDecision = decisionMap?.get(url);
-  if (cachedDecision !== undefined) {
-    DEBUG_BUILD && !cachedDecision && logger.log(NOT_PROPAGATED_MESSAGE, url);
-    return cachedDecision;
-  }
-
-  const decision = stringMatchesSomePattern(url, tracePropagationTargets);
-  decisionMap?.set(url, decision);
-
-  DEBUG_BUILD && !decision && logger.log(NOT_PROPAGATED_MESSAGE, url);
-  return decision;
-}
+// Re-exported from @sentry/core for backwards compatibility
+export { shouldPropagateTraceForUrl } from '@sentry/core';
 
 /**
  * Get propagation injection data for the given context.
+ * The additional options can be passed to override the scope and client that is otherwise derived from the context.
  */
-export function getInjectionData(context: Context): {
+export function getInjectionData(
+  context: Context,
+  options: { scope?: Scope; client?: Client } = {},
+): {
   dynamicSamplingContext: Partial<DynamicSamplingContext> | undefined;
   traceId: string | undefined;
   spanId: string | undefined;
@@ -197,17 +152,15 @@ export function getInjectionData(context: Context): {
 
   // If we have a remote span, the spanId should be considered as the parentSpanId, not spanId itself
   // Instead, we use a virtual (generated) spanId for propagation
-  if (span && span.spanContext().isRemote) {
+  if (span?.spanContext().isRemote) {
     const spanContext = span.spanContext();
     const dynamicSamplingContext = getDynamicSamplingContextFromSpan(span);
 
     return {
       dynamicSamplingContext,
       traceId: spanContext.traceId,
-      // Because this is a remote span, we do not want to propagate this directly
-      // As otherwise things may be attached "directly" to an unrelated span
-      spanId: generateSpanId(),
-      sampled: getSamplingDecision(spanContext),
+      spanId: undefined,
+      sampled: getSamplingDecision(spanContext), // TODO: Do we need to change something here?
     };
   }
 
@@ -220,23 +173,21 @@ export function getInjectionData(context: Context): {
       dynamicSamplingContext,
       traceId: spanContext.traceId,
       spanId: spanContext.spanId,
-      sampled: getSamplingDecision(spanContext),
+      sampled: getSamplingDecision(spanContext), // TODO: Do we need to change something here?
     };
   }
 
   // Else we try to use the propagation context from the scope
   // The only scenario where this should happen is when we neither have a span, nor an incoming trace
-  const scope = getScopesFromContext(context)?.scope || getCurrentScope();
-  const client = getClient();
+  const scope = options.scope || getScopesFromContext(context)?.scope || getCurrentScope();
+  const client = options.client || getClient();
 
   const propagationContext = scope.getPropagationContext();
   const dynamicSamplingContext = client ? getDynamicSamplingContextFromScope(client, scope) : undefined;
   return {
     dynamicSamplingContext,
     traceId: propagationContext.traceId,
-    // TODO(v9): Use generateSpanId() instead
-    // eslint-disable-next-line deprecation/deprecation
-    spanId: propagationContext.spanId,
+    spanId: propagationContext.propagationSpanId,
     sampled: propagationContext.sampled,
   };
 }
@@ -249,9 +200,12 @@ function getContextWithRemoteActiveSpan(
 
   const { traceId, parentSpanId, sampled, dsc } = propagationContext;
 
+  const client = getClient();
+  const incomingDsc = baggageHeaderToDynamicSamplingContext(baggage);
+
   // We only want to set the virtual span if we are continuing a concrete trace
   // Otherwise, we ignore the incoming trace here, e.g. if we have no trace headers
-  if (!parentSpanId) {
+  if (!parentSpanId || (client && !shouldContinueTrace(client, incomingDsc?.org_id))) {
     return ctx;
   }
 
@@ -297,6 +251,14 @@ function getExistingBaggage(carrier: unknown): string | undefined {
   try {
     const baggage = (carrier as Record<string, string | string[]>)[SENTRY_BAGGAGE_HEADER];
     return Array.isArray(baggage) ? baggage.join(',') : baggage;
+  } catch {
+    return undefined;
+  }
+}
+
+function getExistingSentryTrace(carrier: unknown): string | string[] | undefined {
+  try {
+    return (carrier as Record<string, string | string[]>)[SENTRY_TRACE_HEADER];
   } catch {
     return undefined;
   }

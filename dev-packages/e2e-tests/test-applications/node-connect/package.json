@@ -11,16 +11,15 @@
     "test:assert": "pnpm test"
   },
   "dependencies": {
-    "@sentry/node": "latest || *",
-    "@sentry/core": "latest || *",
-    "@sentry/opentelemetry": "latest || *",
+    "@sentry/node": "file:../../packed/sentry-node-packed.tgz",
     "@types/node": "^18.19.1",
+    "@types/connect": "3.4.38",
     "connect": "3.7.0",
     "typescript": "~5.0.0",
     "ts-node": "10.9.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.44.1",
+    "@playwright/test": "~1.56.0",
     "@sentry-internal/test-utils": "link:../../../test-utils"
   },
   "volta": {

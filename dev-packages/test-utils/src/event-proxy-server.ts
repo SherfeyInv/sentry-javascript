@@ -1,4 +1,15 @@
 /* eslint-disable max-lines */
+import type {
+  Envelope,
+  EnvelopeItem,
+  Event,
+  SerializedMetric,
+  SerializedMetricContainer,
+  SerializedSession,
+  SerializedStreamedSpan,
+  StreamedSpanEnvelope,
+} from '@sentry/core';
+import { parseEnvelope } from '@sentry/core';
 import * as fs from 'fs';
 import * as http from 'http';
 import type { AddressInfo } from 'net';
@@ -6,8 +17,6 @@ import * as os from 'os';
 import * as path from 'path';
 import * as util from 'util';
 import * as zlib from 'zlib';
-import { parseEnvelope } from '@sentry/core';
-import type { Envelope, EnvelopeItem, Event, SerializedSession } from '@sentry/core';
 
 const readFile = util.promisify(fs.readFile);
 const writeFile = util.promisify(fs.writeFile);
@@ -24,6 +33,7 @@ interface EventProxyServerOptions {
 interface SentryRequestCallbackData {
   envelope: Envelope;
   rawProxyRequestBody: string;
+  rawProxyRequestHeaders: Record<string, string | string[] | undefined>;
   rawSentryResponseBody: string;
   sentryResponseStatusCode?: number;
 }
@@ -182,6 +192,7 @@ export async function startEventProxyServer(options: EventProxyServerOptions): P
     const data: SentryRequestCallbackData = {
       envelope: parseEnvelope(proxyRequestBody),
       rawProxyRequestBody: proxyRequestBody,
+      rawProxyRequestHeaders: proxyRequest.headers,
       rawSentryResponseBody: '',
       sentryResponseStatusCode: 200,
     };
@@ -387,6 +398,226 @@ export function waitForTransaction(
       timestamp,
     ).catch(reject);
   });
+}
+
+/**
+ * Wait for metric items to be sent.
+ */
+export function waitForMetric(
+  proxyServerName: string,
+  callback: (metricEvent: SerializedMetric) => Promise<boolean> | boolean,
+): Promise<SerializedMetric> {
+  const timestamp = getNanosecondTimestamp();
+  return new Promise((resolve, reject) => {
+    waitForEnvelopeItem(
+      proxyServerName,
+      async envelopeItem => {
+        const [envelopeItemHeader, envelopeItemBody] = envelopeItem;
+        const metricContainer = envelopeItemBody as SerializedMetricContainer;
+        if (envelopeItemHeader.type === 'trace_metric') {
+          for (const metric of metricContainer.items) {
+            if (await callback(metric)) {
+              resolve(metric);
+              return true;
+            }
+          }
+        }
+        return false;
+      },
+      timestamp,
+    ).catch(reject);
+  });
+}
+
+/**
+ * Check if an envelope item is a Span V2 container item.
+ */
+function isStreamedSpanEnvelopeItem(
+  envelopeItem: EnvelopeItem,
+): envelopeItem is [
+  { type: 'span'; content_type: 'application/vnd.sentry.items.span.v2+json'; item_count: number },
+  { items: SerializedStreamedSpan[] },
+] {
+  const [header] = envelopeItem;
+  return (
+    header.type === 'span' &&
+    'content_type' in header &&
+    header.content_type === 'application/vnd.sentry.items.span.v2+json'
+  );
+}
+
+/**
+ * Wait for a Span V2 envelope to be sent.
+ * Returns the first Span V2 envelope that is sent that matches the callback.
+ * If no callback is provided, returns the first Span V2 envelope that is sent.
+ *
+ * @example
+ * ```ts
+ * const envelope = await waitForSpanV2Envelope(PROXY_SERVER_NAME);
+ * const spans = envelope[1][0][1].items;
+ * expect(spans.length).toBeGreaterThan(0);
+ * ```
+ *
+ * @example
+ * ```ts
+ * // With a filter callback
+ * const envelope = await waitForSpanV2Envelope(PROXY_SERVER_NAME, envelope => {
+ *   return envelope[1][0][1].items.length > 5;
+ * });
+ * ```
+ */
+export function waitForStreamedSpanEnvelope(
+  proxyServerName: string,
+  callback?: (spanEnvelope: StreamedSpanEnvelope) => Promise<boolean> | boolean,
+): Promise<StreamedSpanEnvelope> {
+  const timestamp = getNanosecondTimestamp();
+  return new Promise((resolve, reject) => {
+    waitForRequest(
+      proxyServerName,
+      async eventData => {
+        const envelope = eventData.envelope;
+        const envelopeItems = envelope[1];
+
+        // Check if this is a Span V2 envelope by looking for a Span V2 item
+        const hasSpanV2Item = envelopeItems.some(item => isStreamedSpanEnvelopeItem(item));
+        if (!hasSpanV2Item) {
+          return false;
+        }
+
+        const spanV2Envelope = envelope as StreamedSpanEnvelope;
+
+        if (callback) {
+          return callback(spanV2Envelope);
+        }
+
+        return true;
+      },
+      timestamp,
+    )
+      .then(eventData => resolve(eventData.envelope as StreamedSpanEnvelope))
+      .catch(reject);
+  });
+}
+
+/**
+ * Wait for a single Span V2 to be sent that matches the callback.
+ * Returns the first Span V2 that is sent that matches the callback.
+ * If no callback is provided, returns the first Span V2 that is sent.
+ *
+ * @example
+ * ```ts
+ * const span = await waitForSpanV2(PROXY_SERVER_NAME, span => {
+ *   return span.name === 'GET /api/users';
+ * });
+ * expect(span.status).toBe('ok');
+ * ```
+ *
+ * @example
+ * ```ts
+ * // Using the getSpanV2Op helper
+ * const span = await waitForSpanV2(PROXY_SERVER_NAME, span => {
+ *   return getSpanV2Op(span) === 'http.client';
+ * });
+ * ```
+ */
+export function waitForStreamedSpan(
+  proxyServerName: string,
+  callback: (span: SerializedStreamedSpan) => Promise<boolean> | boolean,
+): Promise<SerializedStreamedSpan> {
+  const timestamp = getNanosecondTimestamp();
+  return new Promise((resolve, reject) => {
+    waitForRequest(
+      proxyServerName,
+      async eventData => {
+        const envelope = eventData.envelope;
+        const envelopeItems = envelope[1];
+
+        for (const envelopeItem of envelopeItems) {
+          if (!isStreamedSpanEnvelopeItem(envelopeItem)) {
+            continue;
+          }
+
+          const spans = envelopeItem[1].items;
+
+          for (const span of spans) {
+            if (await callback(span)) {
+              resolve(span);
+              return true;
+            }
+          }
+        }
+        return false;
+      },
+      timestamp,
+    ).catch(reject);
+  });
+}
+
+/**
+ * Wait for Span V2 spans to be sent. Returns all spans from the envelope for which the callback returns true.
+ * If no callback is provided, returns all spans from the first Span V2 envelope.
+ *
+ * @example
+ * ```ts
+ * // Get all spans from the first envelope
+ * const spans = await waitForSpansV2(PROXY_SERVER_NAME);
+ * expect(spans.length).toBeGreaterThan(0);
+ * ```
+ *
+ * @example
+ * ```ts
+ * // Filter for specific spans (same callback style as waitForSpanV2)
+ * const httpSpans = await waitForSpansV2(PROXY_SERVER_NAME, spans => {
+ *   return spans.some(span => getSpanV2Op(span) === 'http.client');
+ * });
+ * expect(httpSpans.length).toBe(2);
+ * ```
+ */
+export function waitForStreamedSpans(
+  proxyServerName: string,
+  callback?: (spans: SerializedStreamedSpan[]) => Promise<boolean> | boolean,
+): Promise<SerializedStreamedSpan[]> {
+  const timestamp = getNanosecondTimestamp();
+  return new Promise((resolve, reject) => {
+    waitForRequest(
+      proxyServerName,
+      async eventData => {
+        const envelope = eventData.envelope;
+        const envelopeItems = envelope[1];
+
+        for (const envelopeItem of envelopeItems) {
+          if (isStreamedSpanEnvelopeItem(envelopeItem)) {
+            const spans = envelopeItem[1].items;
+            if (callback) {
+              if (await callback(spans)) {
+                resolve(spans);
+                return true;
+              }
+            } else {
+              resolve(spans);
+              return true;
+            }
+          }
+        }
+        return false;
+      },
+      timestamp,
+    ).catch(reject);
+  });
+}
+
+/**
+ * Helper to get the span operation from a Span V2 JSON object.
+ *
+ * @example
+ * ```ts
+ * const span = await waitForSpanV2(PROXY_SERVER_NAME, span => {
+ *   return getSpanV2Op(span) === 'http.client';
+ * });
+ * ```
+ */
+export function getSpanOp(span: SerializedStreamedSpan): string | undefined {
+  return span.attributes?.['sentry.op']?.type === 'string' ? span.attributes['sentry.op'].value : undefined;
 }
 
 const TEMP_FILE_PREFIX = 'event-proxy-server-';

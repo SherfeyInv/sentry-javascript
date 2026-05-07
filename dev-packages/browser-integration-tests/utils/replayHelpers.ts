@@ -1,6 +1,6 @@
 import type { Page, Request, Response } from '@playwright/test';
-/* eslint-disable max-lines */
-import type { ReplayCanvasIntegrationOptions } from '@sentry-internal/replay-canvas';
+import type { ReplayEventWithTime } from '@sentry/browser';
+import type { Breadcrumb, Event, ReplayEvent, ReplayRecordingMode } from '@sentry/core';
 import type {
   InternalEventContext,
   RecordingEvent,
@@ -8,12 +8,11 @@ import type {
   ReplayPluginOptions,
   Session,
 } from '@sentry-internal/replay/build/npm/types/types';
+/* eslint-disable max-lines */
+import type { ReplayCanvasIntegrationOptions } from '@sentry-internal/replay-canvas';
 import type { fullSnapshotEvent, incrementalSnapshotEvent } from '@sentry-internal/rrweb';
 import { EventType } from '@sentry-internal/rrweb';
-import type { ReplayEventWithTime } from '@sentry/browser';
-import type { Breadcrumb, Event, ReplayEvent, ReplayRecordingMode } from '@sentry/core';
-import pako from 'pako';
-
+import { decompressSync, strFromU8 } from 'fflate';
 import { envelopeRequestParser } from './helpers';
 
 type CustomRecordingEvent = { tag: string; payload: Record<string, unknown> };
@@ -116,7 +115,6 @@ export function collectReplayRequests(
   const replayEvents: ReplayEvent[] = [];
   const replayRecordingSnapshots: RecordingSnapshot[] = [];
 
-  // eslint-disable-next-line @typescript-eslint/no-floating-promises
   const promise = page.waitForResponse(res => {
     const req = res.request();
 
@@ -366,7 +364,7 @@ export function replayEnvelopeIsCompressed(resOrReq: Request | Response): boolea
   const lines: boolean[] = envelopeString.split('\n').map(line => {
     try {
       JSON.parse(line);
-    } catch (error) {
+    } catch {
       // If we fail to parse a line, we _might_ have found a compressed payload,
       // so let's check if this is actually the case.
       // This is quite hacky but we can't go through `line` because the prior operations
@@ -396,7 +394,7 @@ export const replayEnvelopeParser = (request: Request | null): unknown[] => {
   const lines = envelopeString.split('\n').map(line => {
     try {
       return JSON.parse(line);
-    } catch (error) {
+    } catch {
       // If we fail to parse a line, we _might_ have found a compressed payload,
       // so let's check if this is actually the case.
       // This is quite hacky but we can't go through `line` because the prior operations
@@ -406,9 +404,9 @@ export const replayEnvelopeParser = (request: Request | null): unknown[] => {
         if (envelopeBytes[i] === 0x78 && envelopeBytes[i + 1] === 0x9c) {
           try {
             // We found a zlib-compressed payload - let's decompress it
-            const payload = envelopeBytes.slice(i);
+            const payload = (envelopeBytes as Buffer).subarray(i);
             // now we return the decompressed payload as JSON
-            const decompressedPayload = pako.inflate(payload as unknown as Uint8Array, { to: 'string' });
+            const decompressedPayload = decompress(payload);
             return JSON.parse(decompressedPayload);
           } catch {
             // Let's log that something went wrong
@@ -432,7 +430,7 @@ export const replayEnvelopeParser = (request: Request | null): unknown[] => {
  * @returns `true` if we should skip the replay test
  */
 export function shouldSkipReplayTest(): boolean {
-  const bundle = process.env.PW_BUNDLE as string | undefined;
+  const bundle = process.env.PW_BUNDLE;
   return bundle != null && !bundle.includes('replay') && !bundle.includes('esm') && !bundle.includes('cjs');
 }
 
@@ -448,9 +446,10 @@ export function normalize(
 ): string {
   const rawString = JSON.stringify(obj, null, 2);
   let normalizedString = rawString
-    .replace(/"file:\/\/.+(\/.*\.html)"/gm, '"$1"')
-    .replace(/"timeOffset":\s*-?\d+/gm, '"timeOffset": [timeOffset]')
-    .replace(/"timestamp":\s*0/gm, '"timestamp": [timestamp]');
+    // eslint-disable-next-line regexp/no-super-linear-backtracking
+    .replace(/"file:\/\/.+(\/.*\.html)"/g, '"$1"')
+    .replace(/"timeOffset":\s*-?\d+/g, '"timeOffset": [timeOffset]')
+    .replace(/"timestamp":\s*0/g, '"timestamp": [timestamp]');
 
   if (normalizeNumberAttributes?.length) {
     // We look for: "attr": "123px", "123", "123%", "123em", "123rem"
@@ -487,4 +486,13 @@ function normalizeNumberAttribute(num: number): string {
 function getRequest(resOrReq: Request | Response): Request {
   // @ts-expect-error we check this
   return typeof resOrReq.request === 'function' ? (resOrReq as Response).request() : (resOrReq as Request);
+}
+
+/** Decompress a compressed data payload. */
+function decompress(data: Uint8Array): string {
+  if (!(data instanceof Uint8Array)) {
+    throw new Error(`Data passed to decompress is not a Uint8Array: ${data}`);
+  }
+  const decompressed = decompressSync(data);
+  return strFromU8(decompressed);
 }

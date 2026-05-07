@@ -7,8 +7,24 @@ const SENTRY_USER_CONFIG = ['./sentry.config.js', './sentry.config.ts'];
 exports.onCreateWebpackConfig = ({ getConfig, actions }, options) => {
   const enableClientWebpackPlugin = options.enableClientWebpackPlugin !== false;
   if (process.env.NODE_ENV === 'production' && enableClientWebpackPlugin) {
-    const deleteSourcemapsAfterUpload = options.deleteSourcemapsAfterUpload === true;
+    const prevSourceMapSetting = getConfig() && 'devtool' in getConfig() ? getConfig().devtool : undefined;
+    const shouldAutomaticallyEnableSourceMaps =
+      prevSourceMapSetting !== 'source-map' && prevSourceMapSetting !== 'hidden-source-map';
+
+    if (shouldAutomaticallyEnableSourceMaps) {
+      // eslint-disable-next-line no-console
+      console.log(
+        '[Sentry] Automatically enabling source map generation by setting `devtool: "hidden-source-map"`. Those source maps will be deleted after they were uploaded to Sentry',
+      );
+    }
+
+    // Delete source maps per default or when this is explicitly set to `true` (`deleteSourceMapsAfterUpload: true` can override the default behavior)
+    const deleteSourcemapsAfterUpload =
+      options.deleteSourcemapsAfterUpload ||
+      (options.deleteSourcemapsAfterUpload !== false && shouldAutomaticallyEnableSourceMaps);
+
     actions.setWebpackConfig({
+      devtool: shouldAutomaticallyEnableSourceMaps ? 'hidden-source-map' : prevSourceMapSetting,
       plugins: [
         sentryWebpackPlugin({
           sourcemaps: {
@@ -25,7 +41,7 @@ exports.onCreateWebpackConfig = ({ getConfig, actions }, options) => {
           },
           // Handle sentry-cli configuration errors when the user has not done it not to break
           // the build.
-          errorHandler(err, invokeErr) {
+          errorHandler(err) {
             const message = (err.message && err.message.toLowerCase()) || '';
             if (message.includes('organization slug is required') || message.includes('project slug is required')) {
               // eslint-disable-next-line no-console
@@ -39,7 +55,7 @@ exports.onCreateWebpackConfig = ({ getConfig, actions }, options) => {
               console.warn('Sentry [Warn]: Cannot upload source maps due to missing SENTRY_AUTH_TOKEN env variable.');
               return;
             }
-            invokeErr(err);
+            throw err;
           },
         }),
       ],
@@ -52,7 +68,7 @@ exports.onCreateWebpackConfig = ({ getConfig, actions }, options) => {
   let configFile = null;
   try {
     configFile = SENTRY_USER_CONFIG.find(file => fs.existsSync(file));
-  } catch (error) {
+  } catch {
     // Some node versions (like v11) throw an exception on `existsSync` instead of
     // returning false. See https://github.com/tschaub/mock-fs/issues/256
   }

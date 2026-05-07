@@ -1,48 +1,42 @@
-import { context } from '@opentelemetry/api';
-import {
-  ATTR_HTTP_REQUEST_METHOD,
-  ATTR_HTTP_ROUTE,
-  ATTR_URL_QUERY,
-  SEMATTRS_HTTP_METHOD,
-  SEMATTRS_HTTP_TARGET,
-} from '@opentelemetry/semantic-conventions';
-import {
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  applySdkMetadata,
-  getCapturedScopesOnSpan,
-  getClient,
-  getCurrentScope,
-  getGlobalScope,
-  getIsolationScope,
-  getRootSpan,
-  setCapturedScopesOnSpan,
-  spanToJSON,
-} from '@sentry/core';
-import { GLOBAL_OBJ, extractTraceparentData, logger, stripUrlQueryAndFragment } from '@sentry/core';
+// import/export got a false positive, and affects most of our index barrel files
+// can be removed once following issue is fixed: https://github.com/import-js/eslint-plugin-import/issues/703
+/* eslint-disable import/export */
+import { ATTR_URL_QUERY, SEMATTRS_HTTP_TARGET } from '@opentelemetry/semantic-conventions';
 import type { EventProcessor } from '@sentry/core';
+import {
+  applySdkMetadata,
+  debug,
+  getClient,
+  getGlobalScope,
+  GLOBAL_OBJ,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+} from '@sentry/core';
 import type { NodeClient, NodeOptions } from '@sentry/node';
 import { getDefaultIntegrations, httpIntegration, init as nodeInit } from '@sentry/node';
-import { getScopesFromContext } from '@sentry/opentelemetry';
 import { DEBUG_BUILD } from '../common/debug-build';
 import { devErrorSymbolicationEventProcessor } from '../common/devErrorSymbolicationEventProcessor';
 import { getVercelEnv } from '../common/getVercelEnv';
-import {
-  TRANSACTION_ATTR_SENTRY_ROUTE_BACKFILL,
-  TRANSACTION_ATTR_SENTRY_TRACE_BACKFILL,
-  TRANSACTION_ATTR_SHOULD_DROP_TRANSACTION,
-} from '../common/span-attributes-with-logic-attached';
+import { TRANSACTION_ATTR_SHOULD_DROP_TRANSACTION } from '../common/span-attributes-with-logic-attached';
 import { isBuild } from '../common/utils/isBuild';
+import { isCloudflareWaitUntilAvailable } from '../common/utils/responseEnd';
+import { setUrlProcessingMetadata } from '../common/utils/setUrlProcessingMetadata';
 import { distDirRewriteFramesIntegration } from './distDirRewriteFramesIntegration';
+import { enhanceHandleRequestRootSpan } from './enhanceHandleRequestRootSpan';
+import { handleOnSpanStart } from './handleOnSpanStart';
+import { prepareSafeIdGeneratorContext } from './prepareSafeIdGeneratorContext';
+import { maybeCompleteCronCheckIn } from './vercelCronsMonitoring';
+import { maybeCleanupQueueSpan } from './vercelQueuesMonitoring';
 
 export * from '@sentry/node';
 
 export { captureUnderscoreErrorException } from '../common/pages-router-instrumentation/_error';
 
+// Override core span methods with Next.js-specific implementations that support Cache Components
+export { startSpan, startSpanManual, startInactiveSpan } from '../common/utils/nextSpan';
+
 const globalWithInjectedValues = GLOBAL_OBJ as typeof GLOBAL_OBJ & {
   _sentryRewriteFramesDistDir?: string;
-  _sentryRewritesTunnelPath?: string;
+  _sentryRelease?: string;
 };
 
 /**
@@ -87,10 +81,31 @@ export function showReportDialog(): void {
   return;
 }
 
+/**
+ * Returns the runtime configuration for the SDK based on the environment.
+ * When running on OpenNext/Cloudflare, returns cloudflare runtime config.
+ */
+function getCloudflareRuntimeConfig(): { runtime: { name: string } } | undefined {
+  if (isCloudflareWaitUntilAvailable()) {
+    // todo: add version information?
+    return { runtime: { name: 'cloudflare' } };
+  }
+  return undefined;
+}
+
 /** Inits the Sentry NextJS SDK on node. */
+// eslint-disable-next-line complexity
 export function init(options: NodeOptions): NodeClient | undefined {
+  prepareSafeIdGeneratorContext();
   if (isBuild()) {
     return;
+  }
+
+  if (!DEBUG_BUILD && options.debug) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[@sentry/nextjs] You have enabled `debug: true`, but Sentry debug logging was removed from your bundle (likely via `withSentryConfig({ disableLogger: true })` / `webpack.treeshake.removeDebugLogging: true`). Set that option to `false` to see Sentry debug output.',
+    );
   }
 
   const customDefaultIntegrations = getDefaultIntegrations(options)
@@ -102,9 +117,12 @@ export function init(options: NodeOptions): NodeClient | undefined {
       }),
     );
 
-  // Turn off Next.js' own fetch instrumentation
+  // Turn off Next.js' own fetch instrumentation (only when we manage OTEL)
   // https://github.com/lforst/nextjs-fork/blob/1994fd186defda77ad971c36dc3163db263c993f/packages/next/src/server/lib/patch-fetch.ts#L245
-  process.env.NEXT_OTEL_FETCH_DISABLED = '1';
+  // Enable with custom OTel setup: https://github.com/getsentry/sentry-javascript/issues/17581
+  if (!options.skipOpenTelemetrySetup) {
+    process.env.NEXT_OTEL_FETCH_DISABLED = '1';
+  }
 
   // This value is injected at build time, based on the output directory specified in the build config. Though a default
   // is set there, we set it here as well, just in case something has gone wrong with the injection.
@@ -113,28 +131,51 @@ export function init(options: NodeOptions): NodeClient | undefined {
     customDefaultIntegrations.push(distDirRewriteFramesIntegration({ distDirName }));
   }
 
+  // Detect if running on OpenNext/Cloudflare and get runtime config
+  const cloudflareConfig = getCloudflareRuntimeConfig();
+
   const opts: NodeOptions = {
-    environment: process.env.SENTRY_ENVIRONMENT || getVercelEnv(false) || process.env.NODE_ENV,
+    environment: options.environment || process.env.SENTRY_ENVIRONMENT || getVercelEnv(false) || process.env.NODE_ENV,
+    release: process.env._sentryRelease || globalWithInjectedValues._sentryRelease,
     defaultIntegrations: customDefaultIntegrations,
     ...options,
-    // Right now we only capture frontend sessions for Next.js
-    autoSessionTracking: false,
+    // Override runtime to 'cloudflare' when running on OpenNext/Cloudflare
+    ...cloudflareConfig,
   };
 
+  const nextjsIgnoreSpans: NonNullable<NodeOptions['ignoreSpans']> = [
+    // Static assets (matches `_next/static` anywhere in the name to handle custom basePath)
+    /^GET (\/.*)?\/_next\/static\//,
+    // Dev source-map fetch endpoints
+    /\/__nextjs_original-stack-frame/,
+    // Pages router /404
+    /^\/404$/,
+    // App router /404 and /_not-found segments (any HTTP method)
+    /^(GET|HEAD|POST|PUT|DELETE|CONNECT|OPTIONS|TRACE|PATCH) \/(404|_not-found)$/,
+    // Next.js 13 root transactions named "NextServer.getRequestHandler" containing useless tracing
+    /^NextServer\.getRequestHandler$/,
+    // Spans flagged via TRANSACTION_ATTR_SHOULD_DROP_TRANSACTION
+    // (set in `dropMiddlewareTunnelRequests` during `spanStart`)
+    { attributes: { [TRANSACTION_ATTR_SHOULD_DROP_TRANSACTION]: true } },
+  ];
+  opts.ignoreSpans = [...(opts.ignoreSpans || []), ...nextjsIgnoreSpans];
+
   if (DEBUG_BUILD && opts.debug) {
-    logger.enable();
+    debug.enable();
   }
 
-  DEBUG_BUILD && logger.log('Initializing SDK...');
+  DEBUG_BUILD && debug.log('Initializing SDK...');
 
   if (sdkAlreadyInitialized()) {
-    DEBUG_BUILD && logger.log('SDK already initialized');
+    DEBUG_BUILD && debug.log('SDK already initialized');
     return;
   }
 
-  applySdkMetadata(opts, 'nextjs', ['nextjs', 'node']);
+  // Use appropriate SDK metadata based on the runtime environment
+  applySdkMetadata(opts, 'nextjs', ['nextjs', cloudflareConfig ? 'cloudflare' : 'node']);
 
   const client = nodeInit(opts);
+
   client?.on('beforeSampling', ({ spanAttributes }, samplingDecision) => {
     // There are situations where the Next.js Node.js server forwards requests for the Edge Runtime server (e.g. in
     // middleware) and this causes spans for Sentry ingest requests to be created. These are not exempt from our tracing
@@ -155,114 +196,9 @@ export function init(options: NodeOptions): NodeClient | undefined {
     }
   });
 
-  client?.on('spanStart', span => {
-    const spanAttributes = spanToJSON(span).data;
-
-    // What we do in this glorious piece of code, is hoist any information about parameterized routes from spans emitted
-    // by Next.js via the `next.route` attribute, up to the transaction by setting the http.route attribute.
-    if (typeof spanAttributes?.['next.route'] === 'string') {
-      const rootSpan = getRootSpan(span);
-      const rootSpanAttributes = spanToJSON(rootSpan).data;
-
-      // Only hoist the http.route attribute if the transaction doesn't already have it
-      if (
-        // eslint-disable-next-line deprecation/deprecation
-        (rootSpanAttributes?.[ATTR_HTTP_REQUEST_METHOD] || rootSpanAttributes?.[SEMATTRS_HTTP_METHOD]) &&
-        !rootSpanAttributes?.[ATTR_HTTP_ROUTE]
-      ) {
-        const route = spanAttributes['next.route'].replace(/\/route$/, '');
-        rootSpan.updateName(route);
-        rootSpan.setAttribute(ATTR_HTTP_ROUTE, route);
-      }
-    }
-
-    // We want to skip span data inference for any spans generated by Next.js. Reason being that Next.js emits spans
-    // with patterns (e.g. http.server spans) that will produce confusing data.
-    if (spanAttributes?.['next.span_type'] !== undefined) {
-      span.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, 'auto');
-    }
-
-    // We want to fork the isolation scope for incoming requests
-    if (spanAttributes?.['next.span_type'] === 'BaseServer.handleRequest' && span === getRootSpan(span)) {
-      const scopes = getCapturedScopesOnSpan(span);
-
-      const isolationScope = (scopes.isolationScope || getIsolationScope()).clone();
-      const scope = scopes.scope || getCurrentScope();
-
-      const currentScopesPointer = getScopesFromContext(context.active());
-      if (currentScopesPointer) {
-        currentScopesPointer.isolationScope = isolationScope;
-      }
-
-      setCapturedScopesOnSpan(span, scope, isolationScope);
-    }
-  });
-
-  getGlobalScope().addEventProcessor(
-    Object.assign(
-      (event => {
-        if (event.type === 'transaction') {
-          // Filter out transactions for static assets
-          // This regex matches the default path to the static assets (`_next/static`) and could potentially filter out too many transactions.
-          // We match `/_next/static/` anywhere in the transaction name because its location may change with the basePath setting.
-          if (event.transaction?.match(/^GET (\/.*)?\/_next\/static\//)) {
-            return null;
-          }
-
-          // Filter out transactions for requests to the tunnel route
-          if (
-            (globalWithInjectedValues._sentryRewritesTunnelPath &&
-              event.transaction === `POST ${globalWithInjectedValues._sentryRewritesTunnelPath}`) ||
-            (process.env._sentryRewritesTunnelPath &&
-              event.transaction === `POST ${process.env._sentryRewritesTunnelPath}`)
-          ) {
-            return null;
-          }
-
-          // Filter out requests to resolve source maps for stack frames in dev mode
-          if (event.transaction?.match(/\/__nextjs_original-stack-frame/)) {
-            return null;
-          }
-
-          // Filter out /404 transactions which seem to be created excessively
-          if (
-            // Pages router
-            event.transaction === '/404' ||
-            // App router (could be "GET /404", "POST /404", ...)
-            event.transaction?.match(/^(GET|HEAD|POST|PUT|DELETE|CONNECT|OPTIONS|TRACE|PATCH) \/(404|_not-found)$/)
-          ) {
-            return null;
-          }
-
-          // Filter transactions that we explicitly want to drop.
-          if (event.contexts?.trace?.data?.[TRANSACTION_ATTR_SHOULD_DROP_TRANSACTION]) {
-            return null;
-          }
-
-          // Next.js 13 sometimes names the root transactions like this containing useless tracing.
-          if (event.transaction === 'NextServer.getRequestHandler') {
-            return null;
-          }
-
-          // Next.js 13 is not correctly picking up tracing data for trace propagation so we use a back-fill strategy
-          if (typeof event.contexts?.trace?.data?.[TRANSACTION_ATTR_SENTRY_TRACE_BACKFILL] === 'string') {
-            const traceparentData = extractTraceparentData(
-              event.contexts.trace.data[TRANSACTION_ATTR_SENTRY_TRACE_BACKFILL],
-            );
-
-            if (traceparentData?.parentSampled === false) {
-              return null;
-            }
-          }
-
-          return event;
-        } else {
-          return event;
-        }
-      }) satisfies EventProcessor,
-      { id: 'NextLowQualityTransactionsFilter' },
-    ),
-  );
+  client?.on('spanStart', handleOnSpanStart);
+  client?.on('spanEnd', maybeCompleteCronCheckIn);
+  client?.on('spanEnd', maybeCleanupQueueSpan);
 
   getGlobalScope().addEventProcessor(
     Object.assign(
@@ -302,64 +238,60 @@ export function init(options: NodeOptions): NodeClient | undefined {
   // Use the preprocessEvent hook instead of an event processor, so that the users event processors receive the most
   // up-to-date value, but also so that the logic that detects changes to the transaction names to set the source to
   // "custom", doesn't trigger.
+  // This handles the legacy (non-streamed) path where the segment span is emitted as a transaction event;
+  // `enhanceHandleRequestRootSpan` is adapted to operate on the event's trace context, which is the segment span's data.
+  // Span streaming bypasses event processors entirely - see the `processSegmentSpan` hook below for that path.
   client?.on('preprocessEvent', event => {
-    // Enhance route handler transactions
-    if (
-      event.type === 'transaction' &&
-      event.contexts?.trace?.data?.['next.span_type'] === 'BaseServer.handleRequest'
-    ) {
-      event.contexts.trace.data[SEMANTIC_ATTRIBUTE_SENTRY_OP] = 'http.server';
-      event.contexts.trace.op = 'http.server';
-
-      if (event.transaction) {
-        event.transaction = stripUrlQueryAndFragment(event.transaction);
-      }
-
-      // eslint-disable-next-line deprecation/deprecation
-      const method = event.contexts.trace.data[SEMATTRS_HTTP_METHOD];
-      // eslint-disable-next-line deprecation/deprecation
-      const target = event.contexts?.trace?.data?.[SEMATTRS_HTTP_TARGET];
-      const route = event.contexts.trace.data[ATTR_HTTP_ROUTE];
-
-      if (typeof method === 'string' && typeof route === 'string') {
-        event.transaction = `${method} ${route.replace(/\/route$/, '')}`;
-        event.contexts.trace.data[SEMANTIC_ATTRIBUTE_SENTRY_SOURCE] = 'route';
-      }
-
-      // backfill transaction name for pages that would otherwise contain unparameterized routes
-      if (event.contexts.trace.data[TRANSACTION_ATTR_SENTRY_ROUTE_BACKFILL] && event.transaction !== 'GET /_app') {
-        event.transaction = `${method} ${event.contexts.trace.data[TRANSACTION_ATTR_SENTRY_ROUTE_BACKFILL]}`;
-      }
-
-      // Next.js overrides transaction names for page loads that throw an error
-      // but we want to keep the original target name
-      if (event.transaction === 'GET /_error' && target) {
-        event.transaction = `${method ? `${method} ` : ''}${target}`;
-      }
+    if (event.type === 'transaction' && event.contexts?.trace?.data) {
+      enhanceHandleRequestRootSpan({
+        attributes: event.contexts.trace.data,
+        getName: () => event.transaction,
+        setName: name => {
+          event.transaction = name;
+        },
+        setOp: op => {
+          event.contexts!.trace!.op = op;
+        },
+      });
     }
 
-    // Next.js 13 is not correctly picking up tracing data for trace propagation so we use a back-fill strategy
-    if (
-      event.type === 'transaction' &&
-      typeof event.contexts?.trace?.data?.[TRANSACTION_ATTR_SENTRY_TRACE_BACKFILL] === 'string'
-    ) {
-      const traceparentData = extractTraceparentData(event.contexts.trace.data[TRANSACTION_ATTR_SENTRY_TRACE_BACKFILL]);
+    setUrlProcessingMetadata(event);
+  });
 
-      if (traceparentData?.traceId) {
-        event.contexts.trace.trace_id = traceparentData.traceId;
-      }
-
-      if (traceparentData?.parentSpanId) {
-        event.contexts.trace.parent_span_id = traceparentData.parentSpanId;
-      }
-    }
+  // Streamed-span counterpart of the `preprocessEvent` hook above. Streamed segment spans never become
+  // transaction events, so the same enhancement has to be applied here directly on the span JSON.
+  client?.on('processSegmentSpan', span => {
+    const attributes = (span.attributes ??= {});
+    enhanceHandleRequestRootSpan({
+      attributes,
+      getName: () => span.name,
+      setName: name => {
+        span.name = name;
+      },
+      // For streamed spans, op lives in `attributes['sentry.op']` - mirror it there so middleware
+      // overrides land somewhere readable (the legacy path uses a separate `event.contexts.trace.op`).
+      setOp: op => {
+        attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP] = op;
+      },
+    });
   });
 
   if (process.env.NODE_ENV === 'development') {
     getGlobalScope().addEventProcessor(devErrorSymbolicationEventProcessor);
   }
 
-  DEBUG_BUILD && logger.log('SDK successfully initialized');
+  try {
+    // @ts-expect-error `process.turbopack` is a magic string that will be replaced by Next.js
+    if (process.turbopack) {
+      getGlobalScope().setTag('turbopack', true);
+      getGlobalScope().setAttribute('turbopack', true);
+    }
+  } catch {
+    // Noop
+    // The statement above can throw because process is not defined on the client
+  }
+
+  DEBUG_BUILD && debug.log('SDK successfully initialized');
 
   return client;
 }

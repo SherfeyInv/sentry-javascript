@@ -1,7 +1,6 @@
 import * as SentryNode from '@sentry/node';
 import { SDK_VERSION } from '@sentry/node';
-import { vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { init } from '../../src/server/sdk';
 
 const nodeInit = vi.spyOn(SentryNode, 'init');
@@ -41,6 +40,28 @@ describe('Sentry server SDK', () => {
 
     it('returns client from init', () => {
       expect(init({})).not.toBeUndefined();
+    });
+
+    it('configures ignoreSpans to drop prerendered http.server spans', () => {
+      init({});
+
+      expect(nodeInit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ignoreSpans: expect.arrayContaining([
+            { op: 'http.server', attributes: { 'sentry.origin': 'auto.http.otel.http' } },
+          ]),
+        }),
+      );
+    });
+
+    it('preserves user-provided ignoreSpans entries', () => {
+      init({ ignoreSpans: [/keep-me/] });
+
+      expect(nodeInit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ignoreSpans: expect.arrayContaining([/keep-me/]),
+        }),
+      );
     });
   });
 });

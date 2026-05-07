@@ -1,11 +1,16 @@
+/* eslint-disable max-lines */
+/* eslint-disable complexity */
+
 import type {
+  FeedbackErrorMessages,
   FeedbackInternalOptions,
   FeedbackModalIntegration,
   FeedbackScreenshotIntegration,
   Integration,
   IntegrationFn,
+  SendFeedback,
 } from '@sentry/core';
-import { getClient, isBrowser, logger } from '@sentry/core';
+import { addIntegration, debug, isBrowser } from '@sentry/core';
 import {
   ADD_SCREENSHOT_LABEL,
   CANCEL_BUTTON_LABEL,
@@ -13,12 +18,20 @@ import {
   DOCUMENT,
   EMAIL_LABEL,
   EMAIL_PLACEHOLDER,
+  ERROR_EMPTY_MESSAGE_TEXT,
+  ERROR_FORBIDDEN_TEXT,
+  ERROR_GENERIC_TEXT,
+  ERROR_NO_CLIENT_TEXT,
+  ERROR_TIMEOUT_TEXT,
   FORM_TITLE,
+  HIDE_TOOL_TEXT,
+  HIGHLIGHT_TOOL_TEXT,
   IS_REQUIRED_LABEL,
   MESSAGE_LABEL,
   MESSAGE_PLACEHOLDER,
   NAME_LABEL,
   NAME_PLACEHOLDER,
+  REMOVE_HIGHLIGHT_TEXT,
   REMOVE_SCREENSHOT_LABEL,
   SUBMIT_BUTTON_LABEL,
   SUCCESS_MESSAGE_TEXT,
@@ -39,16 +52,22 @@ type Unsubscribe = () => void;
  * Allow users to capture user feedback and send it to Sentry.
  */
 
-interface BuilderOptions {
-  // The type here should be `keyof typeof LazyLoadableIntegrations`, but that'll cause a cicrular
-  // dependency with @sentry/core
-  lazyLoadIntegration: (
-    name: 'feedbackModalIntegration' | 'feedbackScreenshotIntegration',
-    scriptNonce?: string,
-  ) => Promise<IntegrationFn>;
-  getModalIntegration?: null | (() => IntegrationFn);
-  getScreenshotIntegration?: null | (() => IntegrationFn);
-}
+type BuilderOptions =
+  | {
+      lazyLoadIntegration?: never;
+      getModalIntegration: () => IntegrationFn;
+      getScreenshotIntegration: () => IntegrationFn;
+    }
+  | {
+      // The type here should be `keyof typeof LazyLoadableIntegrations`, but that'll cause a cicrular
+      // dependency with @sentry/core
+      lazyLoadIntegration: (
+        name: 'feedbackModalIntegration' | 'feedbackScreenshotIntegration',
+        scriptNonce?: string,
+      ) => Promise<IntegrationFn>;
+      getModalIntegration?: never;
+      getScreenshotIntegration?: never;
+    };
 
 export const buildFeedbackIntegration = ({
   lazyLoadIntegration,
@@ -61,6 +80,7 @@ export const buildFeedbackIntegration = ({
       optionOverrides?: OverrideFeedbackConfiguration,
     ): Promise<ReturnType<FeedbackModalIntegration['createDialog']>>;
     createWidget(optionOverrides?: OverrideFeedbackConfiguration): ActorComponent;
+    setTheme(colorScheme: 'light' | 'dark' | 'system'): void;
     remove(): void;
   }
 > => {
@@ -104,6 +124,14 @@ export const buildFeedbackIntegration = ({
     successMessageText = SUCCESS_MESSAGE_TEXT,
     triggerLabel = TRIGGER_LABEL,
     triggerAriaLabel = '',
+    highlightToolText = HIGHLIGHT_TOOL_TEXT,
+    hideToolText = HIDE_TOOL_TEXT,
+    removeHighlightText = REMOVE_HIGHLIGHT_TEXT,
+    errorEmptyMessageText = ERROR_EMPTY_MESSAGE_TEXT,
+    errorNoClientText = ERROR_NO_CLIENT_TEXT,
+    errorTimeoutText = ERROR_TIMEOUT_TEXT,
+    errorForbiddenText = ERROR_FORBIDDEN_TEXT,
+    errorGenericText = ERROR_GENERIC_TEXT,
 
     // FeedbackCallbacks
     onFormOpen,
@@ -146,6 +174,14 @@ export const buildFeedbackIntegration = ({
       isRequiredLabel,
       addScreenshotButtonLabel,
       removeScreenshotButtonLabel,
+      highlightToolText,
+      hideToolText,
+      removeHighlightText,
+      errorEmptyMessageText,
+      errorNoClientText,
+      errorTimeoutText,
+      errorForbiddenText,
+      errorGenericText,
 
       onFormClose,
       onFormOpen,
@@ -155,6 +191,7 @@ export const buildFeedbackIntegration = ({
     };
 
     let _shadow: ShadowRoot | null = null;
+    let _mainStyle: HTMLStyleElement | null = null;
     let _subscriptions: Unsubscribe[] = [];
 
     /**
@@ -167,68 +204,74 @@ export const buildFeedbackIntegration = ({
         DOCUMENT.body.appendChild(host);
 
         _shadow = host.attachShadow({ mode: 'open' });
-        _shadow.appendChild(createMainStyles(options));
+        _mainStyle = createMainStyles(options);
+        _shadow.appendChild(_mainStyle);
       }
-      return _shadow as ShadowRoot;
-    };
-
-    const _findIntegration = async <I extends Integration>(
-      integrationName: string,
-      getter: undefined | null | (() => IntegrationFn),
-      functionMethodName: 'feedbackModalIntegration' | 'feedbackScreenshotIntegration',
-    ): Promise<I> => {
-      const client = getClient();
-      const existing = client && client.getIntegrationByName(integrationName);
-      if (existing) {
-        return existing as I;
-      }
-      const integrationFn = (getter && getter()) || (await lazyLoadIntegration(functionMethodName, scriptNonce));
-      const integration = integrationFn();
-      client && client.addIntegration(integration);
-      return integration as I;
+      return _shadow;
     };
 
     const _loadAndRenderDialog = async (
       options: FeedbackInternalOptions,
     ): Promise<ReturnType<FeedbackModalIntegration['createDialog']>> => {
       const screenshotRequired = options.enableScreenshot && isScreenshotSupported();
-      const [modalIntegration, screenshotIntegration] = await Promise.all([
-        _findIntegration<FeedbackModalIntegration>('FeedbackModal', getModalIntegration, 'feedbackModalIntegration'),
-        screenshotRequired
-          ? _findIntegration<FeedbackScreenshotIntegration>(
-              'FeedbackScreenshot',
-              getScreenshotIntegration,
-              'feedbackScreenshotIntegration',
-            )
-          : undefined,
-      ]);
-      if (!modalIntegration) {
-        // TODO: Let the end-user retry async loading
+
+      let modalIntegration: FeedbackModalIntegration;
+      let screenshotIntegration: FeedbackScreenshotIntegration | undefined;
+
+      try {
+        const modalIntegrationFn = getModalIntegration
+          ? getModalIntegration()
+          : await lazyLoadIntegration('feedbackModalIntegration', scriptNonce);
+        modalIntegration = modalIntegrationFn() as FeedbackModalIntegration;
+        addIntegration(modalIntegration);
+      } catch {
         DEBUG_BUILD &&
-          logger.error(
-            '[Feedback] Missing feedback modal integration. Try using `feedbackSyncIntegration` in your `Sentry.init`.',
+          debug.error(
+            '[Feedback] Error when trying to load feedback integrations. Try using `feedbackSyncIntegration` in your `Sentry.init`.',
           );
         throw new Error('[Feedback] Missing feedback modal integration!');
       }
-      if (screenshotRequired && !screenshotIntegration) {
+
+      try {
+        const screenshotIntegrationFn = screenshotRequired
+          ? getScreenshotIntegration
+            ? getScreenshotIntegration()
+            : await lazyLoadIntegration('feedbackScreenshotIntegration', scriptNonce)
+          : undefined;
+
+        if (screenshotIntegrationFn) {
+          screenshotIntegration = screenshotIntegrationFn() as FeedbackScreenshotIntegration;
+          addIntegration(screenshotIntegration);
+        }
+      } catch {
         DEBUG_BUILD &&
-          logger.error('[Feedback] Missing feedback screenshot integration. Proceeding without screenshots.');
+          debug.error('[Feedback] Missing feedback screenshot integration. Proceeding without screenshots.');
       }
+
+      const errorMessages: FeedbackErrorMessages = {
+        ERROR_EMPTY_MESSAGE: options.errorEmptyMessageText,
+        ERROR_NO_CLIENT: options.errorNoClientText,
+        ERROR_TIMEOUT: options.errorTimeoutText,
+        ERROR_FORBIDDEN: options.errorForbiddenText,
+        ERROR_GENERIC: options.errorGenericText,
+      };
+      const wrappedSendFeedback: SendFeedback = (params, hint) =>
+        sendFeedback(params, { includeReplay: true, ...hint, errorMessages });
 
       const dialog = modalIntegration.createDialog({
         options: {
           ...options,
           onFormClose: () => {
-            dialog && dialog.close();
-            options.onFormClose && options.onFormClose();
+            dialog?.close();
+            options.onFormClose?.();
           },
           onFormSubmitted: () => {
-            dialog && dialog.close();
-            options.onFormSubmitted && options.onFormSubmitted();
+            dialog?.close();
+            options.onFormSubmitted?.();
           },
         },
-        screenshotIntegration: screenshotRequired ? screenshotIntegration : undefined,
-        sendFeedback,
+        screenshotIntegration,
+        sendFeedback: wrappedSendFeedback,
         shadow: _createShadow(options),
       });
 
@@ -242,7 +285,7 @@ export const buildFeedbackIntegration = ({
         typeof el === 'string' ? DOCUMENT.querySelector(el) : typeof el.addEventListener === 'function' ? el : null;
 
       if (!targetEl) {
-        DEBUG_BUILD && logger.error('[Feedback] Unable to attach to target element');
+        DEBUG_BUILD && debug.error('[Feedback] Unable to attach to target element');
         throw new Error('Unable to attach to target element');
       }
 
@@ -252,8 +295,8 @@ export const buildFeedbackIntegration = ({
           dialog = await _loadAndRenderDialog({
             ...mergedOptions,
             onFormSubmitted: () => {
-              dialog && dialog.removeFromDom();
-              mergedOptions.onFormSubmitted && mergedOptions.onFormSubmitted();
+              dialog?.removeFromDom();
+              mergedOptions.onFormSubmitted?.();
             },
           });
         }
@@ -263,7 +306,7 @@ export const buildFeedbackIntegration = ({
       targetEl.addEventListener('click', handleClick);
       const unsubscribe = (): void => {
         _subscriptions = _subscriptions.filter(sub => sub !== unsubscribe);
-        dialog && dialog.removeFromDom();
+        dialog?.removeFromDom();
         dialog = null;
         targetEl.removeEventListener('click', handleClick);
       };
@@ -337,12 +380,29 @@ export const buildFeedbackIntegration = ({
       },
 
       /**
+       * Updates the color scheme of the feedback widget at runtime.
+       */
+      setTheme(colorScheme: 'light' | 'dark' | 'system'): void {
+        _options.colorScheme = colorScheme;
+        if (_shadow) {
+          const newStyle = createMainStyles(_options);
+          if (_mainStyle) {
+            _shadow.replaceChild(newStyle, _mainStyle);
+          } else {
+            _shadow.prepend(newStyle);
+          }
+          _mainStyle = newStyle;
+        }
+      },
+
+      /**
        * Removes the Feedback integration (including host, shadow DOM, and all widgets)
        */
       remove(): void {
         if (_shadow) {
-          _shadow.parentElement && _shadow.parentElement.remove();
+          _shadow.parentElement?.remove();
           _shadow = null;
+          _mainStyle = null;
         }
         // Remove any lingering subscriptions
         _subscriptions.forEach(sub => sub());

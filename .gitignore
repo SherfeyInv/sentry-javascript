@@ -17,8 +17,6 @@ scratch/
 # side effects of running AWS lambda layer zip action locally
 dist-serverless/
 sentry-node-serverless-*.zip
-# transpiled transformers
-jest/transformers/*.js
 # node tarballs
 packages/*/sentry-*.tgz
 .nxcache
@@ -26,7 +24,6 @@ packages/*/sentry-*.tgz
 # logs
 yarn-error.log
 npm-debug.log
-lerna-debug.log
 local.log
 
 # ide
@@ -56,9 +53,24 @@ tmp.js
 packages/deno/build-types
 packages/deno/build-test
 packages/deno/lib.deno.d.ts
+deno.lock
 
 # gatsby
 packages/gatsby/gatsby-node.d.ts
 
 # intellij
 *.iml
+/**/.wrangler/*
+
+#junit reports
+packages/**/*.junit.xml
+
+# Local Claude Code settings that should not be committed
+.claude/settings.local.json
+.claude/worktrees
+
+# Triage report
+**/triage_report.md
+
+# Environment variables
+.env

@@ -16,9 +16,9 @@ test.skip('Should send a transaction with a http span', async ({ request }) => {
       data: expect.objectContaining({
         'http.method': 'GET',
         'sentry.op': 'http.client',
-        'sentry.origin': 'auto.http.otel.http',
+        'sentry.origin': 'auto.http.client',
       }),
-      description: 'GET http://example.com/',
+      description: 'GET https://example.com/',
     }),
   );
 });

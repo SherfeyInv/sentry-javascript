@@ -1,14 +1,19 @@
+/* eslint-disable max-lines */
 import type { Page, Request } from '@playwright/test';
-import { parseEnvelope } from '@sentry/core';
 import type {
+  ClientReport,
   Envelope,
   EnvelopeItem,
   EnvelopeItemType,
-  Event,
+  Event as SentryEvent,
   EventEnvelope,
   EventEnvelopeHeaders,
+  SerializedMetric,
+  SerializedMetricContainer,
+  SerializedSession,
   TransactionEvent,
 } from '@sentry/core';
+import { parseEnvelope } from '@sentry/core';
 
 export const envelopeUrlRegex = /\.sentry\.io\/api\/\d+\/envelope\//;
 
@@ -20,13 +25,14 @@ export const envelopeParser = (request: Request | null): unknown[] => {
   return envelope.split('\n').map(line => {
     try {
       return JSON.parse(line);
-    } catch (error) {
+    } catch {
       return line;
     }
   });
 };
 
-export const envelopeRequestParser = <T = Event>(request: Request | null, envelopeIndex = 2): T => {
+// Rather use the `properEnvelopeRequestParser`, as the `envelopeParser` does not follow the envelope spec.
+export const envelopeRequestParser = <T = SentryEvent>(request: Request | null, envelopeIndex = 2): T => {
   return envelopeParser(request)[envelopeIndex] as T;
 };
 
@@ -47,7 +53,7 @@ export const properEnvelopeParser = (request: Request | null): EnvelopeItem[] =>
   return items;
 };
 
-export type EventAndTraceHeader = [Event, EventEnvelopeHeaders['trace']];
+export type EventAndTraceHeader = [SentryEvent, EventEnvelopeHeaders['trace']];
 
 /**
  * Returns the first event item and `trace` envelope header from an envelope.
@@ -58,7 +64,7 @@ export const eventAndTraceHeaderRequestParser = (request: Request | null): Event
   return getEventAndTraceHeader(envelope);
 };
 
-const properFullEnvelopeParser = <T extends Envelope>(request: Request | null): T => {
+export const properFullEnvelopeParser = <T extends Envelope>(request: Request | null): T => {
   // https://develop.sentry.dev/sdk/envelopes/
   const envelope = request?.postData() || '';
 
@@ -66,7 +72,7 @@ const properFullEnvelopeParser = <T extends Envelope>(request: Request | null): 
 };
 
 function getEventAndTraceHeader(envelope: EventEnvelope): EventAndTraceHeader {
-  const event = envelope[1][0]?.[1] as Event | undefined;
+  const event = envelope[1][0]?.[1] as SentryEvent | undefined;
   const trace = envelope[0]?.trace;
 
   if (!event || !trace) {
@@ -76,8 +82,12 @@ function getEventAndTraceHeader(envelope: EventEnvelope): EventAndTraceHeader {
   return [event, trace];
 }
 
-export const properEnvelopeRequestParser = <T = Event>(request: Request | null, envelopeIndex = 1): T => {
-  return properEnvelopeParser(request)[0]?.[envelopeIndex] as T;
+export const properEnvelopeRequestParser = <T = SentryEvent>(
+  request: Request | null,
+  envelopeItemIndex: number,
+  envelopeIndex = 1, // 1 is usually the payload of the envelope (0 is the header)
+): T => {
+  return properEnvelopeParser(request)[envelopeItemIndex]?.[envelopeIndex] as T;
 };
 
 export const properFullEnvelopeRequestParser = <T extends Envelope>(request: Request | null): T => {
@@ -157,7 +167,7 @@ export const countEnvelopes = async (
  * @param {{ path?: string; content?: string }} impl
  * @return {*}  {Promise<void>}
  */
-async function runScriptInSandbox(
+export async function runScriptInSandbox(
   page: Page,
   impl: {
     path?: string;
@@ -166,7 +176,7 @@ async function runScriptInSandbox(
 ): Promise<void> {
   try {
     await page.addScriptTag({ path: impl.path, content: impl.content });
-  } catch (e) {
+  } catch {
     // no-op
   }
 }
@@ -176,13 +186,13 @@ async function runScriptInSandbox(
  *
  * @param {Page} page
  * @param {string} [url]
- * @return {*}  {Promise<Array<Event>>}
+ * @return {*}  {Promise<Array<SentryEvent>>}
  */
-async function getSentryEvents(page: Page, url?: string): Promise<Array<Event>> {
+export async function getSentryEvents(page: Page, url?: string): Promise<Array<SentryEvent>> {
   if (url) {
     await page.goto(url);
   }
-  const eventsHandle = await page.evaluateHandle<Array<Event>>('window.events');
+  const eventsHandle = await page.evaluateHandle<Array<SentryEvent>>('window.events');
 
   return eventsHandle.jsonValue();
 }
@@ -197,7 +207,7 @@ export async function waitForTransactionRequestOnUrl(page: Page, url: string): P
   return req;
 }
 
-export function waitForErrorRequest(page: Page, callback?: (event: Event) => boolean): Promise<Request> {
+export function waitForErrorRequest(page: Page, callback?: (event: SentryEvent) => boolean): Promise<Request> {
   return page.waitForRequest(req => {
     const postData = req.postData();
     if (!postData) {
@@ -250,6 +260,107 @@ export function waitForTransactionRequest(
   });
 }
 
+export function waitForClientReportRequest(page: Page, callback?: (report: ClientReport) => boolean): Promise<Request> {
+  return page.waitForRequest(req => {
+    const postData = req.postData();
+    if (!postData) {
+      return false;
+    }
+
+    try {
+      const maybeReport = envelopeRequestParser<Partial<ClientReport>>(req);
+
+      if (typeof maybeReport.discarded_events !== 'object') {
+        return false;
+      }
+
+      if (callback) {
+        return callback(maybeReport as ClientReport);
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Wait for metric requests. Accumulates metrics across all matching requests
+ * and resolves when the callback returns true for the full set of collected metrics.
+ * If no callback is provided, resolves on the first request containing metrics.
+ */
+export function waitForMetrics(
+  page: Page,
+  callback?: (metrics: SerializedMetric[]) => boolean,
+): Promise<SerializedMetric[]> {
+  const collected: SerializedMetric[] = [];
+
+  return page
+    .waitForRequest(req => {
+      const postData = req.postData();
+      if (!postData) {
+        return false;
+      }
+
+      try {
+        const envelope = properFullEnvelopeRequestParser<Envelope>(req);
+        const items = envelope[1];
+        const metrics: SerializedMetric[] = [];
+        for (const item of items) {
+          const [header] = item;
+          if (header.type === 'trace_metric') {
+            const payload = item[1] as SerializedMetricContainer;
+            if (payload.items) {
+              metrics.push(...payload.items);
+            }
+          }
+        }
+
+        if (metrics.length === 0) {
+          return false;
+        }
+
+        collected.push(...metrics);
+
+        if (callback) {
+          return callback(collected);
+        }
+
+        return true;
+      } catch {
+        return false;
+      }
+    })
+    .then(() => collected);
+}
+
+export async function waitForSession(
+  page: Page,
+  callback?: (session: SerializedSession) => boolean,
+): Promise<SerializedSession> {
+  const req = await page.waitForRequest(req => {
+    const postData = req.postData();
+    if (!postData) {
+      return false;
+    }
+
+    try {
+      const event = envelopeRequestParser<SerializedSession>(req);
+
+      if (callback) {
+        return callback(event);
+      }
+
+      return typeof event.init === 'boolean' && event.started !== undefined;
+    } catch {
+      return false;
+    }
+  });
+
+  return envelopeRequestParser<SerializedSession>(req);
+}
+
 /**
  * We can only test tracing tests in certain bundles/packages:
  * - NPM (ESM, CJS)
@@ -258,8 +369,40 @@ export function waitForTransactionRequest(
  * @returns `true` if we should skip the tracing test
  */
 export function shouldSkipTracingTest(): boolean {
-  const bundle = process.env.PW_BUNDLE as string | undefined;
+  const bundle = process.env.PW_BUNDLE;
   return bundle != null && !bundle.includes('tracing') && !bundle.includes('esm') && !bundle.includes('cjs');
+}
+
+/**
+ * We can only test metrics tests in certain bundles/packages:
+ * - NPM (ESM, CJS)
+ * - CDN bundles that contain metrics
+ *
+ * @returns `true` if we should skip the metrics test
+ */
+export function shouldSkipMetricsTest(): boolean {
+  const bundle = process.env.PW_BUNDLE;
+  return bundle != null && !bundle.includes('metrics') && !bundle.includes('esm') && !bundle.includes('cjs');
+}
+
+/**
+ * We can only test logs tests in certain bundles/packages:
+ * - NPM (ESM, CJS)
+ * - CDN bundles that contain logs
+ *
+ * @returns `true` if we should skip the logs test
+ */
+export function shouldSkipLogsTest(): boolean {
+  const bundle = process.env.PW_BUNDLE;
+  return bundle != null && !bundle.includes('logs') && !bundle.includes('esm') && !bundle.includes('cjs');
+}
+
+/**
+ * @returns `true` if we are testing a CDN bundle
+ */
+export function testingCdnBundle(): boolean {
+  const bundle = process.env.PW_BUNDLE;
+  return bundle != null && (bundle.startsWith('bundle') || bundle.startsWith('loader'));
 }
 
 /**
@@ -278,8 +421,24 @@ export function shouldSkipFeedbackTest(): boolean {
  * @returns `true` if we should skip the feature flags test
  */
 export function shouldSkipFeatureFlagsTest(): boolean {
-  const bundle = process.env.PW_BUNDLE as string | undefined;
+  return shouldSkipCdnBundleTest();
+}
+
+/**
+ * Returns true if we're running in a CDN bundle environment (not ESM/CJS).
+ * Use this to skip tests for integrations that are only available via npm, not CDN bundles.
+ */
+export function shouldSkipCdnBundleTest(): boolean {
+  const bundle = process.env.PW_BUNDLE;
   return bundle != null && !bundle.includes('esm') && !bundle.includes('cjs');
+}
+
+/**
+ * Returns true if the current bundle has debug logs.
+ */
+export function hasDebugLogs(): boolean {
+  const bundle = process.env.PW_BUNDLE;
+  return !bundle?.includes('min');
 }
 
 /**
@@ -353,7 +512,7 @@ async function getMultipleRequests<T>(
 /**
  * Wait and get multiple envelope requests at the given URL, or the current page
  */
-async function getMultipleSentryEnvelopeRequests<T>(
+export async function getMultipleSentryEnvelopeRequests<T>(
   page: Page,
   count: number,
   options?: {
@@ -363,7 +522,7 @@ async function getMultipleSentryEnvelopeRequests<T>(
   },
   requestParser: (req: Request) => T = envelopeRequestParser as (req: Request) => T,
 ): Promise<T[]> {
-  return getMultipleRequests<T>(page, count, envelopeUrlRegex, requestParser, options) as Promise<T[]>;
+  return getMultipleRequests<T>(page, count, envelopeUrlRegex, requestParser, options);
 }
 
 /**
@@ -374,7 +533,7 @@ async function getMultipleSentryEnvelopeRequests<T>(
  * @param {string} [url]
  * @return {*}  {Promise<T>}
  */
-async function getFirstSentryEnvelopeRequest<T>(
+export async function getFirstSentryEnvelopeRequest<T>(
   page: Page,
   url?: string,
   requestParser: (req: Request) => T = envelopeRequestParser as (req: Request) => T,
@@ -389,4 +548,35 @@ async function getFirstSentryEnvelopeRequest<T>(
   return req;
 }
 
-export { runScriptInSandbox, getMultipleSentryEnvelopeRequests, getFirstSentryEnvelopeRequest, getSentryEvents };
+export async function hidePage(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: function () {
+        return 'hidden';
+      },
+    });
+
+    // Dispatch the visibilitychange event to notify listeners
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+
+export async function waitForTracingHeadersOnUrl(
+  page: Page,
+  url: string,
+): Promise<{ baggage: string; sentryTrace: string }> {
+  return new Promise<{ baggage: string; sentryTrace: string }>(resolve => {
+    page
+      .route(url, (route, req) => {
+        const baggage = req.headers()['baggage'];
+        const sentryTrace = req.headers()['sentry-trace'];
+        resolve({ baggage, sentryTrace });
+        return route.fulfill({ status: 200, body: 'ok' });
+      })
+      .catch(error => {
+        // Handle any routing setup errors
+        throw error;
+      });
+  });
+}

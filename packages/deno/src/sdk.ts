@@ -8,14 +8,18 @@ import {
   initAndBind,
   linkedErrorsIntegration,
   nodeStackLineParser,
+  requestDataIntegration,
+  spanStreamingIntegration,
   stackParserFromStackParserOptions,
 } from '@sentry/core';
 import { DenoClient } from './client';
 import { breadcrumbsIntegration } from './integrations/breadcrumbs';
 import { denoContextIntegration } from './integrations/context';
 import { contextLinesIntegration } from './integrations/contextlines';
+import { denoServeIntegration } from './integrations/deno-serve';
 import { globalHandlersIntegration } from './integrations/globalhandlers';
 import { normalizePathsIntegration } from './integrations/normalizepaths';
+import { setupOpenTelemetryTracer } from './opentelemetry/tracer';
 import { makeFetchTransport } from './transports';
 import type { DenoOptions } from './types';
 
@@ -24,13 +28,17 @@ export function getDefaultIntegrations(_options: Options): Integration[] {
   // We return a copy of the defaultIntegrations here to avoid mutating this
   return [
     // Common
+    // TODO(v11): Replace with `eventFiltersIntegration` once we remove the deprecated `inboundFiltersIntegration`
+    // eslint-disable-next-line deprecation/deprecation
     inboundFiltersIntegration(),
+    requestDataIntegration(),
     functionToStringIntegration(),
     linkedErrorsIntegration(),
     dedupeIntegration(),
     // Deno Specific
     breadcrumbsIntegration(),
     denoContextIntegration(),
+    denoServeIntegration(),
     contextLinesIntegration(),
     normalizePathsIntegration(),
     globalHandlersIntegration(),
@@ -88,12 +96,25 @@ export function init(options: DenoOptions = {}): Client {
     options.defaultIntegrations = getDefaultIntegrations(options);
   }
 
+  const resolvedIntegrations = getIntegrationsToSetup(options);
+  if (options.traceLifecycle === 'stream' && !resolvedIntegrations.some(i => i.name === 'SpanStreaming')) {
+    resolvedIntegrations.push(spanStreamingIntegration());
+  }
+
   const clientOptions: ServerRuntimeClientOptions = {
     ...options,
     stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
-    integrations: getIntegrationsToSetup(options),
+    integrations: resolvedIntegrations,
     transport: options.transport || makeFetchTransport,
   };
 
-  return initAndBind(DenoClient, clientOptions);
+  const client = initAndBind(DenoClient, clientOptions);
+
+  // Set up OpenTelemetry compatibility to capture spans from libraries using @opentelemetry/api
+  // Note: This is separate from Deno's native OTEL support and doesn't capture auto-instrumented spans
+  if (!options.skipOpenTelemetrySetup) {
+    setupOpenTelemetryTracer();
+  }
+
+  return client;
 }

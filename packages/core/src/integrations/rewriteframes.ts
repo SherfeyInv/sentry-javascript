@@ -1,7 +1,9 @@
 import { defineIntegration } from '../integration';
-import type { Event, StackFrame, Stacktrace } from '../types-hoist';
-import { basename, relative } from '../utils-hoist/path';
-import { GLOBAL_OBJ } from '../utils-hoist/worldwide';
+import type { Event } from '../types-hoist/event';
+import type { StackFrame } from '../types-hoist/stackframe';
+import type { Stacktrace } from '../types-hoist/stacktrace';
+import { basename, relative } from '../utils/path';
+import { GLOBAL_OBJ } from '../utils/worldwide';
 
 type StackFrameIteratee = (frame: StackFrame) => StackFrame;
 
@@ -54,7 +56,7 @@ export const rewriteFramesIntegration = defineIntegration((options: RewriteFrame
   const root = options.root;
   const prefix = options.prefix || 'app:///';
 
-  const isBrowser = 'window' in GLOBAL_OBJ && GLOBAL_OBJ.window !== undefined;
+  const isBrowser = 'window' in GLOBAL_OBJ && !!GLOBAL_OBJ.window;
 
   const iteratee: StackFrameIteratee = options.iteratee || generateIteratee({ isBrowser, root, prefix });
 
@@ -73,7 +75,7 @@ export const rewriteFramesIntegration = defineIntegration((options: RewriteFrame
           })),
         },
       };
-    } catch (_oO) {
+    } catch {
       return event;
     }
   }
@@ -82,7 +84,7 @@ export const rewriteFramesIntegration = defineIntegration((options: RewriteFrame
   function _processStacktrace(stacktrace?: Stacktrace): Stacktrace {
     return {
       ...stacktrace,
-      frames: stacktrace && stacktrace.frames && stacktrace.frames.map(f => iteratee(f)),
+      frames: stacktrace?.frames?.map(f => iteratee(f)),
     };
   }
 
