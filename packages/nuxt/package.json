@@ -68,10 +68,10 @@
   "devDependencies": {
     "@nuxt/module-builder": "^0.8.4",
     "@nuxt/nitro-server": "^3.21.1",
-    "nitro": "^3.0.260311-beta",
+    "nitro": "^3.0.260415-beta",
     "nuxi": "^3.25.1",
     "nuxt": "3.17.7",
-    "vite": "^5.4.11"
+    "vite": "^6.4.2"
   },
   "scripts": {
     "build": "run-s build:types build:transpile",
