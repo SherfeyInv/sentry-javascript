@@ -18,7 +18,7 @@
     "@opentelemetry/resources": "^2.6.0",
     "@opentelemetry/sdk-trace-node": "^2.6.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
-    "@opentelemetry/sdk-node": "^0.214.0",
+    "@opentelemetry/sdk-node": "^0.217.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.214.0",
     "@sentry/node-core": "file:../../packed/sentry-node-core-packed.tgz",
     "@sentry/opentelemetry": "file:../../packed/sentry-opentelemetry-packed.tgz",
