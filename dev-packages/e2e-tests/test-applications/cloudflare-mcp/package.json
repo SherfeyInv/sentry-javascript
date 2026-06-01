@@ -26,7 +26,7 @@
     "@playwright/test": "~1.56.0",
     "@sentry-internal/test-utils": "link:../../../test-utils",
     "typescript": "^5.5.2",
-    "vitest": "~3.2.0",
+    "vitest": "~4.1.8",
     "wrangler": "^4.61.0",
     "ws": "^8.18.3"
   },
