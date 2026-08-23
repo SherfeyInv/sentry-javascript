@@ -1,42 +1,31 @@
-import { context, diag, DiagLogLevel, propagation, trace } from '@opentelemetry/api';
-import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
-import type { Client, Integration, Options } from '@sentry/core';
+import { diag, DiagLogLevel, propagation, trace } from '@opentelemetry/api';
+import type { Client, Integration } from '@sentry/core';
 import {
   consoleIntegration,
   conversationIdIntegration,
   createStackParser,
   debug,
   dedupeIntegration,
+  eventFiltersIntegration,
   functionToStringIntegration,
   getCurrentScope,
   getIntegrationsToSetup,
   GLOBAL_OBJ,
-  hasSpansEnabled,
-  inboundFiltersIntegration,
   linkedErrorsIntegration,
   nodeStackLineParser,
   requestDataIntegration,
-  spanStreamingIntegration,
   stackParserFromStackParserOptions,
 } from '@sentry/core';
 import {
-  enhanceDscWithOpenTelemetryRootSpanName,
-  getSentryResource,
-  openTelemetrySetupCheck,
   SentryPropagator,
-  SentrySampler,
-  SentrySpanProcessor,
+  SentryTracerProvider,
   setOpenTelemetryContextAsyncContextStrategy,
-  setupEventContextTrace,
-  wrapContextManagerClass,
 } from '@sentry/opentelemetry';
 import { VercelEdgeClient } from './client';
-import { DEBUG_BUILD } from './debug-build';
 import { winterCGFetchIntegration } from './integrations/wintercg-fetch';
 import { makeEdgeTransport } from './transports';
 import type { VercelEdgeOptions } from './types';
 import { getVercelEnv } from './utils/vercel';
-import { AsyncLocalStorageContextManager } from './vendored/async-local-storage-context-manager';
 
 declare const process: {
   env: Record<string, string>;
@@ -44,32 +33,29 @@ declare const process: {
 
 const nodeStackParser = createStackParser(nodeStackLineParser());
 
-/** Get the default integrations for the browser SDK. */
-export function getDefaultIntegrations(options: Options): Integration[] {
+/** Get the default integrations for the Vercel Edge SDK. */
+export function getDefaultIntegrations(): Integration[] {
   return [
     dedupeIntegration(),
-    // TODO(v11): Replace with `eventFiltersIntegration` once we remove the deprecated `inboundFiltersIntegration`
-    // eslint-disable-next-line deprecation/deprecation
-    inboundFiltersIntegration(),
+    eventFiltersIntegration(),
     functionToStringIntegration(),
     conversationIdIntegration(),
     linkedErrorsIntegration(),
     winterCGFetchIntegration(),
     consoleIntegration(),
-    // TODO(v11): integration can be included - but integration should not add IP address etc
-    ...(options.sendDefaultPii ? [requestDataIntegration()] : []),
+    requestDataIntegration(),
   ];
 }
 
 /** Inits the Sentry NextJS SDK on the Edge Runtime. */
-export function init(options: VercelEdgeOptions = {}): Client | undefined {
+export function init(options: VercelEdgeOptions = {}): Client {
   setOpenTelemetryContextAsyncContextStrategy();
 
   const scope = getCurrentScope();
   scope.update(options.initialScope);
 
   if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = getDefaultIntegrations(options);
+    options.defaultIntegrations = getDefaultIntegrations();
   }
 
   if (options.dsn === undefined && process.env.SENTRY_DSN) {
@@ -93,15 +79,12 @@ export function init(options: VercelEdgeOptions = {}): Client | undefined {
   options.environment =
     options.environment || process.env.SENTRY_ENVIRONMENT || getVercelEnv(false) || process.env.NODE_ENV;
 
-  const resolvedIntegrations = getIntegrationsToSetup(options);
-  if (options.traceLifecycle === 'stream' && !resolvedIntegrations.some(i => i.name === 'SpanStreaming')) {
-    resolvedIntegrations.push(spanStreamingIntegration());
-  }
+  options.traceLifecycle = options.traceLifecycle ?? getTraceLifecycleFromEnv(process.env.SENTRY_TRACE_LIFECYCLE);
 
   const client = new VercelEdgeClient({
     ...options,
     stackParser: stackParserFromStackParserOptions(options.stackParser || nodeStackParser),
-    integrations: resolvedIntegrations,
+    integrations: getIntegrationsToSetup(options),
     transport: options.transport || makeEdgeTransport,
   });
   // The client is on the current scope, from where it generally is inherited
@@ -111,43 +94,11 @@ export function init(options: VercelEdgeOptions = {}): Client | undefined {
 
   // If users opt-out of this, they _have_ to set up OpenTelemetry themselves
   // There is no way to use this SDK without OpenTelemetry!
-  if (!options.skipOpenTelemetrySetup) {
+  if (options.enableOpenTelemetrySetup ?? true) {
     setupOtel(client);
-    validateOpenTelemetrySetup();
   }
-
-  enhanceDscWithOpenTelemetryRootSpanName(client);
-  setupEventContextTrace(client);
 
   return client;
-}
-
-function validateOpenTelemetrySetup(): void {
-  if (!DEBUG_BUILD) {
-    return;
-  }
-
-  const setup = openTelemetrySetupCheck();
-
-  const required: ReturnType<typeof openTelemetrySetupCheck> = ['SentryContextManager', 'SentryPropagator'];
-
-  if (hasSpansEnabled()) {
-    required.push('SentrySpanProcessor');
-  }
-
-  for (const k of required) {
-    if (!setup.includes(k)) {
-      debug.error(
-        `You have to set up the ${k}. Without this, the OpenTelemetry & Sentry integration will not work properly.`,
-      );
-    }
-  }
-
-  if (!setup.includes('SentrySampler')) {
-    debug.warn(
-      'You have to set up the SentrySampler. Without this, the OpenTelemetry & Sentry integration may still work, but sample rates set for the Sentry SDK will not be respected. If you use a custom sampler, make sure to use `wrapSamplingDecision`.',
-    );
-  }
 }
 
 // exported for tests
@@ -157,23 +108,10 @@ export function setupOtel(client: VercelEdgeClient): void {
     setupOpenTelemetryLogger();
   }
 
-  // Create and configure NodeTracerProvider
-  const provider = new BasicTracerProvider({
-    sampler: new SentrySampler(client),
-    resource: getSentryResource('edge'),
-    forceFlushTimeoutMillis: 500,
-    spanProcessors: [
-      new SentrySpanProcessor({
-        timeout: client.getOptions().maxSpanWaitDuration,
-      }),
-    ],
-  });
-
-  const SentryContextManager = wrapContextManagerClass(AsyncLocalStorageContextManager);
+  const provider = new SentryTracerProvider();
 
   trace.setGlobalTracerProvider(provider);
   propagation.setGlobalPropagator(new SentryPropagator());
-  context.setGlobalContextManager(new SentryContextManager());
 
   client.traceProvider = provider;
 }
@@ -302,4 +240,8 @@ export function getSentryRelease(fallback?: string): string | undefined {
     possibleReleaseNameOfCiProvidersWithGenericEnvVar ||
     fallback
   );
+}
+
+function getTraceLifecycleFromEnv(envVar: string | undefined): 'static' | 'stream' | undefined {
+  return envVar === 'stream' || envVar === 'static' ? envVar : undefined;
 }

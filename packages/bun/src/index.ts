@@ -38,7 +38,6 @@ export {
   getClient,
   isInitialized,
   isEnabled,
-  generateInstrumentOnce,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
@@ -53,6 +52,8 @@ export {
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
   getSpanStatusFromHttpCode,
   setHttpStatus,
@@ -70,15 +71,14 @@ export {
   instrumentLangChainEmbeddings,
   httpHeadersToSpanAttributes,
   winterCGHeadersToDict,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   anrIntegration,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   disableAnrDetectionForCallback,
   consoleIntegration,
   httpIntegration,
   httpServerIntegration,
   httpServerSpansIntegration,
-  nativeNodeFetchIntegration,
   onUncaughtExceptionIntegration,
   onUnhandledRejectionIntegration,
   openAIIntegration,
@@ -91,8 +91,6 @@ export {
   requestDataIntegration,
   fsIntegration,
   functionToStringIntegration,
-  // eslint-disable-next-line deprecation/deprecation
-  inboundFiltersIntegration,
   eventFiltersIntegration,
   linkedErrorsIntegration,
   setMeasurement,
@@ -101,6 +99,7 @@ export {
   startInactiveSpan,
   startSpanManual,
   startNewTrace,
+  bindScopeToEmitter,
   suppressTracing,
   withActiveSpan,
   getRootSpan,
@@ -122,8 +121,6 @@ export {
   firebaseIntegration,
   koaIntegration,
   setupKoaErrorHandler,
-  connectIntegration,
-  setupConnectErrorHandler,
   genericPoolIntegration,
   graphqlIntegration,
   knexIntegration,
@@ -138,13 +135,14 @@ export {
   postgresIntegration,
   postgresJsIntegration,
   prismaIntegration,
+  otlpIntegration,
+  getOtlpTracesEndpoint,
   processSessionIntegration,
   hapiIntegration,
   setupHapiErrorHandler,
-  honoIntegration,
-  setupHonoErrorHandler,
   spotlightIntegration,
   initOpenTelemetry,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
@@ -155,7 +153,7 @@ export {
   instrumentOpenAiClient,
   instrumentAnthropicAiClient,
   instrumentGoogleGenAIClient,
-  instrumentLangGraph,
+  instrumentStateGraph,
   instrumentStateGraphCompile,
   zodErrorsIntegration,
   profiler,
@@ -179,6 +177,8 @@ export {
   unleashIntegration,
   metrics,
   spanStreamingIntegration,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
   withStreamedSpan,
 } from '@sentry/node';
 
@@ -191,9 +191,16 @@ export {
 
 export type { BunOptions } from './types';
 
-// eslint-disable-next-line deprecation/deprecation
+// eslint-disable-next-line typescript/no-deprecated
 export { BunClient } from './client';
-export { getDefaultIntegrations, init } from './sdk';
+export {
+  getDefaultIntegrations,
+  getDefaultIntegrationsWithoutPerformance,
+  init,
+  initWithoutDefaultIntegrations,
+} from './sdk';
 export { bunServerIntegration } from './integrations/bunserver';
+export { bunHttpServerIntegration } from './integrations/bunHttpServer';
+export { fetchIntegration } from './integrations/fetch';
 export { bunRuntimeMetricsIntegration, type BunRuntimeMetricsOptions } from './integrations/bunRuntimeMetrics';
 export { makeFetchTransport } from './transports';

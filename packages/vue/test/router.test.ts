@@ -2,6 +2,7 @@ import * as SentryBrowser from '@sentry/browser';
 import type { Span, SpanAttributes } from '@sentry/core';
 import * as SentryCore from '@sentry/core';
 import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE } from '@sentry/core';
+import { NAVIGATION_ROUTE_ID, URL_TEMPLATE } from '@sentry/conventions/attributes';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Route } from '../src/router';
 import { instrumentVueRouter } from '../src/router';
@@ -120,15 +121,18 @@ describe('instrumentVueRouter()', () => {
       beforeEachCallback(to, from);
 
       expect(mockStartSpan).toHaveBeenCalledTimes(2);
-      expect(mockStartSpan).toHaveBeenLastCalledWith({
-        name: transactionName,
-        attributes: {
-          [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.vue',
-          [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: transactionSource,
-          ...getAttributesForRoute(to),
+      expect(mockStartSpan).toHaveBeenLastCalledWith(
+        {
+          name: transactionName,
+          attributes: {
+            [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.vue',
+            [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: transactionSource,
+            ...getAttributesForRoute(to, transactionSource === 'route' ? transactionName : undefined),
+          },
+          op: 'navigation',
         },
-        op: 'navigation',
-      });
+        expect.any(String),
+      );
     },
   );
 
@@ -142,7 +146,8 @@ describe('instrumentVueRouter()', () => {
     (fromKey, toKey, transactionName, transactionSource) => {
       const mockRootSpan = {
         ...MOCK_SPAN,
-        getSpanJSON: vi.fn().mockReturnValue({ op: 'pageload', data: {} }),
+        getStaticSpanJSON: () => ({ op: 'pageload' }),
+        getSpanJSON: () => ({ attributes: { 'sentry.op': 'pageload' } }),
         updateName: vi.fn(),
         setAttribute: vi.fn(),
         setAttributes: vi.fn(),
@@ -174,7 +179,7 @@ describe('instrumentVueRouter()', () => {
       expect(mockRootSpan.setAttribute).toHaveBeenCalledWith(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, transactionSource);
       expect(mockRootSpan.setAttributes).toHaveBeenCalledWith({
         [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.pageload.vue',
-        ...getAttributesForRoute(to),
+        ...getAttributesForRoute(to, transactionSource === 'route' ? transactionName : undefined),
       });
     },
   );
@@ -196,15 +201,18 @@ describe('instrumentVueRouter()', () => {
     beforeEachCallback(to, from);
 
     // first startTx call happens when the instrumentation is initialized (for pageloads)
-    expect(mockStartSpan).toHaveBeenLastCalledWith({
-      name: '/login',
-      attributes: {
-        [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.vue',
-        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
-        ...getAttributesForRoute(to),
+    expect(mockStartSpan).toHaveBeenLastCalledWith(
+      {
+        name: '/login',
+        attributes: {
+          [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.vue',
+          [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+          ...getAttributesForRoute(to, '/login'),
+        },
+        op: 'navigation',
       },
-      op: 'navigation',
-    });
+      expect.any(String),
+    );
   });
 
   it('allows to configure routeLabel=name', () => {
@@ -224,15 +232,18 @@ describe('instrumentVueRouter()', () => {
     beforeEachCallback(to, from);
 
     // first startTx call happens when the instrumentation is initialized (for pageloads)
-    expect(mockStartSpan).toHaveBeenLastCalledWith({
-      name: 'login-screen',
-      attributes: {
-        [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.vue',
-        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
-        ...getAttributesForRoute(to),
+    expect(mockStartSpan).toHaveBeenLastCalledWith(
+      {
+        name: 'login-screen',
+        attributes: {
+          [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.vue',
+          [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
+          ...getAttributesForRoute(to),
+        },
+        op: 'navigation',
       },
-      op: 'navigation',
-    });
+      expect.any(String),
+    );
   });
 
   it("doesn't overwrite a pageload transaction name it was set to custom before the router resolved the route", () => {
@@ -242,7 +253,8 @@ describe('instrumentVueRouter()', () => {
       setAttribute: vi.fn(),
       setAttributes: vi.fn(),
       name: '',
-      getSpanJSON: () => ({
+      getSpanJSON: () => ({ attributes: { 'sentry.op': 'pageload', [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url' } }),
+      getStaticSpanJSON: () => ({
         op: 'pageload',
         data: {
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
@@ -267,8 +279,8 @@ describe('instrumentVueRouter()', () => {
     // happen when users use the `beforeNavigate` hook
     mockRootSpan.name = 'customTxnName';
     mockRootSpan.getSpanJSON = () => ({
-      op: 'pageload',
-      data: {
+      attributes: {
+        'sentry.op': 'pageload',
         [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
       },
     });
@@ -286,7 +298,7 @@ describe('instrumentVueRouter()', () => {
     expect(mockRootSpan.setAttribute).not.toHaveBeenCalled();
     expect(mockRootSpan.setAttributes).toHaveBeenCalledWith({
       [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.pageload.vue',
-      ...getAttributesForRoute(to),
+      ...getAttributesForRoute(to, '/books/:bookId/chapter/:chapterId'),
     });
     expect(mockRootSpan.name).toEqual('customTxnName');
   });
@@ -331,12 +343,8 @@ describe('instrumentVueRouter()', () => {
         setAttribute: vi.fn(),
         setAttributes: vi.fn(),
         name: '',
-        getSpanJSON: () => ({
-          op: 'pageload',
-          data: {
-            [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
-          },
-        }),
+        getSpanJSON: () => ({ attributes: { 'sentry.op': 'pageload', [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url' } }),
+        getStaticSpanJSON: () => ({ op: 'pageload', data: { [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url' } }),
       };
       vi.spyOn(SentryCore, 'getRootSpan').mockImplementation(() => mockRootSpan as unknown as Span);
 
@@ -435,7 +443,7 @@ describe('instrumentVueRouter()', () => {
 });
 
 // Small helper function to get flattened attributes for test comparison
-function getAttributesForRoute(route: Route): SpanAttributes {
+function getAttributesForRoute(route: Route, urlTemplate?: string): SpanAttributes {
   const { params, query } = route;
 
   const attributes: SpanAttributes = {};
@@ -449,6 +457,14 @@ function getAttributesForRoute(route: Route): SpanAttributes {
     if (value) {
       attributes[`query.${key}`] = value;
     }
+  }
+
+  if (urlTemplate) {
+    attributes[URL_TEMPLATE] = urlTemplate;
+  }
+
+  if (route.name) {
+    attributes[NAVIGATION_ROUTE_ID] = route.name.toString();
   }
 
   return attributes;

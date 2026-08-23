@@ -120,6 +120,19 @@ export function isPlainObject(wat: unknown): wat is Record<string, unknown> {
 }
 
 /**
+ * Checks whether given value is a non-null object (i.e. `typeof` is `'object'` and it is not `null`).
+ * Unlike {@link isPlainObject}, this also accepts arrays and class instances - it only rules out
+ * `null`, primitives, and functions.
+ * {@link isObjectLike}.
+ *
+ * @param wat A value to be checked.
+ * @returns A boolean representing the result.
+ */
+export function isObjectLike(wat: unknown): wat is Record<PropertyKey, unknown> {
+  return typeof wat === 'object' && wat !== null;
+}
+
+/**
  * Checks whether given value's type is an Event instance
  * {@link isEvent}.
  *
@@ -137,7 +150,7 @@ export function isEvent(wat: unknown): wat is PolymorphicEvent {
  * @param wat A value to be checked.
  * @returns A boolean representing the result.
  * @deprecated This is browser-specific and will be removed from `@sentry/core` in a future major version.
- * Import `isElement` from `@sentry-internal/browser-utils` instead.
+ * Import `isElement` from `@sentry/browser-utils` instead.
  */
 export function isElement(wat: unknown): boolean {
   return typeof Element !== 'undefined' && isInstanceOf(wat, Element);
@@ -184,11 +197,13 @@ export function isSyntheticEvent(wat: unknown): boolean {
  * @param base A constructor to be used in a check.
  * @returns A boolean representing the result.
  */
-// TODO: fix in v11, convert any to unknown
-// export function isInstanceOf<T>(wat: unknown, base: { new (...args: any[]): T }): wat is T {
-export function isInstanceOf<T>(wat: any, base: any): wat is T {
+type Constructor<T> = { new (...args: never[]): T };
+
+export function isInstanceOf<T>(wat: unknown, base: Constructor<T>): wat is T;
+export function isInstanceOf(wat: unknown, base: unknown): boolean;
+export function isInstanceOf<T>(wat: unknown, base: unknown): wat is T {
   try {
-    return wat instanceof base;
+    return wat instanceof (base as Constructor<T>);
   } catch {
     return false;
   }

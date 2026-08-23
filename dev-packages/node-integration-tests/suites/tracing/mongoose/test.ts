@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect } from 'vitest';
 import { cleanupChildProcesses, createEsmAndCjsTests } from '../../../utils/runner';
 
 describe('Mongoose experimental Test', () => {
+  const origin = 'auto.db.mongoose';
+  const driverOrigin = 'auto.db.mongo';
   let mongoServer: MongoMemoryServer;
 
   beforeAll(async () => {
@@ -22,25 +24,81 @@ describe('Mongoose experimental Test', () => {
     spans: expect.arrayContaining([
       expect.objectContaining({
         data: expect.objectContaining({
-          'db.mongodb.collection': 'blogposts',
-          'db.name': 'test',
-          'db.operation': 'save',
-          'db.system': 'mongoose',
+          'db.collection.name': 'blogposts',
+          'db.namespace': 'test',
+          'db.operation.name': 'save',
+          'db.system.name': 'mongoose',
         }),
         description: 'mongoose.BlogPost.save',
         op: 'db',
-        origin: 'auto.db.otel.mongoose',
+        origin,
       }),
       expect.objectContaining({
         data: expect.objectContaining({
-          'db.mongodb.collection': 'blogposts',
-          'db.name': 'test',
-          'db.operation': 'findOne',
-          'db.system': 'mongoose',
+          'db.collection.name': 'blogposts',
+          'db.namespace': 'test',
+          'db.operation.name': 'findOne',
+          'db.system.name': 'mongoose',
         }),
         description: 'mongoose.BlogPost.findOne',
         op: 'db',
-        origin: 'auto.db.otel.mongoose',
+        origin,
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          'db.collection.name': 'blogposts',
+          'db.namespace': 'test',
+          'db.operation.name': 'aggregate',
+          'db.system.name': 'mongoose',
+        }),
+        description: 'mongoose.BlogPost.aggregate',
+        op: 'db',
+        origin,
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          'db.collection.name': 'blogposts',
+          'db.namespace': 'test',
+          'db.operation.name': 'insertMany',
+          'db.system.name': 'mongoose',
+        }),
+        description: 'mongoose.BlogPost.insertMany',
+        op: 'db',
+        origin,
+      }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          'db.collection.name': 'blogposts',
+          'db.namespace': 'test',
+          'db.operation.name': 'bulkWrite',
+          'db.system.name': 'mongoose',
+        }),
+        description: 'mongoose.BlogPost.bulkWrite',
+        op: 'db',
+        origin,
+      }),
+      // `remove` is patched only on mongoose 5/6.
+      expect.objectContaining({
+        data: expect.objectContaining({
+          'db.collection.name': 'blogposts',
+          'db.namespace': 'test',
+          'db.operation.name': 'remove',
+          'db.system.name': 'mongoose',
+        }),
+        description: 'mongoose.BlogPost.remove',
+        op: 'db',
+        origin,
+      }),
+      // A failing operation still produces a span, marked with an error status.
+      expect.objectContaining({
+        data: expect.objectContaining({
+          'db.operation.name': 'save',
+          'db.system.name': 'mongoose',
+        }),
+        description: 'mongoose.RequiredDoc.save',
+        op: 'db',
+        origin,
+        status: 'internal_error',
       }),
     ]),
   };
@@ -48,6 +106,43 @@ describe('Mongoose experimental Test', () => {
   createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createTestRunner, test) => {
     test('should auto-instrument `mongoose` package.', async () => {
       await createTestRunner().expect({ transaction: EXPECTED_TRANSACTION }).start().completed();
+    });
+
+    test('nests the mongodb driver span under the mongoose span', async () => {
+      await createTestRunner()
+        .expect({
+          transaction: event => {
+            const spans = event.spans || [];
+            const mongooseSave = spans.find(span => span.description === 'mongoose.BlogPost.save');
+            expect(mongooseSave).toBeDefined();
+            // the underlying mongodb driver span must be parented to the mongoose span
+            const driverChild = spans.find(
+              span => span.parent_span_id === mongooseSave?.span_id && span.origin === driverOrigin,
+            );
+            expect(driverChild).toBeDefined();
+          },
+        })
+        .start()
+        .completed();
+    });
+
+    test('parents a query to the span it was built in, not where it executes', async () => {
+      await createTestRunner()
+        .expect({
+          transaction: event => {
+            const spans = event.spans || [];
+            const builder = spans.find(span => span.description === 'query-builder');
+            expect(builder).toBeDefined();
+            // the query was built inside `query-builder` but awaited after it ended, so its exec
+            // span must parent to `query-builder` rather than the active span at exec time
+            const findExec = spans.find(
+              span => span.description === 'mongoose.BlogPost.findOne' && span.parent_span_id === builder?.span_id,
+            );
+            expect(findExec).toBeDefined();
+          },
+        })
+        .start()
+        .completed();
     });
   });
 });

@@ -8,9 +8,9 @@ interface Env {
 export default Sentry.withSentry(
   (env: Env) => ({
     dsn: env.SENTRY_DSN,
+    traceLifecycle: 'static',
     tracesSampleRate: 1.0,
-    sendDefaultPii: true,
-    streamGenAiSpans: true,
+    dataCollection: { genAI: { inputs: true, outputs: true } },
   }),
   {
     async fetch(_request, _env, _ctx) {
@@ -53,7 +53,7 @@ export default Sentry.withSentry(
         .addEdge(START, 'agent')
         .addEdge('agent', END);
 
-      Sentry.instrumentLangGraph(graph, { recordInputs: true, recordOutputs: true });
+      Sentry.instrumentStateGraph(graph, { recordInputs: true, recordOutputs: true });
 
       const compiled = graph.compile({ name: 'weather_assistant' });
 

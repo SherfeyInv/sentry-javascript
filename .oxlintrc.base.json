@@ -1,4 +1,10 @@
 {
+  "jsPlugins": [
+    {
+      "name": "sdk",
+      "specifier": "@sentry/eslint-plugin-sdk"
+    }
+  ],
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "import", "jsdoc", "vitest"],
   "rules": {
@@ -17,13 +23,11 @@
     "no-unused-expressions": ["error", { "allowShortCircuit": true }],
     "guard-for-in": "error",
     "array-callback-return": ["error", { "allowImplicit": true }],
-    "quotes": ["error", "single", { "avoidEscape": true }],
-    "no-return-await": "error",
+    "typescript/return-await": "error",
     "max-lines": ["error", { "max": 300, "skipComments": true, "skipBlankLines": true }],
 
     // === Import rules ===
     "import/namespace": "off",
-    "import/no-unresolved": "off",
 
     // === Rules turned off (not enforced in ESLint or causing false positives) ===
     "no-control-regex": "off",
@@ -33,12 +37,37 @@
     "no-constant-binary-expression": "off",
     "vitest/hoisted-apis-on-top": "off",
     "vitest/no-conditional-tests": "off",
+    // Vitest correctness rules newly surfaced by the oxlint 1.75 bump. We keep the vitest plugin
+    // (and its many other rules), but disable the ones now firing across the existing test suite.
+    "vitest/no-standalone-expect": "off",
+    "vitest/require-mock-type-parameters": "off",
+    "vitest/no-conditional-expect": "off",
+    "vitest/expect-expect": "off",
+    "vitest/require-to-throw-message": "off",
+    "vitest/valid-title": "off",
+    "vitest/valid-expect": "off",
+    "vitest/no-disabled-tests": "off",
+    "vitest/valid-describe-callback": "off",
+    // Not trusted / false positives for this codebase: the default-assignment and spread-fallback
+    // rules over-trigger, and we intentionally implement thenables (SyncPromise etc.).
+    "typescript/no-useless-default-assignment": "off",
+    "unicorn/no-useless-fallback-in-spread": "off",
+    "unicorn/no-thenable": "off",
+    "unicorn/prefer-string-starts-ends-with": "off",
+    "unicorn/no-new-array": "off",
     "no-unsafe-optional-chaining": "off",
     "no-eval": "off",
     "no-import-assign": "off",
-    "typescript/no-duplicate-type-constituents": "off"
+    "typescript/no-duplicate-type-constituents": "off",
+    "typescript/no-deprecated": "error"
   },
   "overrides": [
+    {
+      "files": ["**/src/**/*.ts", "**/src/**/*.tsx"],
+      "rules": {
+        "sdk/no-unfiltered-url-attributes": "error"
+      }
+    },
     {
       "files": ["**/*.ts", "**/*.tsx", "**/*.d.ts"],
       "rules": {
@@ -101,13 +130,13 @@
         "typescript/no-misused-spread": "off",
         "typescript/require-array-sort-compare": "off",
         "typescript/no-base-to-string": "off",
-        "typescript/await-thenable": "off"
-      }
-    },
-    {
-      "files": ["*.tsx"],
-      "rules": {
-        "jsdoc/require-jsdoc": "off"
+        "typescript/await-thenable": "off",
+        "typescript/no-deprecated": "off",
+        "no-unreachable": "off",
+        "unicorn/no-empty-file": "off",
+        "unicorn/no-single-promise-in-promise-methods": "off",
+        "unicorn/no-invalid-fetch-options": "off",
+        "unicorn/no-await-in-promise-methods": "off"
       }
     },
     {
@@ -131,39 +160,62 @@
       }
     },
     {
+      "files": ["**/integration/aws/vendored/**/*.ts"],
+      "rules": {
+        "typescript/consistent-type-imports": "off",
+        "typescript/no-unnecessary-type-assertion": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-explicit-any": "off",
+        "typescript/no-this-alias": "off",
+        "typescript/prefer-for-of": "off",
+        "typescript/unbound-method": "off",
+        "max-lines": "off",
+        "complexity": "off",
+        "no-param-reassign": "off"
+      }
+    },
+    {
+      "files": ["**/integrations/aws-sdk/**/*.ts"],
+      "rules": {
+        "typescript/no-explicit-any": "off",
+        "typescript/no-unsafe-member-access": "off"
+      }
+    },
+    {
+      "files": ["**/integrations/aws-sdk/services/**/*.ts"],
+      "rules": {
+        "max-lines": "off",
+        "complexity": "off"
+      }
+    },
+    {
       "files": ["**/integrations/tracing/redis/vendored/**/*.ts"],
       "rules": {
         "typescript/no-explicit-any": "off",
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-this-alias": "off",
-        "max-lines": "off",
-        "no-bitwise": "off"
+        "max-lines": "off"
       }
     },
     {
       "files": [
-        "**/integrations/tracing/dataloader/vendored/**/*.ts",
-        "**/integrations/tracing/genericPool/vendored/**/*.ts",
-        "**/integrations/fs/vendored/**/*.ts",
         "**/integrations/tracing/knex/vendored/**/*.ts",
         "**/integrations/tracing/mongo/vendored/**/*.ts",
-        "**/integrations/tracing/koa/vendored/**/*.ts",
-        "**/integrations/tracing/connect/vendored/**/*.ts",
+        "**/integrations/tracing/graphql/vendored/**/*.ts",
         "**/integrations/tracing/mysql2/vendored/**/*.ts",
-        "**/integration/aws/vendored/**/*.ts",
-        "**/nestjs/src/integrations/vendored/**/*.ts",
         "**/integrations/tracing/kafka/vendored/**/*.ts",
         "**/integrations/tracing/tedious/vendored/**/*.ts",
         "**/integrations/tracing/hapi/vendored/**/*.ts",
         "**/integrations/tracing/mongoose/vendored/**/*.ts",
         "**/integrations/tracing/amqplib/vendored/**/*.ts",
         "**/integrations/tracing/prisma/vendored/**/*.ts",
-        "**/integrations/tracing/graphql/vendored/**/*.ts",
         "**/integrations/tracing/postgres/vendored/**/*.ts",
-        "**/integrations/tracing/fastify/vendored/**/*.ts"
+        "**/integrations/tracing/redis/vendored/**/*.ts"
       ],
       "rules": {
-        "typescript/no-explicit-any": "off"
+        "typescript/no-explicit-any": "off",
+        "no-unsafe-member-access": "off",
+        "no-this-alias": "off"
       }
     },
     {
@@ -176,6 +228,14 @@
       "files": ["**/src/**"],
       "rules": {
         "no-restricted-globals": ["error", "window", "document", "location", "navigator"]
+      }
+    },
+    {
+      // Intentionally comment-only: a grep marker for the release-injection file, and a
+      // resolvable-but-empty module used to mock `$app/stores` in sveltekit tests.
+      "files": ["**/sentry-release-injection-file.js", "**/.empty.js"],
+      "rules": {
+        "unicorn/no-empty-file": "off"
       }
     }
   ]

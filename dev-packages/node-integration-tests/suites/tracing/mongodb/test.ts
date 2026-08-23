@@ -5,6 +5,7 @@ import { assertSentryTransaction } from '../../../utils/assertions';
 import { cleanupChildProcesses, createEsmAndCjsTests } from '../../../utils/runner';
 
 describe('MongoDB auto-instrumentation', () => {
+  const origin = 'auto.db.mongo';
   let mongoServer: MongoMemoryServer;
 
   beforeAll(async () => {
@@ -21,98 +22,114 @@ describe('MongoDB auto-instrumentation', () => {
 
   const SPAN_FIND_MATCHER = expect.objectContaining({
     data: {
-      'sentry.origin': 'auto.db.otel.mongo',
+      'sentry.origin': origin,
       'sentry.op': 'db',
-      'db.system': 'mongodb',
-      'db.name': 'admin',
-      'db.mongodb.collection': 'movies',
-      'db.operation': 'find',
+      'db.system.name': 'mongodb',
+      'db.namespace': 'admin',
+      'db.collection.name': 'movies',
+      'db.operation.name': 'find',
       'db.connection_string': expect.any(String),
-      'net.peer.name': expect.any(String),
-      'net.peer.port': expect.any(Number),
-      'db.statement': '{"title":"?"}',
-      'otel.kind': 'CLIENT',
+      'server.address': expect.any(String),
+      'server.port': expect.any(Number),
+      'db.query.text': '{"title":"?"}',
+      'sentry.kind': 'client',
     },
     description: '{"title":"?"}',
     op: 'db',
-    origin: 'auto.db.otel.mongo',
+    origin,
   });
 
   const SPAN_INSERT_MATCHER = expect.objectContaining({
     data: {
-      'sentry.origin': 'auto.db.otel.mongo',
+      'sentry.origin': origin,
       'sentry.op': 'db',
-      'db.system': 'mongodb',
-      'db.name': 'admin',
-      'db.mongodb.collection': 'movies',
-      'db.operation': 'insert',
+      'db.system.name': 'mongodb',
+      'db.namespace': 'admin',
+      'db.collection.name': 'movies',
+      'db.operation.name': 'insert',
       'db.connection_string': expect.any(String),
-      'net.peer.name': expect.any(String),
-      'net.peer.port': expect.any(Number),
-      'db.statement': '{"title":"?","_id":{"_bsontype":"?","id":"?"}}',
-      'otel.kind': 'CLIENT',
+      'server.address': expect.any(String),
+      'server.port': expect.any(Number),
+      'db.query.text': '{"title":"?","_id":{"_bsontype":"?","id":"?"}}',
+      'sentry.kind': 'client',
     },
     description: '{"title":"?","_id":{"_bsontype":"?","id":"?"}}',
     op: 'db',
-    origin: 'auto.db.otel.mongo',
+    origin,
   });
 
   const SPAN_ISMASTER_MATCHER = expect.objectContaining({
     data: {
-      'sentry.origin': 'auto.db.otel.mongo',
+      'sentry.origin': origin,
       'sentry.op': 'db',
-      'db.system': 'mongodb',
-      'db.name': 'admin',
-      'db.mongodb.collection': '$cmd',
-      'db.operation': 'isMaster',
+      'db.system.name': 'mongodb',
+      'db.namespace': 'admin',
+      'db.collection.name': '$cmd',
+      'db.operation.name': 'isMaster',
       'db.connection_string': expect.any(String),
-      'net.peer.name': expect.any(String),
-      'net.peer.port': expect.any(Number),
-      'db.statement':
+      'server.address': expect.any(String),
+      'server.port': expect.any(Number),
+      'db.query.text':
         '{"ismaster":"?","client":{"driver":{"name":"?","version":"?"},"os":{"type":"?","name":"?","architecture":"?","version":"?"},"platform":"?"},"compression":[],"helloOk":"?"}',
-      'otel.kind': 'CLIENT',
+      'sentry.kind': 'client',
     },
     description:
       '{"ismaster":"?","client":{"driver":{"name":"?","version":"?"},"os":{"type":"?","name":"?","architecture":"?","version":"?"},"platform":"?"},"compression":[],"helloOk":"?"}',
     op: 'db',
-    origin: 'auto.db.otel.mongo',
+    origin,
   });
 
   const SPAN_UPDATE_MATCHER = expect.objectContaining({
     data: {
-      'sentry.origin': 'auto.db.otel.mongo',
+      'sentry.origin': origin,
       'sentry.op': 'db',
-      'db.system': 'mongodb',
-      'db.name': 'admin',
-      'db.mongodb.collection': 'movies',
-      'db.operation': 'update',
+      'db.system.name': 'mongodb',
+      'db.namespace': 'admin',
+      'db.collection.name': 'movies',
+      'db.operation.name': 'update',
       'db.connection_string': expect.any(String),
-      'net.peer.name': expect.any(String),
-      'net.peer.port': expect.any(Number),
-      'db.statement': '{"title":"?"}',
-      'otel.kind': 'CLIENT',
+      'server.address': expect.any(String),
+      'server.port': expect.any(Number),
+      'db.query.text': '{"title":"?"}',
+      'sentry.kind': 'client',
     },
     description: '{"title":"?"}',
     op: 'db',
-    origin: 'auto.db.otel.mongo',
+    origin,
+  });
+
+  // A query the server rejects: same attributes as a successful find, but with an error status.
+  const SPAN_FIND_ERROR_MATCHER = expect.objectContaining({
+    data: expect.objectContaining({
+      'sentry.origin': origin,
+      'sentry.op': 'db',
+      'db.system.name': 'mongodb',
+      'db.operation.name': 'find',
+      'db.query.text': '{"$thisOperatorDoesNotExist":"?"}',
+      'sentry.kind': 'client',
+    }),
+    description: '{"$thisOperatorDoesNotExist":"?"}',
+    op: 'db',
+    origin,
+    status: 'internal_error',
   });
 
   const SPAN_ENDSESSIONS_MATCHER = expect.objectContaining({
     data: {
-      'sentry.origin': 'auto.db.otel.mongo',
+      'sentry.origin': origin,
       'sentry.op': 'db',
-      'db.system': 'mongodb',
-      'db.name': 'admin',
-      'db.mongodb.collection': '$cmd',
+      'db.system.name': 'mongodb',
+      'db.namespace': 'admin',
+      'db.collection.name': '$cmd',
       'db.connection_string': expect.any(String),
-      'net.peer.name': expect.any(String),
-      'net.peer.port': expect.any(Number),
-      'db.statement': '{"endSessions":[{"id":{"_bsontype":"?","sub_type":"?","position":"?","buffer":"?"}}]}',
-      'otel.kind': 'CLIENT',
+      'server.address': expect.any(String),
+      'server.port': expect.any(Number),
+      'db.query.text': '{"endSessions":[{"id":{"_bsontype":"?","sub_type":"?","position":"?","buffer":"?"}}]}',
+      'sentry.kind': 'client',
     },
     description: '{"endSessions":[{"id":{"_bsontype":"?","sub_type":"?","position":"?","buffer":"?"}}]}',
     op: 'db',
-    origin: 'auto.db.otel.mongo',
+    origin,
   });
 
   createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createTestRunner, test) => {
@@ -136,9 +153,10 @@ describe('MongoDB auto-instrumentation', () => {
             // `db.statement` as a fallback.
             const operationCounts = spans.reduce<Record<string, number>>((acc, span) => {
               const data = (span.data ?? {}) as Record<string, unknown>;
-              let op = typeof data['db.operation'] === 'string' ? (data['db.operation'] as string) : undefined;
+              let op =
+                typeof data['db.operation.name'] === 'string' ? (data['db.operation.name'] as string) : undefined;
               if (!op) {
-                const stmt = data['db.statement'];
+                const stmt = data['db.query.text'];
                 const match = typeof stmt === 'string' ? stmt.match(/^\{"(\w+)"/) : null;
                 op = match ? match[1] : 'unknown';
               }
@@ -147,7 +165,7 @@ describe('MongoDB auto-instrumentation', () => {
             }, {});
 
             expect(operationCounts).toEqual({
-              find: 3,
+              find: 4,
               isMaster: 2,
               insert: 1,
               update: 1,
@@ -158,6 +176,7 @@ describe('MongoDB auto-instrumentation', () => {
             expect(spans).toContainEqual(SPAN_INSERT_MATCHER);
             expect(spans).toContainEqual(SPAN_ISMASTER_MATCHER);
             expect(spans).toContainEqual(SPAN_UPDATE_MATCHER);
+            expect(spans).toContainEqual(SPAN_FIND_ERROR_MATCHER);
             expect(spans).toContainEqual(SPAN_ENDSESSIONS_MATCHER);
           },
         })

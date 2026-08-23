@@ -7,6 +7,5 @@ Sentry.init({
   tracesSampleRate: 1.0,
   transport: loggingTransport,
   traceLifecycle: 'stream',
-  sendDefaultPii: true,
   integrations: defaults => defaults.filter(i => i.name !== 'RequestData'),
 });

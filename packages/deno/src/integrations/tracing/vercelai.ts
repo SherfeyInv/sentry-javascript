@@ -3,26 +3,22 @@
  */
 
 import type { IntegrationFn } from '@sentry/core';
-import { addVercelAiProcessors, defineIntegration } from '@sentry/core';
-
-const INTEGRATION_NAME = 'VercelAI';
-
-interface VercelAiOptions {
-  /**
-   * Enable or disable truncation of recorded input messages.
-   * Defaults to `true`.
-   */
-  enableTruncation?: boolean;
-}
+import { defineIntegration, extendIntegration } from '@sentry/core';
+import {
+  addVercelAiProcessors,
+  vercelAIIntegration as serverUtilsVercelAiIntegration,
+  type VercelAiOptions,
+} from '@sentry/server-utils';
 
 const _vercelAIIntegration = ((options: VercelAiOptions = {}) => {
-  return {
-    name: INTEGRATION_NAME,
+  const inner = serverUtilsVercelAiIntegration(options);
+
+  return extendIntegration(inner, {
     options,
     setup(client) {
       addVercelAiProcessors(client);
     },
-  };
+  });
 }) satisfies IntegrationFn;
 
 /**

@@ -15,7 +15,6 @@ export {
   getClient,
   isInitialized,
   isEnabled,
-  generateInstrumentOnce,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
@@ -30,6 +29,8 @@ export {
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
   getSpanStatusFromHttpCode,
   setHttpStatus,
@@ -47,9 +48,9 @@ export {
   instrumentLangChainEmbeddings,
   httpHeadersToSpanAttributes,
   winterCGHeadersToDict,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   anrIntegration,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   disableAnrDetectionForCallback,
   consoleIntegration,
   httpIntegration,
@@ -69,8 +70,6 @@ export {
   localVariablesIntegration,
   requestDataIntegration,
   functionToStringIntegration,
-  // eslint-disable-next-line deprecation/deprecation
-  inboundFiltersIntegration,
   eventFiltersIntegration,
   linkedErrorsIntegration,
   setMeasurement,
@@ -79,6 +78,7 @@ export {
   startInactiveSpan,
   startSpanManual,
   startNewTrace,
+  bindScopeToEmitter,
   suppressTracing,
   withActiveSpan,
   getRootSpan,
@@ -97,8 +97,6 @@ export {
   setupExpressErrorHandler,
   koaIntegration,
   setupKoaErrorHandler,
-  connectIntegration,
-  setupConnectErrorHandler,
   fastifyIntegration,
   firebaseIntegration,
   fsIntegration,
@@ -118,14 +116,16 @@ export {
   postgresJsIntegration,
   processSessionIntegration,
   prismaIntegration,
+  otlpIntegration,
+  getOtlpTracesEndpoint,
   childProcessIntegration,
+  workerThreadsIntegration,
   createSentryWinstonTransport,
   hapiIntegration,
   setupHapiErrorHandler,
-  honoIntegration,
-  setupHonoErrorHandler,
   spotlightIntegration,
   initOpenTelemetry,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
@@ -137,7 +137,7 @@ export {
   instrumentOpenAiClient,
   instrumentAnthropicAiClient,
   instrumentGoogleGenAIClient,
-  instrumentLangGraph,
+  instrumentStateGraph,
   instrumentStateGraphCompile,
   zodErrorsIntegration,
   profiler,
@@ -161,6 +161,8 @@ export {
   growthbookIntegration,
   metrics,
   spanStreamingIntegration,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
   withStreamedSpan,
 } from '@sentry/node';
 
@@ -171,10 +173,10 @@ export {
   rewriteFramesIntegration,
 } from '@sentry/core';
 
-export { awsIntegration } from './integration/aws';
+export { awsIntegration } from '@sentry/server-utils/orchestrion';
 export { awsLambdaIntegration } from './integration/awslambda';
 
 export { getDefaultIntegrations, init } from './init';
-// eslint-disable-next-line deprecation/deprecation
-export { tryPatchHandler, wrapHandler } from './sdk';
+// eslint-disable-next-line typescript/no-deprecated
+export { wrapHandler } from './sdk';
 export type { WrapperOptions } from './sdk';

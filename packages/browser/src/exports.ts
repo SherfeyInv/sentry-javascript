@@ -53,25 +53,27 @@ export {
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
   setConversationId,
   withScope,
   withIsolationScope,
   functionToStringIntegration,
-  // eslint-disable-next-line deprecation/deprecation
-  inboundFiltersIntegration,
   eventFiltersIntegration,
   dedupeIntegration,
   parameterize,
   startSession,
   captureSession,
   endSession,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
   updateSpanName,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
   withStreamedSpan,
-  metrics,
 } from '@sentry/core/browser';
 
 export {

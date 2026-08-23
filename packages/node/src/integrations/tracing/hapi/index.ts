@@ -1,51 +1,6 @@
-import { HapiInstrumentation } from './vendored/instrumentation';
-import type { IntegrationFn, Span } from '@sentry/core';
-import {
-  captureException,
-  debug,
-  defineIntegration,
-  getClient,
-  getDefaultIsolationScope,
-  getIsolationScope,
-  SDK_VERSION,
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  spanToJSON,
-} from '@sentry/core';
-import { ensureIsWrapped, generateInstrumentOnce } from '@sentry/node-core';
+import { captureException, debug, getDefaultIsolationScope, getIsolationScope, SDK_VERSION } from '@sentry/core';
 import { DEBUG_BUILD } from '../../../debug-build';
 import type { Request, RequestEvent, Server } from './types';
-
-const INTEGRATION_NAME = 'Hapi';
-
-export const instrumentHapi = generateInstrumentOnce(INTEGRATION_NAME, () => new HapiInstrumentation());
-
-const _hapiIntegration = (() => {
-  return {
-    name: INTEGRATION_NAME,
-    setupOnce() {
-      instrumentHapi();
-    },
-  };
-}) satisfies IntegrationFn;
-
-/**
- * Adds Sentry tracing instrumentation for [Hapi](https://hapi.dev/).
- *
- * If you also want to capture errors, you need to call `setupHapiErrorHandler(server)` after you set up your server.
- *
- * For more information, see the [hapi documentation](https://docs.sentry.io/platforms/javascript/guides/hapi/).
- *
- * @example
- * ```javascript
- * const Sentry = require('@sentry/node');
- *
- * Sentry.init({
- *   integrations: [Sentry.hapiIntegration()],
- * })
- * ```
- */
-export const hapiIntegration = defineIntegration(_hapiIntegration);
 
 function isErrorEvent(event: unknown): event is RequestEvent {
   return !!(event && typeof event === 'object' && 'error' in event && event.error);
@@ -108,33 +63,4 @@ export const hapiErrorPlugin = {
  */
 export async function setupHapiErrorHandler(server: Server): Promise<void> {
   await server.register(hapiErrorPlugin);
-
-  // Sadly, middleware spans do not go through `requestHook`, so we handle those here
-  // We register this hook in this method, because if we register it in the integration `setup`,
-  // it would always run even for users that are not even using hapi
-  const client = getClient();
-  if (client) {
-    client.on('spanStart', span => {
-      addHapiSpanAttributes(span);
-    });
-  }
-
-  ensureIsWrapped(server.register, 'hapi');
-}
-
-function addHapiSpanAttributes(span: Span): void {
-  const attributes = spanToJSON(span).data;
-
-  // this is one of: router, plugin, server.ext
-  const type = attributes['hapi.type'];
-
-  // If this is already set, or we have no Hapi span, no need to process again...
-  if (attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP] || !type) {
-    return;
-  }
-
-  span.setAttributes({
-    [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.http.otel.hapi',
-    [SEMANTIC_ATTRIBUTE_SENTRY_OP]: `${type}.hapi`,
-  });
 }

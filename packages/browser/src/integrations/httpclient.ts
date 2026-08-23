@@ -12,13 +12,13 @@ import {
   isSentryRequestUrl,
   supportsNativeFetch,
 } from '@sentry/core/browser';
-import { addXhrInstrumentationHandler, SENTRY_XHR_DATA_KEY } from '@sentry-internal/browser-utils';
+import { addXhrInstrumentationHandler, SENTRY_XHR_DATA_KEY } from '@sentry/browser-utils';
 import { DEBUG_BUILD } from '../debug-build';
 
 export type HttpStatusCodeRange = [number, number] | number;
 export type HttpRequestTarget = string | RegExp;
 
-const INTEGRATION_NAME = 'HttpClient';
+const INTEGRATION_NAME = 'HttpClient' as const;
 
 interface HttpClientOptions {
   /**
@@ -298,7 +298,7 @@ function _wrapFetch(client: Client, options: HttpClientOptions): void {
     }
 
     _fetchResponseHandler(options, requestInfo, response as Response, requestInit, error || virtualError);
-  }, false);
+  });
 }
 
 /**
@@ -425,16 +425,6 @@ function _getDataCollectionSettings() {
   const client = getClient();
   if (!client) {
     return { cookies: false, requestHeaders: false, responseHeaders: false };
-  }
-
-  // todo(v11): Always use granular dataCollection settings and remove this legacy guard.
-  // Currently, when dataCollection is not explicitly set, we gate all collection on
-  // sendDefaultPii to avoid sending more data than before (the spec defaults would
-  // collect headers/cookies with deny-list filtering even without sendDefaultPii).
-  const options = client.getOptions();
-  if (options.dataCollection == null) {
-    const enabled = Boolean(options.sendDefaultPii);
-    return { cookies: enabled, requestHeaders: enabled, responseHeaders: enabled };
   }
 
   const { cookies, httpHeaders } = client.getDataCollectionOptions();

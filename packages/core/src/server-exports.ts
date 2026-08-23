@@ -15,6 +15,7 @@ export { vercelWaitUntil } from './utils/vercelWaitUntil';
 export { flushIfServerless } from './utils/flushIfServerless';
 export { callFrameToStackFrame, watchdogTimer } from './utils/anr';
 export { safeUnref as _INTERNAL_safeUnref } from './utils/timer';
+// eslint-disable-next-line typescript/no-deprecated
 export { patchExpressModule, setupExpressErrorHandler, expressErrorHandler } from './integrations/express/index';
 export type {
   ExpressIntegrationOptions,
@@ -22,27 +23,16 @@ export type {
   ExpressMiddleware,
   ExpressErrorMiddleware,
 } from './integrations/express/types';
-export { instrumentPostgresJsSql } from './integrations/postgresjs';
-
 export {
-  IOREDIS_DC_CHANNEL_COMMAND,
-  IOREDIS_DC_CHANNEL_CONNECT,
-  REDIS_DC_CHANNEL_BATCH,
-  REDIS_DC_CHANNEL_COMMAND,
-  REDIS_DC_CHANNEL_CONNECT,
-  subscribeRedisDiagnosticChannels,
-} from './integrations/redis/redis-dc-subscriber';
-export type {
-  IORedisCommandData,
-  RedisBatchData,
-  RedisCommandData,
-  RedisConnectData,
-  RedisDiagnosticChannelResponseHook,
-  RedisTracingChannel,
-  RedisTracingChannelContextWithSpan,
-  RedisTracingChannelFactory,
-  RedisTracingChannelSubscribers,
-} from './integrations/redis/redis-dc-subscriber';
+  instrumentPostgresJsSql,
+  _sanitizeSqlQuery as _INTERNAL_sanitizeSqlQuery,
+  _reconstructQuery as _INTERNAL_reconstructPostgresQuery,
+  _buildConnectionContext as _INTERNAL_buildPostgresConnectionContext,
+  _setConnectionAttributes as _INTERNAL_setPostgresConnectionAttributes,
+  _setOperationName as _INTERNAL_setPostgresOperationName,
+} from './integrations/postgresjs';
+export type { PostgresConnectionContext } from './integrations/postgresjs';
+export { getSqlQuerySummary as _INTERNAL_getSqlQuerySummary } from './utils/sql';
 
 export { patchHttpModuleClient } from './integrations/http/client-patch';
 export { getHttpClientSubscriptions } from './integrations/http/client-subscriptions';

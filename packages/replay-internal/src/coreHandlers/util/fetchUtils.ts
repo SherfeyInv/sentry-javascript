@@ -1,6 +1,6 @@
 import type { Breadcrumb, FetchBreadcrumbData } from '@sentry/core';
-import type { FetchHint, NetworkMetaWarning } from '@sentry-internal/browser-utils';
-import { getBodyString, getFetchRequestArgBody, setTimeout } from '@sentry-internal/browser-utils';
+import type { FetchHint, NetworkMetaWarning } from '@sentry/browser-utils';
+import { getBodyString, getFetchRequestArgBody, setTimeout } from '@sentry/browser-utils';
 import { DEBUG_BUILD } from '../../debug-build';
 import type {
   ReplayContainer,
@@ -294,7 +294,5 @@ function _tryGetResponseText(response: Response): Promise<string | undefined> {
 }
 
 async function _getResponseText(response: Response): Promise<string> {
-  // Force this to be a promise, just to be safe
-  // eslint-disable-next-line no-return-await
-  return await response.text();
+  return response.text();
 }

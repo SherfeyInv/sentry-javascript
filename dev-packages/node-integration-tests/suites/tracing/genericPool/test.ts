@@ -12,21 +12,45 @@ describe('genericPool auto instrumentation', () => {
         transaction: 'Test Transaction',
         spans: expect.arrayContaining([
           expect.objectContaining({
-            description: expect.stringMatching(/^generic-pool\.ac?quire/),
-            origin: 'auto.db.otel.generic_pool',
-            data: {
-              'sentry.origin': 'auto.db.otel.generic_pool',
-            },
+            description: 'generic-pool.acquire',
+            op: 'db',
+            origin: 'auto.db.generic_pool',
+            data: expect.objectContaining({
+              'sentry.origin': 'auto.db.generic_pool',
+            }),
             status: 'ok',
           }),
 
           expect.objectContaining({
-            description: expect.stringMatching(/^generic-pool\.ac?quire/),
-            origin: 'auto.db.otel.generic_pool',
-            data: {
-              'sentry.origin': 'auto.db.otel.generic_pool',
-            },
+            description: 'generic-pool.acquire',
+            op: 'db',
+            origin: 'auto.db.generic_pool',
+            data: expect.objectContaining({
+              'sentry.origin': 'auto.db.generic_pool',
+            }),
             status: 'ok',
+          }),
+        ]),
+      };
+
+      await createRunner().expect({ transaction: EXPECTED_TRANSACTION }).start().completed();
+    });
+  });
+
+  createEsmAndCjsTests(__dirname, 'scenario-error.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('marks the `generic-pool.acquire` span as errored when acquiring fails', async () => {
+      const EXPECTED_TRANSACTION = {
+        transaction: 'Test Transaction',
+        spans: expect.arrayContaining([
+          expect.objectContaining({
+            description: 'generic-pool.acquire',
+            op: 'db',
+            origin: 'auto.db.generic_pool',
+            data: expect.objectContaining({
+              'sentry.origin': 'auto.db.generic_pool',
+              'error.type': 'TimeoutError',
+            }),
+            status: 'internal_error',
           }),
         ]),
       };

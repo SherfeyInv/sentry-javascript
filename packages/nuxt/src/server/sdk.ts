@@ -5,9 +5,8 @@ import {
   debug,
   DEFAULT_ENVIRONMENT,
   DEV_ENVIRONMENT,
-  flush,
+  flushIfServerless,
   getGlobalScope,
-  vercelWaitUntil,
 } from '@sentry/core';
 import {
   getDefaultIntegrations as getDefaultNodeIntegrations,
@@ -15,7 +14,6 @@ import {
   init as initNode,
   type NodeOptions,
 } from '@sentry/node';
-import { isCjs } from '@sentry/node-core';
 import { DEBUG_BUILD } from '../common/debug-build';
 import type { SentryNuxtServerOptions } from '../common/types';
 
@@ -25,7 +23,15 @@ import type { SentryNuxtServerOptions } from '../common/types';
  * @param options Configuration options for the SDK.
  */
 export function init(options: SentryNuxtServerOptions): Client | undefined {
-  const envFallback = !isCjs() && import.meta.dev ? DEV_ENVIRONMENT : DEFAULT_ENVIRONMENT;
+  let envFallback: string;
+  /*! rollup-include-cjs-only */
+  envFallback = DEFAULT_ENVIRONMENT;
+  /*! rollup-include-cjs-only-end */
+
+  /*! rollup-include-esm-only */
+  envFallback = import.meta.dev ? DEV_ENVIRONMENT : DEFAULT_ENVIRONMENT;
+  /*! rollup-include-esm-only-end */
+
   const sentryOptions = {
     environment: options.environment ?? process.env.SENTRY_ENVIRONMENT ?? envFallback,
     defaultIntegrations: getNuxtDefaultIntegrations(options),
@@ -100,27 +106,15 @@ function getNuxtDefaultIntegrations(options: NodeOptions): Integration[] {
     ...getDefaultNodeIntegrations(options).filter(integration => integration.name !== 'Http'),
     // The httpIntegration is added as defaultIntegration, so users can still overwrite it
     httpIntegration({
-      instrumentation: {
-        responseHook: () => {
-          // Makes it possible to end the tracing span before closing the Vercel lambda (https://vercel.com/docs/functions/functions-api-reference#waituntil)
-          vercelWaitUntil(flushSafelyWithTimeout());
-        },
+      incomingRequestSpanHook: () => {
+        // Flush eagerly on serverless platforms, where the function may be frozen before the transport
+        // sends, handing the flush to a platform `waitUntil` where one exists so it doesn't block. On a
+        // long-running server this is a no-op, so pending outcomes keep aggregating on the flush interval
+        // instead of shipping one client_report envelope per response.
+        void flushIfServerless();
       },
     }),
   ];
-}
-
-/**
- * Flushes pending Sentry events with a 2-second timeout and in a way that cannot create unhandled promise rejections.
- */
-async function flushSafelyWithTimeout(): Promise<void> {
-  try {
-    DEBUG_BUILD && debug.log('Flushing events...');
-    await flush(2000);
-    DEBUG_BUILD && debug.log('Done flushing events');
-  } catch (e) {
-    DEBUG_BUILD && debug.log('Error while flushing events:\n', e);
-  }
 }
 
 /**

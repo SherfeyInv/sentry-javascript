@@ -1,7 +1,6 @@
-import { getClient, getCurrentScope } from '../currentScopes';
+import { getClient, getCurrentScope, getIsolationScope } from '../currentScopes';
 import { DEBUG_BUILD } from '../debug-build';
 import { SEMANTIC_ATTRIBUTE_SENTRY_IDLE_SPAN_FINISH_REASON } from '../semanticAttributes';
-import type { DynamicSamplingContext } from '../types/envelope';
 import type { Span } from '../types/span';
 import type { StartSpanOptions } from '../types/startSpanOptions';
 import { debug } from '../utils/debug-logger';
@@ -14,13 +13,14 @@ import {
   removeChildSpanFromSpan,
   spanTimeInputToSeconds,
   spanToJSON,
+  spanToStaticSpanJSON,
 } from '../utils/spanUtils';
 import { timestampInSeconds } from '../utils/time';
-import { freezeDscOnSpan, getDynamicSamplingContextFromSpan } from './dynamicSamplingContext';
-import { SentryNonRecordingSpan } from './sentryNonRecordingSpan';
+import { SentryNonRecordingSpan, spanIsNonRecordingSpan } from './sentryNonRecordingSpan';
 import { SentrySpan } from './sentrySpan';
 import { SPAN_STATUS_ERROR, SPAN_STATUS_OK } from './spanstatus';
 import { startInactiveSpan } from './trace';
+import { setCapturedScopesOnSpan } from './utils';
 
 export const TRACING_DEFAULTS = {
   idleTimeout: 1_000,
@@ -76,9 +76,6 @@ interface IdleSpanOptions {
    */
   disableAutoFinish?: boolean;
 
-  /** Allows to configure a hook that is called when the idle span is ended, before it is processed. */
-  beforeSpanEnd?: (span: Span) => void;
-
   /**
    * If set to `true`, the idle span will be trimmed to the latest span end timestamp of its children.
    *
@@ -115,26 +112,24 @@ export function startIdleSpan(startSpanOptions: StartSpanOptions, options: Parti
     idleTimeout = TRACING_DEFAULTS.idleTimeout,
     finalTimeout = TRACING_DEFAULTS.finalTimeout,
     childSpanTimeout = TRACING_DEFAULTS.childSpanTimeout,
-    beforeSpanEnd,
     trimIdleSpanEndTimestamp = true,
   } = options;
 
   const client = getClient();
+  const scope = getCurrentScope();
 
   if (!client || !hasSpansEnabled()) {
-    const span = new SentryNonRecordingSpan();
+    // The placeholder is a thin marker; it carries no sampling decision or DSC. Both are read from
+    // the scope: the sampling decision in `getTraceData`, the DSC in `getDynamicSamplingContextFromSpan`.
+    const span = new SentryNonRecordingSpan({ traceId: scope.getPropagationContext().traceId });
 
-    const dsc = {
-      sample_rate: '0',
-      sampled: 'false',
-      ...getDynamicSamplingContextFromSpan(span),
-    } satisfies Partial<DynamicSamplingContext>;
-    freezeDscOnSpan(span, dsc);
+    // Capture scopes so consumers (e.g. SentryTraceProvider) can read them and so the DSC can be
+    // resolved from the scope by `getDynamicSamplingContextFromSpan`.
+    setCapturedScopesOnSpan(span, scope, getIsolationScope());
 
     return span;
   }
 
-  const scope = getCurrentScope();
   const previousActiveSpan = getActiveSpan();
   const span = _startIdleSpan(startSpanOptions);
 
@@ -142,13 +137,11 @@ export function startIdleSpan(startSpanOptions: StartSpanOptions, options: Parti
   // eslint-disable-next-line @typescript-eslint/unbound-method
   span.end = new Proxy(span.end, {
     apply(target, thisArg, args: Parameters<Span['end']>) {
-      if (beforeSpanEnd) {
-        beforeSpanEnd(span);
-      }
+      client.emit('beforeIdleSpanEnd', span);
 
       // If the span is non-recording, nothing more to do here...
       // This is the case if tracing is enabled but this specific span was not sampled
-      if (thisArg instanceof SentryNonRecordingSpan) {
+      if (spanIsNonRecordingSpan(thisArg)) {
         return;
       }
 
@@ -160,7 +153,7 @@ export function startIdleSpan(startSpanOptions: StartSpanOptions, options: Parti
       // Ensure we end with the last span timestamp, if possible
       const spans = getSpanDescendants(span).filter(child => child !== span);
 
-      const spanJson = spanToJSON(span);
+      const spanJson = spanToStaticSpanJSON(span);
 
       // If we have no spans, we just end, nothing else to do here
       // Likewise, if users explicitly ended the span, we simply end the span without timestamp adjustment
@@ -172,7 +165,7 @@ export function startIdleSpan(startSpanOptions: StartSpanOptions, options: Parti
       const ignoreSpans = client.getOptions().ignoreSpans;
 
       const latestSpanEndTimestamp = spans?.reduce((acc: number | undefined, current) => {
-        const currentSpanJson = spanToJSON(current);
+        const currentSpanJson = spanToStaticSpanJSON(current);
         if (!currentSpanJson.timestamp) {
           return acc;
         }
@@ -295,7 +288,7 @@ export function startIdleSpan(startSpanOptions: StartSpanOptions, options: Parti
 
     _setSpanForScope(scope, previousActiveSpan);
 
-    const spanJSON = spanToJSON(span);
+    const spanJSON = spanToStaticSpanJSON(span);
 
     const { start_timestamp: startTimestamp } = spanJSON;
     // This should never happen, but to make TS happy...
@@ -328,7 +321,7 @@ export function startIdleSpan(startSpanOptions: StartSpanOptions, options: Parti
           debug.log('[Tracing] Cancelling span since span ended early', JSON.stringify(childSpan, undefined, 2));
       }
 
-      const childSpanJSON = spanToJSON(childSpan);
+      const childSpanJSON = spanToStaticSpanJSON(childSpan);
       const { timestamp: childEndTimestamp = 0, start_timestamp: childStartTimestamp = 0 } = childSpanJSON;
 
       const spanStartedBeforeIdleSpanEnd = childStartTimestamp <= endTimestamp;
@@ -362,11 +355,12 @@ export function startIdleSpan(startSpanOptions: StartSpanOptions, options: Parti
       // If we already finished the idle span,
       // or if this is the idle span itself being started,
       // or if the started span has already been closed,
+      // or if the started span is standalone (it's sent on its own and must not prolong the idle span),
       // we don't care about it for activity
       if (
         _finished ||
         startedSpan === span ||
-        !!spanToJSON(startedSpan).timestamp ||
+        !!spanToJSON(startedSpan).end_timestamp ||
         (startedSpan instanceof SentrySpan && startedSpan.isStandaloneSpan())
       ) {
         return;

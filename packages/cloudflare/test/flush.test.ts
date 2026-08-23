@@ -108,6 +108,36 @@ describe('flushAndDispose', () => {
     expect(flushSpy).toHaveBeenCalled();
     flushSpy.mockRestore();
   });
+
+  it('should not reject when client.flush rejects', async () => {
+    const mockClient = {
+      flush: vi.fn().mockRejectedValue(new Error('flush failed')),
+      dispose: vi.fn(),
+    } as unknown as Client;
+
+    await expect(flushAndDispose(mockClient)).resolves.toBeUndefined();
+    // dispose re-arms the client (recreates its transport) for the next isolate
+    // invocation, so it must still run even when flush failed.
+    expect(mockClient.dispose).toHaveBeenCalled();
+  });
+
+  it('should not reject when client.dispose throws', async () => {
+    const mockClient = {
+      flush: vi.fn().mockResolvedValue(true),
+      dispose: vi.fn().mockImplementation(() => {
+        throw new Error('dispose failed');
+      }),
+    } as unknown as Client;
+
+    await expect(flushAndDispose(mockClient)).resolves.toBeUndefined();
+  });
+
+  it('should not reject when the global flush rejects', async () => {
+    const flushSpy = vi.spyOn(sentryCore, 'flush').mockRejectedValue(new Error('flush failed'));
+
+    await expect(flushAndDispose(undefined)).resolves.toBeUndefined();
+    flushSpy.mockRestore();
+  });
 });
 
 describe('getOriginalWaitUntil', () => {
@@ -135,7 +165,7 @@ describe('getOriginalWaitUntil', () => {
 
     expect(result).not.toBe(context.waitUntil);
     expect(result).toBeDefined();
-    result!(Promise.resolve());
+    result(Promise.resolve());
     expect(originalWaitUntil).toHaveBeenCalled();
   });
 
@@ -153,7 +183,7 @@ describe('getOriginalWaitUntil', () => {
     const result = getOriginalWaitUntil(context);
 
     expect(result).not.toBe(context.waitUntil);
-    result!(Promise.resolve());
+    result(Promise.resolve());
     expect(originalWaitUntil).toHaveBeenCalled();
   });
 
@@ -177,7 +207,7 @@ describe('getOriginalWaitUntil', () => {
     } as unknown as Client;
 
     const originalWaitUntil = getOriginalWaitUntil(context);
-    originalWaitUntil!.call(context, flushAndDispose(mockClient));
+    originalWaitUntil.call(context, flushAndDispose(mockClient));
 
     await vi.waitFor(() => Promise.all(waitUntilPromises));
     expect(mockClient.flush).toHaveBeenCalled();

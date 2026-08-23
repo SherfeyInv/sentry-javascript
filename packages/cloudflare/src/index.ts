@@ -49,6 +49,8 @@ export {
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
   setConversationId,
   getSpanStatusFromHttpCode,
@@ -66,16 +68,12 @@ export {
   startInactiveSpan,
   startSpanManual,
   startNewTrace,
+  bindScopeToEmitter,
   suppressTracing,
   withActiveSpan,
   getSpanDescendants,
   continueTrace,
   functionToStringIntegration,
-  // eslint-disable-next-line deprecation/deprecation
-  inboundFiltersIntegration,
-  instrumentOpenAiClient,
-  instrumentGoogleGenAIClient,
-  instrumentAnthropicAiClient,
   eventFiltersIntegration,
   linkedErrorsIntegration,
   requestDataIntegration,
@@ -94,6 +92,7 @@ export {
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE,
   trpcMiddleware,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
@@ -101,34 +100,42 @@ export {
   wrapMcpServerWithSentry,
   consoleLoggingIntegration,
   createConsolaReporter,
-  createLangChainCallbackHandler,
-  instrumentLangChainEmbeddings,
   featureFlagsIntegration,
   growthbookIntegration,
   logger,
   metrics,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
   withStreamedSpan,
   spanStreamingIntegration,
-  instrumentLangGraph,
-  instrumentCreateReactAgent,
 } from '@sentry/core';
 
 export { withSentry } from './withSentry';
-export { instrumentDurableObjectWithSentry } from './durableobject';
+export { defineCloudflareOptions } from './defineCloudflareOptions';
+export { instrumentAgentWithSentry, instrumentDurableObjectWithSentry } from './durableobject';
 export { sentryPagesPlugin } from './pages-plugin';
-
-export { wrapRequestHandler } from './request';
 
 export { CloudflareClient } from './client';
 export { getDefaultIntegrations } from './sdk';
 
 export { httpServerIntegration } from './integrations/httpServer';
 export { fetchIntegration } from './integrations/fetch';
+export { spotlightIntegration } from './integrations/spotlight';
 export { vercelAIIntegration } from './integrations/tracing/vercelai';
-export { honoIntegration } from './integrations/hono';
-
-export { instrumentD1WithSentry } from './d1';
+export {
+  otlpIntegration,
+  getOtlpTracesEndpoint,
+  prismaIntegration,
+  instrumentOpenAiClient,
+  instrumentAnthropicAiClient,
+  instrumentGoogleGenAIClient,
+  instrumentWorkersAiClient,
+  createLangChainCallbackHandler,
+  instrumentLangChainEmbeddings,
+  instrumentStateGraph,
+  instrumentCreateReactAgent,
+} from '@sentry/server-utils';
 
 export { instrumentWorkflowWithSentry } from './workflows';
 
-export { setAsyncLocalStorageAsyncContextStrategy } from './async';
+export { setAsyncLocalStorageAsyncContextStrategy } from '@sentry/server-utils/no-diagnostic-channels';

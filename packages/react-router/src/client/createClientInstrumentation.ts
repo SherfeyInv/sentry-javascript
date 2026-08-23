@@ -1,19 +1,32 @@
-import { startBrowserTracingNavigationSpan } from '@sentry/browser';
+// oxlint-disable max-lines
+import { getAbsoluteUrl, startBrowserTracingNavigationSpan } from '@sentry/browser';
 import type { Span } from '@sentry/core';
 import {
   debug,
+  getActiveSpan,
   getClient,
+  getRootSpan,
   GLOBAL_OBJ,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
+  spanToJSON,
   SPAN_STATUS_ERROR,
   startSpan,
+  updateSpanName,
+  filterCollectedUrl,
 } from '@sentry/core';
 import { DEBUG_BUILD } from '../common/debug-build';
 import type { ClientInstrumentation, InstrumentableRoute, InstrumentableRouter } from '../common/types';
 import { captureInstrumentationError, getPathFromRequest, getPattern, normalizeRoutePath } from '../common/utils';
-import { resolveNavigateArg } from './utils';
+import {
+  resolveNavigateAbsoluteUrl,
+  resolveNavigateArg,
+  finalizeNavigationSpanFromHydratedRouter,
+  updateNavigationSpanUrlFromLocation,
+} from './utils';
+import { CODE_FUNCTION_NAME, SENTRY_OP, URL_FULL, URL_TEMPLATE } from '@sentry/conventions/attributes';
+import { GENERAL_FUNCTION_SPAN_OP, WEB_SERVER_MIDDLEWARE_SPAN_OP } from '@sentry/conventions/op';
 
 const WINDOW = GLOBAL_OBJ as typeof GLOBAL_OBJ & Window;
 
@@ -50,7 +63,6 @@ export interface CreateSentryClientInstrumentationOptions {
 
 /**
  * Creates a Sentry client instrumentation for React Router's instrumentation API.
- * @experimental
  */
 export function createSentryClientInstrumentation(
   options: CreateSentryClientInstrumentationOptions = {},
@@ -84,22 +96,26 @@ export function createSentryClientInstrumentation(
           // If there's an active numeric navigation span, update it instead of creating a duplicate
           if (currentNumericNavigationSpan) {
             if (currentNumericNavigationSpan.isRecording()) {
-              currentNumericNavigationSpan.updateName(pathname);
+              updateNavigationSpanUrlFromLocation(currentNumericNavigationSpan);
             }
             currentNumericNavigationSpan = undefined;
             return;
           }
 
           // Only create a new span for actual browser back/forward button clicks
-          startBrowserTracingNavigationSpan(client, {
-            name: pathname,
-            attributes: {
-              [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
-              [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
-              [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react_router.instrumentation_api',
-              'navigation.type': 'browser.popstate',
+          startBrowserTracingNavigationSpan(
+            client,
+            {
+              name: pathname,
+              attributes: {
+                [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+                [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
+                [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react_router.instrumentation_api',
+                'navigation.type': 'browser.popstate',
+              },
             },
-          });
+            { url: getAbsoluteUrl(pathname) },
+          );
         });
 
         DEBUG_BUILD && debug.log('React Router popstate listener registered for browser back/forward navigation.');
@@ -113,7 +129,7 @@ export function createSentryClientInstrumentation(
             const result = await callNavigate();
             if (result.status === 'error' && result.error instanceof Error) {
               captureInstrumentationError(result, captureErrors, 'react_router.navigate', {
-                'http.url': info.currentUrl,
+                [URL_FULL]: filterCollectedUrl(info.currentUrl),
               });
             }
             return;
@@ -130,15 +146,19 @@ export function createSentryClientInstrumentation(
               const navigationType = info.to < 0 ? 'router.back' : 'router.forward';
               const currentPathname = WINDOW.location?.pathname || info.currentUrl;
 
-              navigationSpan = startBrowserTracingNavigationSpan(client, {
-                name: currentPathname,
-                attributes: {
-                  [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
-                  [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
-                  [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react_router.instrumentation_api',
-                  'navigation.type': navigationType,
+              navigationSpan = startBrowserTracingNavigationSpan(
+                client,
+                {
+                  name: currentPathname,
+                  attributes: {
+                    [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+                    [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
+                    [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react_router.instrumentation_api',
+                    'navigation.type': navigationType,
+                  },
                 },
-              });
+                { url: getAbsoluteUrl(currentPathname) },
+              );
 
               // Store ref so popstate listener can update it instead of creating a duplicate
               currentNumericNavigationSpan = navigationSpan;
@@ -148,7 +168,7 @@ export function createSentryClientInstrumentation(
               const result = await callNavigate();
 
               if (navigationSpan && WINDOW.location) {
-                navigationSpan.updateName(WINDOW.location.pathname);
+                finalizeNavigationSpanFromHydratedRouter(navigationSpan);
               }
 
               if (result.status === 'error' && result.error instanceof Error) {
@@ -156,7 +176,7 @@ export function createSentryClientInstrumentation(
                   navigationSpan.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
                 }
                 captureInstrumentationError(result, captureErrors, 'react_router.navigate', {
-                  'http.url': WINDOW.location?.pathname || info.currentUrl,
+                  [URL_FULL]: WINDOW.location?.pathname || filterCollectedUrl(info.currentUrl),
                 });
               }
             } finally {
@@ -171,15 +191,19 @@ export function createSentryClientInstrumentation(
           let navigationSpan;
 
           if (client) {
-            navigationSpan = startBrowserTracingNavigationSpan(client, {
-              name: toPath,
-              attributes: {
-                [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
-                [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
-                [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react_router.instrumentation_api',
-                'navigation.type': 'router.navigate',
+            navigationSpan = startBrowserTracingNavigationSpan(
+              client,
+              {
+                name: toPath,
+                attributes: {
+                  [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+                  [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
+                  [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react_router.instrumentation_api',
+                  'navigation.type': 'router.navigate',
+                },
               },
-            });
+              { url: resolveNavigateAbsoluteUrl(info.to, info.currentUrl) },
+            );
           }
 
           const result = await callNavigate();
@@ -188,7 +212,7 @@ export function createSentryClientInstrumentation(
               navigationSpan.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
             }
             captureInstrumentationError(result, captureErrors, 'react_router.navigate', {
-              'http.url': toPath,
+              [URL_FULL]: filterCollectedUrl(toPath),
             });
           }
           return;
@@ -199,7 +223,8 @@ export function createSentryClientInstrumentation(
             {
               name: `Fetcher ${info.fetcherKey}`,
               attributes: {
-                [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'function.react_router.fetcher',
+                [SENTRY_OP]: GENERAL_FUNCTION_SPAN_OP,
+                [CODE_FUNCTION_NAME]: 'fetcher',
                 [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.react_router.instrumentation_api',
               },
             },
@@ -208,7 +233,7 @@ export function createSentryClientInstrumentation(
               if (result.status === 'error' && result.error instanceof Error) {
                 span.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
                 captureInstrumentationError(result, captureErrors, 'react_router.fetcher', {
-                  'http.url': info.href,
+                  [URL_FULL]: filterCollectedUrl(info.href),
                 });
               }
             },
@@ -223,13 +248,18 @@ export function createSentryClientInstrumentation(
       route.instrument({
         async loader(callLoader, info) {
           const urlPath = getPathFromRequest(info.request);
-          const routePattern = normalizeRoutePath(getPattern(info)) || urlPath;
+          const pattern = normalizeRoutePath(getPattern(info));
+          const routePattern = pattern || urlPath;
+          // Parameterize the active navigation root span. (Route hooks don't fire on initial
+          // pageload, so this only affects navigations.)
+          updateRootSpanRoute(routePattern, !!pattern);
 
           await startSpan(
             {
               name: routePattern,
               attributes: {
-                [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'function.react_router.client_loader',
+                [SENTRY_OP]: GENERAL_FUNCTION_SPAN_OP,
+                [CODE_FUNCTION_NAME]: 'clientLoader',
                 [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.react_router.instrumentation_api',
               },
             },
@@ -238,7 +268,7 @@ export function createSentryClientInstrumentation(
               if (result.status === 'error' && result.error instanceof Error) {
                 span.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
                 captureInstrumentationError(result, captureErrors, 'react_router.client_loader', {
-                  'http.url': urlPath,
+                  [URL_FULL]: urlPath,
                 });
               }
             },
@@ -247,13 +277,16 @@ export function createSentryClientInstrumentation(
 
         async action(callAction, info) {
           const urlPath = getPathFromRequest(info.request);
-          const routePattern = normalizeRoutePath(getPattern(info)) || urlPath;
+          const pattern = normalizeRoutePath(getPattern(info));
+          const routePattern = pattern || urlPath;
+          updateRootSpanRoute(routePattern, !!pattern);
 
           await startSpan(
             {
               name: routePattern,
               attributes: {
-                [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'function.react_router.client_action',
+                [SENTRY_OP]: GENERAL_FUNCTION_SPAN_OP,
+                [CODE_FUNCTION_NAME]: 'clientAction',
                 [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.react_router.instrumentation_api',
               },
             },
@@ -262,7 +295,7 @@ export function createSentryClientInstrumentation(
               if (result.status === 'error' && result.error instanceof Error) {
                 span.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
                 captureInstrumentationError(result, captureErrors, 'react_router.client_action', {
-                  'http.url': urlPath,
+                  [URL_FULL]: urlPath,
                 });
               }
             },
@@ -286,7 +319,8 @@ export function createSentryClientInstrumentation(
             {
               name: `middleware ${routeId}`,
               attributes: {
-                [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'function.react_router.client_middleware',
+                [SENTRY_OP]: WEB_SERVER_MIDDLEWARE_SPAN_OP,
+                [CODE_FUNCTION_NAME]: 'clientMiddleware',
                 [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.react_router.instrumentation_api',
                 'react_router.route.id': routeId,
                 'http.route': routePattern,
@@ -298,7 +332,7 @@ export function createSentryClientInstrumentation(
               if (result.status === 'error' && result.error instanceof Error) {
                 span.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
                 captureInstrumentationError(result, captureErrors, 'react_router.client_middleware', {
-                  'http.url': urlPath,
+                  [URL_FULL]: urlPath,
                 });
               }
             },
@@ -310,7 +344,8 @@ export function createSentryClientInstrumentation(
             {
               name: 'Lazy Route Load',
               attributes: {
-                [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'function.react_router.client_lazy',
+                [SENTRY_OP]: GENERAL_FUNCTION_SPAN_OP,
+                [CODE_FUNCTION_NAME]: 'lazy',
                 [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.react_router.instrumentation_api',
               },
             },
@@ -329,8 +364,32 @@ export function createSentryClientInstrumentation(
 }
 
 /**
+ * Updates the active navigation/pageload root span name with the parameterized route, so the
+ * transaction reflects the parameterized route pattern (e.g. `/users/:id`).
+ */
+function updateRootSpanRoute(routeName: string, hasPattern: boolean): void {
+  if (!hasPattern) {
+    return;
+  }
+
+  const activeSpan = getActiveSpan();
+  const rootSpan = activeSpan && getRootSpan(activeSpan);
+  if (!rootSpan) {
+    return;
+  }
+
+  const { attributes } = spanToJSON(rootSpan);
+  const op = attributes[SENTRY_OP];
+  if (op !== 'navigation' && op !== 'pageload') {
+    return;
+  }
+
+  updateSpanName(rootSpan, routeName);
+  rootSpan.setAttributes({ [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route', [URL_TEMPLATE]: routeName });
+}
+
+/**
  * Check if React Router's instrumentation API is being used on the client.
- * @experimental
  */
 export function isClientInstrumentationApiUsed(): boolean {
   return !!GLOBAL_WITH_FLAGS[SENTRY_CLIENT_INSTRUMENTATION_FLAG];
@@ -338,7 +397,6 @@ export function isClientInstrumentationApiUsed(): boolean {
 
 /**
  * Check if React Router's instrumentation API's navigate hook was invoked.
- * @experimental
  */
 export function isNavigateHookInvoked(): boolean {
   return !!GLOBAL_WITH_FLAGS[SENTRY_NAVIGATE_HOOK_INVOKED_FLAG];

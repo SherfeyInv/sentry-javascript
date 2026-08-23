@@ -1,4 +1,5 @@
-import type { Options as SentryBuildPluginOptions } from '@sentry/bundler-plugin-core';
+import type { Options as SentryBuildPluginOptions } from '@sentry/bundler-plugins/core';
+import * as fs from 'fs';
 import * as path from 'path';
 import type { SentryBuildOptions } from './types';
 
@@ -23,6 +24,10 @@ const FILE_PATTERNS = {
   STATIC_CHUNKS: {
     GLOB: 'static/chunks/**',
     PATH: 'static/chunks',
+  },
+  STATIC_IMMUTABLE_CHUNKS: {
+    GLOB: 'static/immutable/chunks/**',
+    PATH: 'static/immutable/chunks',
   },
   STATIC_CHUNKS_PAGES: {
     GLOB: 'static/chunks/pages/**',
@@ -95,6 +100,13 @@ function createSourcemapUploadAssetPatterns(
       // In turbopack we always want to upload the full static chunks directory
       // as the build output is not split into pages|app chunks
       assets.push(path.posix.join(normalizedDistPath, getStaticChunksPattern({ useDirectoryPath: true })));
+
+      // With `experimental.supportsImmutableAssets` (auto-enabled on Vercel preview), Turbopack emits
+      // client chunks to `static/immutable/chunks` instead of `static/chunks`
+      const immutableChunksPath = path.posix.join(normalizedDistPath, FILE_PATTERNS.STATIC_IMMUTABLE_CHUNKS.PATH);
+      if (fs.existsSync(immutableChunksPath)) {
+        assets.push(immutableChunksPath);
+      }
     } else {
       // Webpack client builds in after-production-compile mode
       if (widenClientFileUpload) {
@@ -222,7 +234,6 @@ function createReleaseConfig(
       vcsRemote: sentryBuildOptions.release?.vcsRemote,
       setCommits: sentryBuildOptions.release?.setCommits,
       deploy: sentryBuildOptions.release?.deploy,
-      ...sentryBuildOptions.webpack?.unstable_sentryWebpackPluginOptions?.release,
     };
   }
 
@@ -320,8 +331,9 @@ export function getBuildPluginOptions({
     reactComponentAnnotation: buildTool.startsWith('after-production-compile')
       ? undefined
       : {
+          ...sentryBuildOptions.reactComponentAnnotation,
+          // eslint-disable-next-line typescript/no-deprecated
           ...sentryBuildOptions.webpack?.reactComponentAnnotation,
-          ...sentryBuildOptions.webpack?.unstable_sentryWebpackPluginOptions?.reactComponentAnnotation,
         },
     silent: sentryBuildOptions.silent,
     url: sentryBuildOptions.sentryUrl,
@@ -331,18 +343,18 @@ export function getBuildPluginOptions({
       assets: sentryBuildOptions.sourcemaps?.assets ?? sourcemapUploadAssets,
       ignore: finalIgnorePatterns,
       filesToDeleteAfterUpload,
-      ...sentryBuildOptions.webpack?.unstable_sentryWebpackPluginOptions?.sourcemaps,
+      resolveSourceMap: sentryBuildOptions.sourcemaps?.resolveSourceMap,
     },
     release: createReleaseConfig(releaseName, sentryBuildOptions),
     bundleSizeOptimizations: {
       ...sentryBuildOptions.bundleSizeOptimizations,
     },
+    moduleMetadata: sentryBuildOptions.moduleMetadata,
     _metaOptions: {
       loggerPrefixOverride: loggerPrefix,
       telemetry: {
         metaFramework: 'nextjs',
       },
     },
-    ...sentryBuildOptions.webpack?.unstable_sentryWebpackPluginOptions,
   };
 }

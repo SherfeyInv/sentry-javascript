@@ -1,7 +1,7 @@
 import type { Client, IntegrationFn, MaxRequestBodySize } from '@sentry/core';
 import { captureBodyFromWinterCGRequest, defineIntegration, getIsolationScope } from '@sentry/core';
 
-const INTEGRATION_NAME = 'HttpServer';
+const INTEGRATION_NAME = 'HttpServer' as const;
 
 export interface HttpServerIntegrationOptions {
   /**
@@ -42,14 +42,14 @@ export interface HttpServerIntegrationOptions {
 
 interface HttpServerIntegrationInstance {
   name: string;
-  maxRequestBodySize: MaxRequestBodySize;
+  maxRequestBodySize: MaxRequestBodySize | undefined;
   ignoreRequestBody?: (url: string, request: Request) => boolean;
 }
 
 const _httpServerIntegration = ((options: HttpServerIntegrationOptions = {}): HttpServerIntegrationInstance => {
   return {
     name: INTEGRATION_NAME,
-    maxRequestBodySize: options.maxRequestBodySize ?? 'medium',
+    maxRequestBodySize: options.maxRequestBodySize,
     ignoreRequestBody: options.ignoreRequestBody,
   };
 }) satisfies IntegrationFn;
@@ -85,9 +85,12 @@ export async function captureIncomingRequestBody(client: Client, request: Reques
     return;
   }
 
-  const maxRequestBodySize = integration.maxRequestBodySize;
+  const configuredBodySize = integration.maxRequestBodySize;
+  const effectiveBodySize: MaxRequestBodySize =
+    configuredBodySize ??
+    (client.getDataCollectionOptions().httpBodies.includes('incomingRequest') ? 'medium' : 'none');
 
-  if (maxRequestBodySize === 'none') {
+  if (effectiveBodySize === 'none') {
     return;
   }
 
@@ -102,5 +105,5 @@ export async function captureIncomingRequestBody(client: Client, request: Reques
   }
 
   const isolationScope = getIsolationScope();
-  await captureBodyFromWinterCGRequest(request, isolationScope, maxRequestBodySize);
+  await captureBodyFromWinterCGRequest(request, isolationScope, effectiveBodySize);
 }

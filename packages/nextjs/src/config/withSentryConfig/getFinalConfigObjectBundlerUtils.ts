@@ -1,8 +1,13 @@
+import {
+  BUNDLE_SAFE_INSTRUMENTED_PACKAGES,
+  filterInstrumentedExternals,
+  ORCHESTRION_RUNTIME_EXTERNAL_PACKAGES,
+} from '../diagnosticsChannelInjection';
 import { handleRunAfterProductionCompile } from '../handleRunAfterProductionCompile';
 import type { RouteManifest } from '../manifest/types';
 import { constructTurbopackConfig } from '../turbopack';
 import type { NextConfigObject, SentryBuildOptions, TurbopackOptions } from '../types';
-import { detectActiveBundler, supportsProductionCompileHook } from '../util';
+import { detectActiveBundler, supportsProductionCompileHook, supportsTurbopackRuleCondition } from '../util';
 import { constructWebpackConfigFunction } from '../webpack';
 import { DEFAULT_SERVER_EXTERNAL_PACKAGES } from './constants';
 import type { VercelCronsConfigResult } from './getFinalConfigObjectUtils';
@@ -37,6 +42,25 @@ export function maybeWarnAboutUnsupportedTurbopack(nextJsVersion: string | undef
     // eslint-disable-next-line no-console
     console.warn(
       `[@sentry/nextjs] WARNING: You are using the Sentry SDK with Turbopack. The Sentry SDK is compatible with Turbopack on Next.js version 15.4.1 or later. You are currently on ${nextJsVersion}. Please upgrade to a newer Next.js version to use the Sentry SDK with Turbopack.`,
+    );
+  }
+}
+
+/**
+ * Warns if `moduleMetadata` is set on a Turbopack build, where it currently has no effect.
+ *
+ * The Turbopack metadata loader only injects `applicationKey`; arbitrary `moduleMetadata` is
+ * webpack-only for now. Without this warning the option would be a silent no-op on Next.js 16+,
+ * where Turbopack is the default.
+ */
+export function maybeWarnAboutTurbopackModuleMetadata(
+  userSentryOptions: SentryBuildOptions,
+  bundlerInfo: BundlerInfo,
+): void {
+  if (bundlerInfo.isTurbopack && userSentryOptions.moduleMetadata) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[@sentry/nextjs] WARNING: `moduleMetadata` is currently only applied on webpack builds and has no effect on Turbopack builds. Use `applicationKey` if you need `thirdPartyErrorFilterIntegration` support, which works on both bundlers.',
     );
   }
 }
@@ -87,6 +111,29 @@ export function maybeConstructTurbopackConfig(
     nextJsVersion,
     vercelCronsConfig,
   });
+}
+
+/**
+ * Resolves whether to wire up orchestrion build-time instrumentation.
+ *
+ * Only on when the transform can actually run: Turbopack needs rule `condition`s (Next.js 16+), and
+ * webpack needs Sentry's config. Otherwise un-externalizing the bundle-safe packages would leave
+ * them bundled *and* uninstrumented, so keep the feature off.
+ */
+export function resolveBuildTimeInstrumentationOption(
+  userSentryOptions: SentryBuildOptions,
+  bundlerInfo: BundlerInfo,
+  nextJsVersion: string | undefined,
+): boolean {
+  if (userSentryOptions.buildTimeInstrumentation === false) {
+    return false;
+  }
+
+  if (bundlerInfo.isTurbopack) {
+    return !!nextJsVersion && supportsTurbopackRuleCondition(nextJsVersion);
+  }
+
+  return !userSentryOptions.webpack?.disableSentryConfig;
 }
 
 /**
@@ -227,23 +274,32 @@ export function maybeEnableTurbopackSourcemaps(
 export function getServerExternalPackagesPatch(
   incomingUserNextConfigObject: NextConfigObject,
   nextMajor: number | undefined,
+  buildTimeInstrumentation = false,
 ): Partial<NextConfigObject> {
+  // With build-time instrumentation, only bundle-safe packages leave OUR defaults (→ build-time
+  // loader); everything else stays external (→ runtime module hook), including the orchestrion
+  // machinery itself, which breaks when bundled.
+  const mergeExternals = (userProvided: string[] | undefined): string[] => {
+    const defaults = buildTimeInstrumentation
+      ? filterInstrumentedExternals(DEFAULT_SERVER_EXTERNAL_PACKAGES, BUNDLE_SAFE_INSTRUMENTED_PACKAGES)
+      : DEFAULT_SERVER_EXTERNAL_PACKAGES;
+    return [
+      ...(userProvided || []),
+      ...defaults,
+      ...(buildTimeInstrumentation ? ORCHESTRION_RUNTIME_EXTERNAL_PACKAGES : []),
+    ];
+  };
+
   if (nextMajor && nextMajor >= 15) {
-    return {
-      serverExternalPackages: [
-        ...(incomingUserNextConfigObject.serverExternalPackages || []),
-        ...DEFAULT_SERVER_EXTERNAL_PACKAGES,
-      ],
-    };
+    return { serverExternalPackages: mergeExternals(incomingUserNextConfigObject.serverExternalPackages) };
   }
 
   return {
     experimental: {
       ...incomingUserNextConfigObject.experimental,
-      serverComponentsExternalPackages: [
-        ...(incomingUserNextConfigObject.experimental?.serverComponentsExternalPackages || []),
-        ...DEFAULT_SERVER_EXTERNAL_PACKAGES,
-      ],
+      serverComponentsExternalPackages: mergeExternals(
+        incomingUserNextConfigObject.experimental?.serverComponentsExternalPackages,
+      ),
     },
   };
 }

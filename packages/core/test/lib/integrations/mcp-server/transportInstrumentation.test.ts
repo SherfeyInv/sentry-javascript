@@ -5,6 +5,8 @@ import {
   buildTransportAttributes,
   extractSessionDataFromInitializeRequest,
   extractSessionDataFromInitializeResponse,
+  extractSessionDataFromMessage,
+  extractSessionDataFromResponse,
   getTransportTypes,
 } from '../../../../src/integrations/mcp-server/sessionExtraction';
 import {
@@ -24,6 +26,7 @@ import {
 } from '../../../../src/integrations/mcp-server/transport';
 import * as tracingModule from '../../../../src/tracing';
 import {
+  createMockClient,
   createMockMcpServer,
   createMockSseTransport,
   createMockStdioTransport,
@@ -38,12 +41,7 @@ describe('MCP Server Transport Instrumentation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Mock client to return sendDefaultPii: true for instrumentation tests
-    getClientSpy.mockReturnValue({
-      getOptions: () => ({ sendDefaultPii: true }),
-      getDsn: () => ({ publicKey: 'test-key', host: 'test-host' }),
-      emit: vi.fn(),
-    } as any);
+    getClientSpy.mockReturnValue(createMockClient(true));
   });
 
   describe('Transport-level instrumentation', () => {
@@ -501,6 +499,60 @@ describe('MCP Server Transport Instrumentation', () => {
       });
     });
 
+    it('extracts session data from a modern request envelope', () => {
+      const request = {
+        jsonrpc: '2.0' as const,
+        method: 'tools/call',
+        id: 'modern-tool-call',
+        params: {
+          _meta: {
+            'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+            'io.modelcontextprotocol/clientInfo': {
+              name: 'modern-client',
+              title: 'Modern Client',
+              version: '2.0.0',
+            },
+          },
+          name: 'weather',
+        },
+      };
+
+      const sessionData = extractSessionDataFromMessage(request);
+
+      expect(sessionData).toEqual({
+        protocolVersion: '2026-07-28',
+        clientInfo: {
+          name: 'modern-client',
+          title: 'Modern Client',
+          version: '2.0.0',
+        },
+      });
+    });
+
+    it('extracts server info from modern result metadata', () => {
+      const result = {
+        resultType: 'complete',
+        content: [],
+        _meta: {
+          'io.modelcontextprotocol/serverInfo': {
+            name: 'modern-server',
+            title: 'Modern Server',
+            version: '2.0.0',
+          },
+        },
+      };
+
+      const sessionData = extractSessionDataFromResponse(result);
+
+      expect(sessionData).toEqual({
+        serverInfo: {
+          name: 'modern-server',
+          title: 'Modern Server',
+          version: '2.0.0',
+        },
+      });
+    });
+
     it('should store and retrieve session data', () => {
       const sessionData = {
         protocolVersion: '2025-06-18',
@@ -655,7 +707,7 @@ describe('MCP Server Transport Instrumentation', () => {
     });
   });
 
-  describe('Initialize Span Attributes', () => {
+  describe('Protocol Metadata Span Attributes', () => {
     it('should add client info to initialize span on request', async () => {
       const mockMcpServer = createMockMcpServer();
       const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer);
@@ -724,15 +776,169 @@ describe('MCP Server Transport Instrumentation', () => {
       );
       expect(mockSpan.end).toHaveBeenCalled();
     });
+
+    it('adds modern protocol and client info to request spans', async () => {
+      const mockMcpServer = createMockMcpServer();
+      const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer);
+      const transport = createMockTransport();
+      transport.sessionId = '';
+
+      await wrappedMcpServer.connect(transport);
+
+      transport.onmessage?.(
+        {
+          jsonrpc: '2.0',
+          method: 'tools/call',
+          id: 'modern-tool-call',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientInfo': { name: 'modern-client', version: '2.0.0' },
+            },
+            name: 'weather',
+          },
+        },
+        { classification: { era: 'modern', revision: '2026-07-28' } },
+      );
+
+      expect(startInactiveSpanSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            'mcp.client.name': 'modern-client',
+            'mcp.client.version': '2.0.0',
+            'mcp.protocol.version': '2026-07-28',
+          }),
+        }),
+      );
+    });
+
+    it('ignores legacy session fields outside initialize messages', async () => {
+      const mockMcpServer = createMockMcpServer();
+      const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer);
+      const transport = createMockTransport();
+      transport.sessionId = '';
+      const mockSpan = { setAttributes: vi.fn(), end: vi.fn() };
+      startInactiveSpanSpy.mockReturnValue(mockSpan as any);
+
+      await wrappedMcpServer.connect(transport);
+
+      transport.onmessage?.(
+        {
+          jsonrpc: '2.0',
+          method: 'custom/process',
+          id: 'custom-request',
+          params: {
+            protocolVersion: 'application-version',
+            clientInfo: { name: 'application-client', version: '1.0.0' },
+          },
+        },
+        {},
+      );
+      await transport.send?.({
+        jsonrpc: '2.0',
+        id: 'custom-request',
+        result: {
+          protocolVersion: 'application-version',
+          serverInfo: { name: 'application-server', version: '1.0.0' },
+        },
+      });
+
+      expect(getSessionDataForTransport(transport)).toBeUndefined();
+      expect(mockSpan.setAttributes).not.toHaveBeenCalled();
+      expect(mockSpan.end).toHaveBeenCalledOnce();
+    });
+
+    it('adds modern protocol and client info to notification spans', async () => {
+      const mockMcpServer = createMockMcpServer();
+      const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer);
+      const transport = createMockTransport();
+      transport.sessionId = '';
+
+      await wrappedMcpServer.connect(transport);
+
+      transport.onmessage?.(
+        {
+          jsonrpc: '2.0',
+          method: 'notifications/tools/list_changed',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientInfo': { name: 'modern-client', version: '2.0.0' },
+            },
+          },
+        },
+        { classification: { era: 'modern', revision: '2026-07-28' } },
+      );
+
+      expect(startSpanSpy).toHaveBeenCalledWith(
+        {
+          name: 'notifications/tools/list_changed',
+          forceTransaction: true,
+          attributes: {
+            'mcp.transport': 'StreamableHTTPServerTransport',
+            'network.transport': 'tcp',
+            'network.protocol.version': '2.0',
+            'mcp.protocol.version': '2026-07-28',
+            'mcp.client.name': 'modern-client',
+            'mcp.client.version': '2.0.0',
+            'mcp.method.name': 'notifications/tools/list_changed',
+            'sentry.op': 'mcp.notification.client_to_server',
+            'sentry.origin': 'auto.mcp.notification',
+            'sentry.source': 'route',
+          },
+        },
+        expect.any(Function),
+      );
+    });
+
+    it('adds modern server info to completed request spans', async () => {
+      const mockMcpServer = createMockMcpServer();
+      const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer);
+      const transport = createMockTransport();
+      transport.sessionId = '';
+      const mockSpan = { setAttributes: vi.fn(), end: vi.fn() };
+      startInactiveSpanSpy.mockReturnValue(mockSpan as any);
+
+      await wrappedMcpServer.connect(transport);
+
+      transport.onmessage?.(
+        {
+          jsonrpc: '2.0',
+          method: 'tools/call',
+          id: 'modern-tool-call',
+          params: {
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientInfo': { name: 'modern-client', version: '2.0.0' },
+            },
+            name: 'weather',
+          },
+        },
+        { classification: { era: 'modern', revision: '2026-07-28' } },
+      );
+      await transport.send?.({
+        jsonrpc: '2.0',
+        id: 'modern-tool-call',
+        result: {
+          resultType: 'complete',
+          content: [{ type: 'text', text: 'Sunny' }],
+          _meta: {
+            'io.modelcontextprotocol/serverInfo': { name: 'modern-server', version: '2.0.0' },
+          },
+        },
+      });
+
+      expect(mockSpan.setAttributes).toHaveBeenCalledWith({
+        'mcp.server.name': 'modern-server',
+        'mcp.server.version': '2.0.0',
+      });
+      expect(mockSpan.end).toHaveBeenCalledOnce();
+    });
   });
 
   describe('Wrapper Options', () => {
-    it('should NOT capture inputs/outputs when sendDefaultPii is false', async () => {
-      getClientSpy.mockReturnValue({
-        getOptions: () => ({ sendDefaultPii: false }),
-        getDsn: () => ({ publicKey: 'test-key', host: 'test-host' }),
-        emit: vi.fn(),
-      } as any);
+    it('should NOT capture inputs/outputs when dataCollection.genAI.inputs/outputs are false', async () => {
+      getClientSpy.mockReturnValue(createMockClient(false));
 
       const mockMcpServer = createMockMcpServer();
       const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer);
@@ -759,12 +965,8 @@ describe('MCP Server Transport Instrumentation', () => {
       );
     });
 
-    it('should capture inputs/outputs when sendDefaultPii is true', async () => {
-      getClientSpy.mockReturnValue({
-        getOptions: () => ({ sendDefaultPii: true }),
-        getDsn: () => ({ publicKey: 'test-key', host: 'test-host' }),
-        emit: vi.fn(),
-      } as any);
+    it('should capture inputs/outputs when dataCollection.genAI.inputs/outputs are true', async () => {
+      getClientSpy.mockReturnValue(createMockClient(true));
 
       const mockMcpServer = createMockMcpServer();
       const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer);
@@ -792,11 +994,7 @@ describe('MCP Server Transport Instrumentation', () => {
     });
 
     it('should allow explicit override of defaults', async () => {
-      getClientSpy.mockReturnValue({
-        getOptions: () => ({ sendDefaultPii: true }),
-        getDsn: () => ({ publicKey: 'test-key', host: 'test-host' }),
-        emit: vi.fn(),
-      } as any);
+      getClientSpy.mockReturnValue(createMockClient(true));
 
       const mockMcpServer = createMockMcpServer();
       const wrappedMcpServer = wrapMcpServerWithSentry(mockMcpServer, { recordInputs: false });

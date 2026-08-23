@@ -12,12 +12,17 @@ export function addHeadersAsAttributes(
     return {};
   }
 
+  const client = getClient();
+  if (!client || client.getDataCollectionOptions().httpHeaders.request === false) {
+    return {};
+  }
+
   const headersDict: Record<string, string | string[] | undefined> =
     headers instanceof Headers || (typeof headers === 'object' && 'get' in headers)
       ? winterCGHeadersToDict(headers as Headers)
       : headers;
 
-  const headerAttributes = httpHeadersToSpanAttributes(headersDict, getClient()?.getOptions().sendDefaultPii ?? false);
+  const headerAttributes = httpHeadersToSpanAttributes(headersDict, client.getDataCollectionOptions());
 
   if (span) {
     span.setAttributes(headerAttributes);

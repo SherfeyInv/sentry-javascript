@@ -10,7 +10,7 @@ import type {
   SentryWrappedXMLHttpRequest,
   XhrBreadcrumbHint,
 } from '@sentry/core';
-import { SENTRY_XHR_DATA_KEY } from '@sentry-internal/browser-utils';
+import { SENTRY_XHR_DATA_KEY } from '@sentry/browser-utils';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NETWORK_BODY_MAX_SIZE } from '../../../src/constants';
 import { beforeAddNetworkBreadcrumb } from '../../../src/coreHandlers/handleNetworkBreadcrumbs';
@@ -21,12 +21,12 @@ import { BASE_TIMESTAMP } from '../..';
 import { setupReplayContainer } from '../../utils/setupReplayContainer';
 
 async function waitForReplayEventBuffer() {
-  // Need one Promise.resolve() per await in the util functions
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  // Flush pending microtasks so the async network-breadcrumb enrichment settles into the buffer.
+  // Looping a fixed number of times (rather than one `Promise.resolve()` per await in the impl)
+  // keeps this robust to the enrichment chain's exact await depth.
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
 }
 
 const LARGE_BODY = 'a'.repeat(NETWORK_BODY_MAX_SIZE + 1);

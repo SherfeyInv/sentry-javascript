@@ -5,13 +5,15 @@ import type { ExecutionContext } from '@cloudflare/workers-types';
 import type { Event } from '@sentry/core';
 import * as SentryCore from '@sentry/core';
 import { beforeAll, beforeEach, describe, expect, onTestFinished, test, vi } from 'vitest';
-import { setAsyncLocalStorageAsyncContextStrategy } from '../src/async';
+import { setAsyncLocalStorageAsyncContextStrategy } from '@sentry/server-utils/no-diagnostic-channels';
 import type { CloudflareOptions } from '../src/client';
 import { CloudflareClient } from '../src/client';
+import { httpServerIntegration } from '../src/integrations/httpServer';
 import { wrapRequestHandler } from '../src/request';
 
 const MOCK_OPTIONS: CloudflareOptions = {
   dsn: 'https://public@dsn.ingest.sentry.io/1337',
+  traceLifecycle: 'static',
 };
 
 const NODE_MAJOR_VERSION = parseInt(process.versions.node.split('.')[0]!);
@@ -205,7 +207,7 @@ describe('withSentry', () => {
       expect(sentryEvent.contexts?.culture).toEqual({ timezone: 'UTC' });
     });
 
-    test('captures request body with default integration (medium size)', async () => {
+    test('captures request body by default (all body types included by default)', async () => {
       let sentryEvent: Event = {};
       const context = createMockExecutionContext();
 
@@ -213,7 +215,6 @@ describe('withSentry', () => {
         {
           options: {
             ...MOCK_OPTIONS,
-            // Default integrations include httpServerIntegration with 'medium' default
             beforeSend(event) {
               sentryEvent = event;
               return null;
@@ -235,6 +236,117 @@ describe('withSentry', () => {
       expect(sentryEvent.sdkProcessingMetadata?.normalizedRequest?.data).toEqual(
         JSON.stringify({ username: 'test', data: 'value' }),
       );
+    });
+
+    test('does not capture request body when dataCollection.httpBodies excludes incomingRequest', async () => {
+      let sentryEvent: Event = {};
+      const context = createMockExecutionContext();
+
+      await wrapRequestHandler(
+        {
+          options: {
+            ...MOCK_OPTIONS,
+            dataCollection: { httpBodies: [] },
+            beforeSend(event) {
+              sentryEvent = event;
+              return null;
+            },
+          },
+          request: new Request('https://example.com', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ username: 'test', data: 'value' }),
+          }),
+          context,
+        },
+        () => {
+          SentryCore.captureMessage('request body');
+          return new Response('test');
+        },
+      );
+
+      expect(sentryEvent.sdkProcessingMetadata?.normalizedRequest?.data).toBeUndefined();
+    });
+
+    test('captures cookies with denylist filtering by default', async () => {
+      let sentryEvent: Event = {};
+
+      await wrapRequestHandler(
+        {
+          options: {
+            ...MOCK_OPTIONS,
+            dataCollection: { httpBodies: [] },
+            beforeSend(event) {
+              sentryEvent = event;
+              return null;
+            },
+          },
+          request: new Request('https://example.com', { headers: { cookie: 'foo=bar; session=secret' } }),
+          context: createMockExecutionContext(),
+        },
+        () => {
+          SentryCore.captureMessage('request body');
+          return new Response('test');
+        },
+      );
+
+      expect(sentryEvent.request?.cookies).toEqual({ foo: 'bar', session: '[Filtered]' });
+    });
+
+    test('explicit maxRequestBodySize overrides dataCollection.httpBodies', async () => {
+      let sentryEvent: Event = {};
+      const context = createMockExecutionContext();
+
+      await wrapRequestHandler(
+        {
+          options: {
+            ...MOCK_OPTIONS,
+            dataCollection: { httpBodies: [] },
+            integrations: [httpServerIntegration({ maxRequestBodySize: 'medium' })],
+            beforeSend(event) {
+              sentryEvent = event;
+              return null;
+            },
+          },
+          request: new Request('https://example.com', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ key: 'value' }),
+          }),
+          context,
+        },
+        () => {
+          SentryCore.captureMessage('request body');
+          return new Response('test');
+        },
+      );
+
+      expect(sentryEvent.sdkProcessingMetadata?.normalizedRequest?.data).toEqual(JSON.stringify({ key: 'value' }));
+    });
+
+    test('does not capture cookies when dataCollection.cookies is disabled', async () => {
+      let sentryEvent: Event = {};
+
+      await wrapRequestHandler(
+        {
+          options: {
+            ...MOCK_OPTIONS,
+            dataCollection: { cookies: false },
+            beforeSend(event) {
+              sentryEvent = event;
+              return null;
+            },
+          },
+          request: new Request('https://example.com', { headers: { cookie: 'foo=bar' } }),
+          context: createMockExecutionContext(),
+        },
+        () => {
+          SentryCore.captureMessage('cookies');
+          return new Response('test');
+        },
+      );
+
+      expect(sentryEvent.request?.cookies).toBeUndefined();
     });
 
     test('does not capture request body for GET requests', async () => {

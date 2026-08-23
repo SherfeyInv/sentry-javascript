@@ -14,6 +14,8 @@ import {
   getClient,
   getLocationHref,
   getTraceData,
+  getUrlFragment,
+  getUrlQuery,
   hasSpansEnabled,
   hasSpanStreamingEnabled,
   instrumentFetchRequest,
@@ -22,6 +24,7 @@ import {
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SentryNonRecordingSpan,
   setHttpStatus,
+  spanIsIgnored,
   spanToJSON,
   startInactiveSpan,
   stringMatchesSomePattern,
@@ -29,16 +32,18 @@ import {
   stripUrlQueryAndFragment,
   timestampInSeconds,
 } from '@sentry/core/browser';
-import type { XhrHint } from '@sentry-internal/browser-utils';
+import type { XhrHint } from '@sentry/browser-utils';
+import { filterCollectedUrl, filterCollectedUrlQuery } from '@sentry/core';
 import {
   addPerformanceInstrumentationHandler,
   addXhrInstrumentationHandler,
   parseXhrResponseHeaders,
   resourceTimingToSpanAttributes,
   SENTRY_XHR_DATA_KEY,
-} from '@sentry-internal/browser-utils';
+} from '@sentry/browser-utils';
 import type { BrowserClient } from '../client';
 import { baggageHeaderHasSentryValues, createHeadersSafely, getFullURL, isPerformanceResourceTiming } from './utils';
+import { HTTP_METHOD, SERVER_ADDRESS, URL_FRAGMENT, URL_FULL, URL_QUERY } from '@sentry/conventions/attributes';
 
 /** Options for Request Instrumentation */
 export interface RequestInstrumentationOptions {
@@ -86,20 +91,6 @@ export interface RequestInstrumentationOptions {
   traceXHR: boolean;
 
   /**
-   * Flag to disable tracking of long-lived streams, like server-sent events (SSE) via fetch.
-   * Do not enable this in case you have live streams or very long running streams.
-   *
-   * Disabled by default since it can lead to issues with streams using the `cancel()` api
-   * (https://github.com/getsentry/sentry-javascript/issues/13950)
-   *
-   * Default: false
-   *
-   * @deprecated Use `fetchStreamPerformanceIntegration()` instead. Add it to your `integrations` array
-   * to track the duration of streamed fetch response bodies.
-   */
-  trackFetchStreamPerformance: boolean;
-
-  /**
    * If true, Sentry will capture http timings and add them to the corresponding http spans.
    *
    * Default: true
@@ -129,7 +120,6 @@ export const defaultRequestInstrumentationOptions: RequestInstrumentationOptions
   traceFetch: true,
   traceXHR: true,
   enableHTTPTimings: true,
-  trackFetchStreamPerformance: false,
 };
 
 /** Registers span creators for xhr and fetch requests  */
@@ -169,8 +159,9 @@ export function instrumentOutgoingRequests(client: Client, _options?: Partial<Re
       if (createdSpan) {
         const fullUrl = getFullURL(handlerData.fetchData.url);
         const host = fullUrl ? parseUrl(fullUrl).host : undefined;
+        const sanitizedFullUrl = fullUrl ? stripDataUrlContent(fullUrl) : undefined;
         createdSpan.setAttributes({
-          'http.url': fullUrl ? stripDataUrlContent(fullUrl) : undefined,
+          [URL_FULL]: filterCollectedUrl(sanitizedFullUrl),
           'server.address': host,
         });
 
@@ -218,10 +209,10 @@ const HTTP_TIMING_WAIT_MS = 300;
  * Creates a temporary observer to listen to the next fetch/xhr resourcing timings,
  * so that when timings hit their per-browser limit they don't need to be removed.
  *
- * @param span A span that has yet to be finished, must contain `url` on data.
+ * @param span A span that has yet to be finished, must contain `url.full` on data.
  */
 function addHTTPTimings(span: Span, client: Client): void {
-  const { url } = spanToJSON(span).data;
+  const url = spanToJSON(span).attributes[URL_FULL];
 
   if (!url || typeof url !== 'string') {
     return;
@@ -321,6 +312,7 @@ export function shouldAttachHeaders(
  *
  * @returns Span if a span was created, otherwise void.
  */
+// oxlint-disable-next-line complexity
 function xhrCallback(
   handlerData: HandlerDataXhr,
   shouldCreateSpan: (url: string) => boolean,
@@ -367,6 +359,7 @@ function xhrCallback(
 
   const fullUrl = getFullURL(url);
   const parsedUrl = fullUrl ? parseUrl(fullUrl) : parseUrl(url);
+  const sanitizedFullUrl = fullUrl ? stripDataUrlContent(fullUrl) : undefined;
 
   const urlForSpanName = stripDataUrlContent(stripUrlQueryAndFragment(url));
 
@@ -380,18 +373,22 @@ function xhrCallback(
       ? startInactiveSpan({
           name: `${method} ${urlForSpanName}`,
           attributes: {
-            url: stripDataUrlContent(url),
             type: 'xhr',
-            'http.method': method,
-            'http.url': fullUrl ? stripDataUrlContent(fullUrl) : undefined,
-            'server.address': parsedUrl?.host,
+            // eslint-disable-next-line typescript/no-deprecated
+            [HTTP_METHOD]: method,
+            [URL_FULL]: filterCollectedUrl(sanitizedFullUrl),
+            [SERVER_ADDRESS]: parsedUrl?.host,
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.http.browser',
             [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'http.client',
-            ...(parsedUrl?.search && { 'http.query': parsedUrl?.search }),
-            ...(parsedUrl?.hash && { 'http.fragment': parsedUrl?.hash }),
+            [URL_QUERY]: filterCollectedUrlQuery(getUrlQuery(parsedUrl?.search)),
+            [URL_FRAGMENT]: getUrlFragment(parsedUrl?.hash),
           },
         })
       : new SentryNonRecordingSpan();
+
+  // If the span is ignored, we don't want to continue the trace from it (NonRecordingSpan) but rather
+  // from the active span. Passing `undefined` here will make `getTraceData` use the active span instead.
+  const spanForTraceHeaders = spanIsIgnored(span) && hasParent ? undefined : span;
 
   if (shouldCreateSpanResult && !shouldEmitSpan) {
     client?.recordDroppedEvent('no_parent_span', 'span');
@@ -406,7 +403,7 @@ function xhrCallback(
       // If performance is disabled (TWP) or there's no active root span (pageload/navigation/interaction),
       // we do not want to use the span as base for the trace headers,
       // which means that the headers will be generated from the scope and the sampling decision is deferred
-      hasSpansEnabled() && shouldEmitSpan ? span : undefined,
+      hasSpansEnabled() && shouldEmitSpan ? spanForTraceHeaders : undefined,
       propagateTraceparent,
     );
   }

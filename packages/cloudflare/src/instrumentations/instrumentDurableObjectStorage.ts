@@ -1,6 +1,10 @@
-import type { DurableObjectStorage } from '@cloudflare/workers-types';
-import { isThenable, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, startSpan } from '@sentry/core';
+import type { DurableObjectStorage, SyncKvStorage, SqlStorage } from '@cloudflare/workers-types';
+import { getClient, isThenable, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, startSpan } from '@sentry/core';
+import type { CloudflareClientOptions } from '../client';
+import { getStorageKeys, targetsCloudflareInternalKey } from '../utils/internalStorageKey';
 import { storeSpanContext } from '../utils/traceLinks';
+import { instrumentDurableObjectSyncKvStorage } from './instrumentDurableObjectSyncKvStorage';
+import { instrumentSqlStorage } from './instrumentSqlStorage';
 
 const STORAGE_METHODS_TO_INSTRUMENT = ['get', 'put', 'delete', 'list', 'setAlarm', 'getAlarm', 'deleteAlarm'] as const;
 
@@ -35,6 +39,14 @@ export function instrumentDurableObjectStorage(
       // reference" errors.
       const original = Reflect.get(target, prop, target);
 
+      if (prop === 'kv' && original != null && 'get' in original && 'put' in original) {
+        return instrumentDurableObjectSyncKvStorage(original as SyncKvStorage);
+      }
+
+      if (prop === 'sql' && original != null && 'databaseSize' in original && 'exec' in original) {
+        return instrumentSqlStorage(original as SqlStorage);
+      }
+
       if (typeof original !== 'function') {
         return original;
       }
@@ -45,6 +57,16 @@ export function instrumentDurableObjectStorage(
       }
 
       return function (this: unknown, ...args: unknown[]) {
+        // KV entries managed by the DO framework itself (agents/partyserver state) are bookkeeping
+        // rather than user work — skip the span, mirroring how `cf_` SQL tables are treated.
+        // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- rule false positive: the cast reaches the Cloudflare-only `durableObjectStorageSpanAllowlist`; tsc errors without it
+        const allowlist = (getClient()?.getOptions() as CloudflareClientOptions | undefined)
+          ?.durableObjectStorageSpanAllowlist;
+        const keys = getStorageKeys(methodName, args);
+        if (keys && keys.length > 0 && keys.every(key => targetsCloudflareInternalKey(key, allowlist))) {
+          return (original as (...a: unknown[]) => unknown).apply(target, args);
+        }
+
         return startSpan(
           {
             // Use underscore naming to match Cloudflare's native instrumentation (e.g., "durable_object_storage_get")
@@ -63,7 +85,7 @@ export function instrumentDurableObjectStorage(
               // We use the original (uninstrumented) storage (target) to avoid creating a span
               // for this internal operation. The storage is deferred via waitUntil to not block.
               if (methodName === 'setAlarm') {
-                await storeSpanContext(target, 'alarm');
+                storeSpanContext(target, 'alarm');
               }
             };
 

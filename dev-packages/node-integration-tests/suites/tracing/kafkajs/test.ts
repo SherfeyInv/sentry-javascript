@@ -1,8 +1,11 @@
 import type { TransactionEvent } from '@sentry/core';
-import { afterAll, describe, expect } from 'vitest';
-import { cleanupChildProcesses, createEsmAndCjsTests } from '../../../utils/runner';
+import { afterAll, expect } from 'vitest';
+import { cleanupChildProcesses, createEsmAndCjsTests, describeWithDockerCompose } from '../../../utils/runner';
 
-describe('kafkajs', () => {
+const producerOrigin = 'auto.kafkajs.producer';
+const consumerOrigin = 'auto.kafkajs.consumer';
+
+describeWithDockerCompose('kafkajs', { workingDirectory: [__dirname] }, () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
@@ -14,9 +17,6 @@ describe('kafkajs', () => {
       const receivedTransactions: TransactionEvent[] = [];
 
       await createRunner()
-        .withDockerCompose({
-          workingDirectory: [__dirname],
-        })
         .expect({
           transaction: (transaction: TransactionEvent) => {
             receivedTransactions.push(transaction);
@@ -27,10 +27,10 @@ describe('kafkajs', () => {
             receivedTransactions.push(transaction);
 
             const producer = receivedTransactions.find(
-              t => t.contexts?.trace?.data?.['sentry.origin'] === 'auto.kafkajs.otel.producer',
+              t => t.contexts?.trace?.data?.['sentry.origin'] === producerOrigin,
             );
             const consumer = receivedTransactions.find(
-              t => t.contexts?.trace?.data?.['sentry.origin'] === 'auto.kafkajs.otel.consumer',
+              t => t.contexts?.trace?.data?.['sentry.origin'] === consumerOrigin,
             );
 
             expect(producer).toBeDefined();
@@ -52,28 +52,55 @@ describe('kafkajs', () => {
 
             expect(producer!.contexts?.trace).toMatchObject(
               expect.objectContaining({
-                op: 'message',
+                op: 'queue.publish',
                 status: 'ok',
                 data: expect.objectContaining({
                   'messaging.system': 'kafka',
                   'messaging.destination.name': 'test-topic',
-                  'otel.kind': 'PRODUCER',
-                  'sentry.op': 'message',
-                  'sentry.origin': 'auto.kafkajs.otel.producer',
+                  'sentry.kind': 'producer',
+                  'sentry.op': 'queue.publish',
+                  'sentry.origin': producerOrigin,
                 }),
               }),
             );
 
             expect(consumer!.contexts?.trace).toMatchObject(
               expect.objectContaining({
-                op: 'message',
+                op: 'queue.process',
                 status: 'ok',
                 data: expect.objectContaining({
                   'messaging.system': 'kafka',
                   'messaging.destination.name': 'test-topic',
-                  'otel.kind': 'CONSUMER',
-                  'sentry.op': 'message',
-                  'sentry.origin': 'auto.kafkajs.otel.consumer',
+                  'sentry.kind': 'consumer',
+                  'sentry.op': 'queue.process',
+                  'sentry.origin': consumerOrigin,
+                }),
+              }),
+            );
+          },
+        })
+        .start()
+        .completed();
+    });
+  });
+
+  createEsmAndCjsTests(__dirname, 'scenario-error.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('marks the producer span as errored when a send fails', { timeout: 90_000 }, async () => {
+      await createRunner()
+        .expect({
+          transaction: (transaction: TransactionEvent) => {
+            expect(transaction.transaction).toBe('send invalid topic name');
+            expect(transaction.contexts?.trace).toMatchObject(
+              expect.objectContaining({
+                op: 'queue.publish',
+                status: 'internal_error',
+                data: expect.objectContaining({
+                  'messaging.system': 'kafka',
+                  'messaging.destination.name': 'invalid topic name',
+                  'sentry.kind': 'producer',
+                  'sentry.op': 'queue.publish',
+                  'sentry.origin': producerOrigin,
+                  'error.type': 'KafkaJSNonRetriableError',
                 }),
               }),
             );

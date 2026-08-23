@@ -2,11 +2,10 @@
   "extends": "./tsconfig.json",
 
   "compilerOptions": {
-    "module": "esnext",
-    "moduleResolution": "bundler",
     "declaration": true,
     "declarationMap": true,
     "emitDeclarationOnly": true,
-    "outDir": "build/types"
+    "outDir": "build/types",
+    "rootDir": "./src"
   }
 }

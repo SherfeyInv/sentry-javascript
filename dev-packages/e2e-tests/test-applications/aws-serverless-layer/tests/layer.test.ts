@@ -38,14 +38,17 @@ test.describe('Lambda layer', () => {
         'sentry.sample_rate': 1,
         'sentry.source': 'custom',
         'sentry.origin': 'auto.otel.aws_lambda',
-        'sentry.op': 'function.aws.lambda',
+        'sentry.op': 'function.aws',
         'cloud.account.id': '012345678912',
+        'cloud.platform': 'aws_lambda',
+        'cloud.provider': 'aws',
         'faas.execution': expect.any(String),
         'faas.id': 'arn:aws:lambda:us-east-1:012345678912:function:LayerTracingCjs',
+        'faas.name': 'LayerTracingCjs',
         'faas.coldstart': true,
-        'otel.kind': 'SERVER',
+        'sentry.kind': 'server',
       },
-      op: 'function.aws.lambda',
+      op: 'function.aws',
       origin: 'auto.otel.aws_lambda',
       span_id: expect.stringMatching(/[a-f0-9]{16}/),
       status: 'ok',
@@ -60,7 +63,7 @@ test.describe('Lambda layer', () => {
         data: expect.objectContaining({
           'sentry.op': 'http.client',
           'sentry.origin': 'auto.http.client',
-          url: 'http://example.com/',
+          'url.full': 'http://example.com/',
         }),
         description: 'GET http://example.com/',
         op: 'http.client',
@@ -106,14 +109,17 @@ test.describe('Lambda layer', () => {
         'sentry.sample_rate': 1,
         'sentry.source': 'custom',
         'sentry.origin': 'auto.otel.aws_lambda',
-        'sentry.op': 'function.aws.lambda',
+        'sentry.op': 'function.aws',
         'cloud.account.id': '012345678912',
+        'cloud.platform': 'aws_lambda',
+        'cloud.provider': 'aws',
         'faas.execution': expect.any(String),
         'faas.id': 'arn:aws:lambda:us-east-1:012345678912:function:LayerTracingEsm',
+        'faas.name': 'LayerTracingEsm',
         'faas.coldstart': true,
-        'otel.kind': 'SERVER',
+        'sentry.kind': 'server',
       },
-      op: 'function.aws.lambda',
+      op: 'function.aws',
       origin: 'auto.otel.aws_lambda',
       span_id: expect.stringMatching(/[a-f0-9]{16}/),
       status: 'ok',
@@ -128,7 +134,7 @@ test.describe('Lambda layer', () => {
         data: expect.objectContaining({
           'sentry.op': 'http.client',
           'sentry.origin': 'auto.http.client',
-          url: 'http://example.com/',
+          'url.full': 'http://example.com/',
         }),
         description: 'GET http://example.com/',
         op: 'http.client',
@@ -229,14 +235,17 @@ test.describe('Lambda layer', () => {
         'sentry.sample_rate': 1,
         'sentry.source': 'custom',
         'sentry.origin': 'auto.otel.aws_lambda',
-        'sentry.op': 'function.aws.lambda',
+        'sentry.op': 'function.aws',
         'cloud.account.id': '012345678912',
+        'cloud.platform': 'aws_lambda',
+        'cloud.provider': 'aws',
         'faas.execution': expect.any(String),
         'faas.id': 'arn:aws:lambda:us-east-1:012345678912:function:LayerStreaming',
+        'faas.name': 'LayerStreaming',
         'faas.coldstart': true,
-        'otel.kind': 'SERVER',
+        'sentry.kind': 'server',
       },
-      op: 'function.aws.lambda',
+      op: 'function.aws',
       origin: 'auto.otel.aws_lambda',
       span_id: expect.stringMatching(/[a-f0-9]{16}/),
       status: 'ok',
@@ -255,6 +264,91 @@ test.describe('Lambda layer', () => {
         op: 'test',
       }),
     );
+  });
+
+  test('callback-style handlers work', async ({ lambdaClient }) => {
+    const transactionEventPromise = waitForTransaction('aws-serverless-layer', transactionEvent => {
+      return transactionEvent?.transaction === 'LayerCallback';
+    });
+
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: 'LayerCallback',
+        Payload: JSON.stringify({}),
+      }),
+    );
+
+    const transactionEvent = await transactionEventPromise;
+
+    expect(transactionEvent.contexts?.trace).toEqual(
+      expect.objectContaining({
+        op: 'function.aws',
+        origin: 'auto.otel.aws_lambda',
+        status: 'ok',
+        data: expect.objectContaining({
+          'sentry.op': 'function.aws',
+          'sentry.origin': 'auto.otel.aws_lambda',
+          'sentry.kind': 'server',
+          'faas.id': 'arn:aws:lambda:us-east-1:012345678912:function:LayerCallback',
+          'faas.name': 'LayerCallback',
+        }),
+      }),
+    );
+  });
+
+  test('callback-style handler errors are captured', async ({ lambdaClient }) => {
+    const errorEventPromise = waitForError('aws-serverless-layer', errorEvent => {
+      return errorEvent?.exception?.values?.[0]?.value === 'callback error';
+    });
+
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: 'LayerCallback',
+        Payload: JSON.stringify({ shouldError: true }),
+      }),
+    );
+
+    const errorEvent = await errorEventPromise;
+
+    expect(errorEvent.exception?.values?.[0]).toEqual(
+      expect.objectContaining({
+        type: 'Error',
+        value: 'callback error',
+        mechanism: {
+          type: 'auto.function.aws_serverless.otel',
+          handled: false,
+        },
+      }),
+    );
+  });
+
+  test('continues a trace from incoming headers', async ({ lambdaClient }) => {
+    const traceId = 'd4cda95b652f4a1592b449d5929fda1b';
+    const parentSpanId = '6e0c63257de34c92';
+
+    const transactionEventPromise = waitForTransaction('aws-serverless-layer', transactionEvent => {
+      return (
+        transactionEvent?.transaction === 'LayerTracingCjs' && transactionEvent.contexts?.trace?.trace_id === traceId
+      );
+    });
+
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: 'LayerTracingCjs',
+        Payload: JSON.stringify({
+          headers: {
+            'sentry-trace': `${traceId}-${parentSpanId}-1`,
+            baggage: `sentry-environment=qa,sentry-public_key=public,sentry-trace_id=${traceId}`,
+          },
+        }),
+      }),
+    );
+
+    const transactionEvent = await transactionEventPromise;
+
+    // The Lambda transaction is parented to the incoming trace context (eventContextExtractor + startInactiveSpan).
+    expect(transactionEvent.contexts?.trace?.trace_id).toEqual(traceId);
+    expect(transactionEvent.contexts?.trace?.parent_span_id).toEqual(parentSpanId);
   });
 
   test('extension tunnel validates DSN allowlist and rejects invalid envelopes', async ({ lambdaClient }) => {

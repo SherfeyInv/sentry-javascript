@@ -7,14 +7,14 @@
     "dev": "wrangler dev --var \"E2E_TEST_DSN:$E2E_TEST_DSN\"",
     "build": "wrangler deploy --dry-run",
     "typecheck": "tsc --noEmit",
-    "cf-typegen": "wrangler types",
+    "cf-typegen": "wrangler types --include-runtime=false",
     "test:build": "pnpm install && pnpm build",
     "test:assert": "pnpm typecheck && pnpm test:dev && pnpm test:prod",
     "test:prod": "TEST_ENV=production playwright test",
     "test:dev": "TEST_ENV=development playwright test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@sentry/cloudflare": "file:../../packed/sentry-cloudflare-packed.tgz",
     "agents": "0.11.9",
     "zod": "^4.3.6"

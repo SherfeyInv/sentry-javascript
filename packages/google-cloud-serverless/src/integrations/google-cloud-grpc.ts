@@ -1,3 +1,5 @@
+import { RPC_METHOD, RPC_SERVICE, RPC_SYSTEM_NAME, SENTRY_OP } from '@sentry/conventions/attributes';
+import { FAAS_GRPC_SPAN_OP } from '@sentry/conventions/op';
 import type { Client, IntegrationFn } from '@sentry/core';
 import { defineIntegration, fill, getClient, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN } from '@sentry/core';
 import { startInactiveSpan } from '@sentry/node';
@@ -27,7 +29,7 @@ export interface Stub {
 
 const SERVICE_PATH_REGEX = /^(\w+)\.googleapis.com$/;
 
-const INTEGRATION_NAME = 'GoogleCloudGrpc';
+const INTEGRATION_NAME = 'GoogleCloudGrpc' as const;
 
 const SETUP_CLIENTS = new WeakMap<Client, boolean>();
 
@@ -94,31 +96,29 @@ export function fillGrpcFunction(stub: Stub, serviceIdentifier: string, methodNa
   if (callType != 'unary call') {
     return;
   }
-  fill(
-    stub,
-    methodName,
-    (orig: GrpcFunction): GrpcFunction =>
-      (...args) => {
-        const ret = orig.apply(stub, args);
-        if (typeof ret?.on !== 'function' || !SETUP_CLIENTS.has(getClient() as Client)) {
-          return ret;
-        }
-        const span = startInactiveSpan({
-          name: `${callType} ${methodName}`,
-          onlyIfParent: true,
-          op: `grpc.${serviceIdentifier}`,
-          attributes: {
-            [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.grpc.serverless',
-          },
-        });
-        ret.on('status', () => {
-          if (span) {
-            span.end();
-          }
-        });
-        return ret;
+  fill(stub, methodName, (orig: GrpcFunction): GrpcFunction => (...args) => {
+    const ret = orig.apply(stub, args);
+    if (typeof ret?.on !== 'function' || !SETUP_CLIENTS.has(getClient() as Client)) {
+      return ret;
+    }
+    const span = startInactiveSpan({
+      name: `${callType} ${methodName}`,
+      onlyIfParent: true,
+      attributes: {
+        [SENTRY_OP]: FAAS_GRPC_SPAN_OP,
+        [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.grpc.serverless',
+        [RPC_SYSTEM_NAME]: 'grpc',
+        [RPC_SERVICE]: serviceIdentifier,
+        [RPC_METHOD]: methodName,
       },
-  );
+    });
+    ret.on('status', () => {
+      if (span) {
+        span.end();
+      }
+    });
+    return ret;
+  });
 }
 
 /** Identifies service by its address */

@@ -2,19 +2,18 @@
  * @vitest-environment jsdom
  */
 
-import * as sentryCore from '@sentry/core/browser';
-import { Scope } from '@sentry/core/browser';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getCurrentScope, makeSession, setCurrentClient } from '@sentry/core/browser';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyDefaultOptions, BrowserClient } from '../src/client';
 import { WINDOW } from '../src/helpers';
 import { getDefaultBrowserClientOptions } from './helper/browser-client-options';
 
-vi.mock('@sentry/core/browser', async requireActual => {
-  return {
-    ...((await requireActual()) as any),
-    _INTERNAL_flushLogsBuffer: vi.fn(),
-  };
-});
+function setDocumentHidden(): void {
+  if (WINDOW.document) {
+    Object.defineProperty(WINDOW.document, 'visibilityState', { value: 'hidden', configurable: true });
+    WINDOW.document.dispatchEvent(new Event('visibilitychange'));
+  }
+}
 
 describe('BrowserClient', () => {
   let client: BrowserClient;
@@ -24,57 +23,76 @@ describe('BrowserClient', () => {
     vi.clearAllMocks();
   });
 
-  it('does not flush logs when logs are disabled', () => {
-    client = new BrowserClient(
-      getDefaultBrowserClientOptions({
-        sendClientReports: true,
-      }),
-    );
-    const scope = new Scope();
-    scope.setClient(client);
+  it('flushes the client (spans, logs, metrics) when the page becomes hidden', async () => {
+    client = new BrowserClient(getDefaultBrowserClientOptions({ sendClientReports: true }));
+    const flushSpy = vi.spyOn(client, 'flush').mockReturnValue(Promise.resolve(true) as any);
+    const flushOutcomesSpy = vi.spyOn(client as any, '_flushOutcomes');
 
-    // Add some logs
-    sentryCore._INTERNAL_captureLog({ level: 'info', message: 'test log 1' }, scope);
-    sentryCore._INTERNAL_captureLog({ level: 'info', message: 'test log 2' }, scope);
+    setDocumentHidden();
 
-    // Simulate visibility change to hidden
-    if (WINDOW.document) {
-      Object.defineProperty(WINDOW.document, 'visibilityState', { value: 'hidden' });
-      WINDOW.document.dispatchEvent(new Event('visibilitychange'));
-    }
+    // The flush is deferred to a microtask so that visibilitychange listeners registered after the
+    // client's listener (e.g. browser tracing's background-tab detection) have already run.
+    expect(flushSpy).not.toHaveBeenCalled();
+    await Promise.resolve();
 
-    expect(sentryCore._INTERNAL_flushLogsBuffer).not.toHaveBeenCalled();
+    expect(flushOutcomesSpy).toHaveBeenCalled();
+    expect(flushSpy).toHaveBeenCalledTimes(1);
   });
 
-  describe('log flushing', () => {
-    beforeEach(() => {
-      vi.useFakeTimers();
-      client = new BrowserClient(
-        getDefaultBrowserClientOptions({
-          enableLogs: true,
-          sendClientReports: true,
-        }),
-      );
+  it('does not flush outcomes when sendClientReports is disabled but still flushes the client', async () => {
+    client = new BrowserClient(getDefaultBrowserClientOptions({ sendClientReports: false }));
+    const flushSpy = vi.spyOn(client, 'flush').mockReturnValue(Promise.resolve(true) as any);
+    const flushOutcomesSpy = vi.spyOn(client as any, '_flushOutcomes');
+
+    setDocumentHidden();
+    await Promise.resolve();
+
+    expect(flushOutcomesSpy).not.toHaveBeenCalled();
+    expect(flushSpy).toHaveBeenCalledTimes(1);
+  });
+
+  describe('session status on unhandled errors', () => {
+    afterEach(() => {
+      getCurrentScope().setSession(undefined);
+      getCurrentScope().setClient(undefined);
     });
 
-    it('flushes logs when page visibility changes to hidden', () => {
-      const flushOutcomesSpy = vi.spyOn(client as any, '_flushOutcomes');
+    it('sets the session status to "unhandled" for an unhandled exception', () => {
+      client = new BrowserClient(getDefaultBrowserClientOptions());
+      setCurrentClient(client);
 
-      const scope = new Scope();
-      scope.setClient(client);
+      const session = makeSession();
+      getCurrentScope().setSession(session);
 
-      // Add some logs
-      sentryCore._INTERNAL_captureLog({ level: 'info', message: 'test log 1' }, scope);
-      sentryCore._INTERNAL_captureLog({ level: 'info', message: 'test log 2' }, scope);
+      client.captureException(new Error('test'), { mechanism: { handled: false } });
 
-      // Simulate visibility change to hidden
-      if (WINDOW.document) {
-        Object.defineProperty(WINDOW.document, 'visibilityState', { value: 'hidden' });
-        WINDOW.document.dispatchEvent(new Event('visibilitychange'));
-      }
+      expect(session.status).toBe('unhandled');
+      expect(session.errors).toBe(1);
+    });
 
-      expect(flushOutcomesSpy).toHaveBeenCalled();
-      expect(sentryCore._INTERNAL_flushLogsBuffer).toHaveBeenCalledWith(client);
+    it('sets the session status to "unhandled" for a fatal event', () => {
+      client = new BrowserClient(getDefaultBrowserClientOptions());
+      setCurrentClient(client);
+
+      const session = makeSession();
+      getCurrentScope().setSession(session);
+
+      client.captureEvent({ message: 'test', level: 'fatal' });
+
+      expect(session.status).toBe('unhandled');
+    });
+
+    it('keeps the session status "ok" for a handled exception', () => {
+      client = new BrowserClient(getDefaultBrowserClientOptions());
+      setCurrentClient(client);
+
+      const session = makeSession();
+      getCurrentScope().setSession(session);
+
+      client.captureException(new Error('test'));
+
+      expect(session.status).toBe('ok');
+      expect(session.errors).toBe(1);
     });
   });
 });
@@ -148,35 +166,8 @@ describe('applyDefaultOptions', () => {
 
 describe('SDK metadata', () => {
   describe('sdk.settings', () => {
-    it('sets infer_ip to "never" by default', () => {
+    it('sets infer_ip to "auto" by default', () => {
       const options = getDefaultBrowserClientOptions({});
-      const client = new BrowserClient(options);
-
-      expect(client.getOptions()._metadata?.sdk?.settings?.infer_ip).toBe('never');
-    });
-
-    it('sets infer_ip to "never" if sendDefaultPii is false', () => {
-      const options = getDefaultBrowserClientOptions({
-        sendDefaultPii: false,
-      });
-      const client = new BrowserClient(options);
-
-      expect(client.getOptions()._metadata?.sdk?.settings?.infer_ip).toBe('never');
-    });
-
-    it('sets infer_ip to "auto" if sendDefaultPii is true', () => {
-      const options = getDefaultBrowserClientOptions({
-        sendDefaultPii: true,
-      });
-      const client = new BrowserClient(options);
-
-      expect(client.getOptions()._metadata?.sdk?.settings?.infer_ip).toBe('auto');
-    });
-
-    it('sets infer_ip to "auto" if dataCollection.userInfo is true', () => {
-      const options = getDefaultBrowserClientOptions({
-        dataCollection: { userInfo: true },
-      });
       const client = new BrowserClient(options);
 
       expect(client.getOptions()._metadata?.sdk?.settings?.infer_ip).toBe('auto');
@@ -191,19 +182,8 @@ describe('SDK metadata', () => {
       expect(client.getOptions()._metadata?.sdk?.settings?.infer_ip).toBe('never');
     });
 
-    it('dataCollection.userInfo takes precedence over sendDefaultPii', () => {
-      const options = getDefaultBrowserClientOptions({
-        sendDefaultPii: true,
-        dataCollection: { userInfo: false },
-      });
-      const client = new BrowserClient(options);
-
-      expect(client.getOptions()._metadata?.sdk?.settings?.infer_ip).toBe('never');
-    });
-
     it("doesn't override already set sdk metadata settings", () => {
       const options = getDefaultBrowserClientOptions({
-        sendDefaultPii: true,
         _metadata: {
           sdk: {
             settings: {
@@ -235,7 +215,7 @@ describe('SDK metadata', () => {
       expect(client.getOptions()._metadata?.sdk).toEqual({
         name: 'sentry.javascript.angular',
         settings: {
-          infer_ip: 'never',
+          infer_ip: 'auto',
         },
       });
     });
@@ -271,9 +251,9 @@ describe('SDK metadata', () => {
             },
           },
         },
-        // Usually, this would cause infer_ip to be set to 'never'
+        // Usually, this would cause infer_ip to be set to 'auto'
         // but we're passing it in explicitly, so it should be preserved
-        sendDefaultPii: false,
+        dataCollection: { userInfo: false },
       });
       const client = new BrowserClient(options);
 

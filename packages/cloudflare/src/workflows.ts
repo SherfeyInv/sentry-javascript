@@ -1,3 +1,5 @@
+import { CODE_FUNCTION_NAME, SENTRY_OP } from '@sentry/conventions/attributes';
+import { GENERAL_FUNCTION_SPAN_OP } from '@sentry/conventions/op';
 import type { PropagationContext } from '@sentry/core';
 import {
   captureException,
@@ -10,21 +12,25 @@ import {
   withScope,
 } from '@sentry/core';
 import type {
+  WorkflowDelayDuration,
   WorkflowEntrypoint,
   WorkflowEvent,
   WorkflowSleepDuration,
   WorkflowStep,
   WorkflowStepConfig,
+  WorkflowStepContext,
   WorkflowStepEvent,
+  WorkflowStepRollbackOptions,
   WorkflowTimeoutDuration,
 } from 'cloudflare:workers';
-import { setAsyncLocalStorageAsyncContextStrategy } from './async';
+import { setAsyncLocalStorageAsyncContextStrategy } from '@sentry/server-utils/no-diagnostic-channels';
 import type { CloudflareOptions } from './client';
-import { flushAndDispose } from './flush';
+import { flushAndDispose, getOriginalWaitUntil } from './flush';
 import { instrumentEnv } from './instrumentations/worker/instrumentEnv';
 import { addCloudResourceContext } from './scope-utils';
 import { init } from './sdk';
 import { instrumentContext } from './utils/instrumentContext';
+import type { DefaultEnv, ResolveEnv, StrictCloudflareOptions } from './types';
 
 const UUID_REGEX = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 
@@ -70,23 +76,34 @@ class WrappedWorkflowStep implements WorkflowStep {
 
   public async do<T extends Rpc.Serializable<T>>(
     name: string,
-    callback: (...args: unknown[]) => Promise<T>,
+    callback: (ctx: WorkflowStepContext) => Promise<T>,
+    rollbackOptions?: WorkflowStepRollbackOptions<T>,
+  ): Promise<T>;
+  public async do<T extends Rpc.Serializable<T>, const C extends WorkflowStepConfig>(
+    name: string,
+    config: C,
+    callback: (
+      ctx: WorkflowStepContext<C['retries'] extends { delay: infer D } ? D : WorkflowDelayDuration | number>,
+    ) => Promise<T>,
+    rollbackOptions?: WorkflowStepRollbackOptions<T>,
   ): Promise<T>;
   public async do<T extends Rpc.Serializable<T>>(
     name: string,
-    config: WorkflowStepConfig,
-    callback: (...args: unknown[]) => Promise<T>,
-  ): Promise<T>;
-  public async do<T extends Rpc.Serializable<T>>(
-    name: string,
-    configOrCallback: WorkflowStepConfig | (() => Promise<T>),
-    maybeCallback?: (...args: unknown[]) => Promise<T>,
+    configOrCallback: WorkflowStepConfig | ((ctx: WorkflowStepContext) => Promise<T>),
+    callbackOrRollback?: ((ctx: WorkflowStepContext) => Promise<T>) | WorkflowStepRollbackOptions<T>,
+    maybeRollback?: WorkflowStepRollbackOptions<T>,
   ): Promise<T> {
     // Capture the current scope, so parent span (e.g., a startSpan surrounding step.do) is preserved
     const scopeForStep = getCurrentScope();
 
-    const userCallback = (maybeCallback || configOrCallback) as (...args: unknown[]) => Promise<T>;
-    const config = typeof configOrCallback === 'function' ? undefined : configOrCallback;
+    const hasConfig = typeof configOrCallback !== 'function';
+    const config = hasConfig ? configOrCallback : undefined;
+    const userCallback = (hasConfig ? callbackOrRollback : configOrCallback) as (
+      ctx: WorkflowStepContext,
+    ) => Promise<T>;
+    const rollbackOptions = (hasConfig ? maybeRollback : callbackOrRollback) as
+      | WorkflowStepRollbackOptions<T>
+      | undefined;
 
     const instrumentedCallback = async (...args: unknown[]): Promise<T> => {
       // Feature detection: Cloudflare Workflows (April 2026+) pass a step context
@@ -103,13 +120,17 @@ class WrappedWorkflowStep implements WorkflowStep {
 
       return startSpan(
         {
-          op: 'function.step.do',
           name,
           scope: scopeForStep,
           attributes: {
+            [SENTRY_OP]: GENERAL_FUNCTION_SPAN_OP,
+            [CODE_FUNCTION_NAME]: name,
+            'workflow.step.name': name,
             'cloudflare.workflow.timeout': config?.timeout,
             'cloudflare.workflow.retries.backoff': config?.retries?.backoff,
-            'cloudflare.workflow.retries.delay': config?.retries?.delay,
+            // In workers-types v5, `delay` may be a `WorkflowDelayFunction`, which isn't a valid span attribute value.
+            'cloudflare.workflow.retries.delay':
+              typeof config?.retries?.delay === 'function' ? undefined : config?.retries?.delay,
             'cloudflare.workflow.retries.limit': config?.retries?.limit,
             'cloudflare.workflow.attempt': attempt,
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.faas.cloudflare.workflow',
@@ -118,7 +139,7 @@ class WrappedWorkflowStep implements WorkflowStep {
         },
         async span => {
           try {
-            const result = await userCallback(...args);
+            const result = await (userCallback as (...args: unknown[]) => Promise<T>)(...args);
             span.setStatus({ code: 1 });
             return result;
           } catch (error) {
@@ -133,7 +154,15 @@ class WrappedWorkflowStep implements WorkflowStep {
       );
     };
 
-    return config ? this._step.do(name, config, instrumentedCallback) : this._step.do(name, instrumentedCallback);
+    if (config) {
+      return rollbackOptions
+        ? this._step.do(name, config, instrumentedCallback, rollbackOptions)
+        : this._step.do(name, config, instrumentedCallback);
+    }
+
+    return rollbackOptions
+      ? this._step.do(name, instrumentedCallback, rollbackOptions)
+      : this._step.do(name, instrumentedCallback);
   }
 
   public async sleep(name: string, duration: WorkflowSleepDuration): Promise<void> {
@@ -170,13 +199,25 @@ class WrappedWorkflowStep implements WorkflowStep {
  * @returns Instrumented workflow class with the same interface
  */
 export function instrumentWorkflowWithSentry<
-  E, // Environment type
-  P, // Payload type
-  T extends WorkflowEntrypoint<E, P>, // WorkflowEntrypoint type
-  C extends new (ctx: ExecutionContext, env: E) => T, // Constructor type of the WorkflowEntrypoint class
->(optionsCallback: (env: E) => CloudflareOptions, WorkFlowClass: C): C {
+  E = DefaultEnv, // Environment type
+  P = unknown, // Payload type
+  // oxlint-disable-next-line typescript/no-explicit-any
+  T extends WorkflowEntrypoint<any, any> = WorkflowEntrypoint<E, P>, // WorkflowEntrypoint type
+  // The constraint must not route through `T`: workers-types defaults `WorkflowEntrypoint`'s
+  // `Env` to `unknown` (unlike `WorkerEntrypoint`/`DurableObject`, which default to
+  // `Cloudflare.Env`), so a bare subclass would be rejected in a `wrangler types` project.
+  // The callback env is resolved from the inferred constructor via `ResolveEnv` instead.
+  // oxlint-disable-next-line typescript/no-explicit-any
+  C extends new (ctx: ExecutionContext, env: any) => WorkflowEntrypoint<any, any> = new (
+    ctx: ExecutionContext,
+    // oxlint-disable-next-line typescript/no-explicit-any
+    env: any,
+  ) => T, // Constructor type of the WorkflowEntrypoint class
+  O = unknown,
+>(optionsCallback: (env: ResolveEnv<C, E>) => StrictCloudflareOptions<O>, WorkFlowClass: C): C {
   return new Proxy(WorkFlowClass, {
-    construct(target: C, args: [ctx: ExecutionContext, env: E], newTarget) {
+    // oxlint-disable-next-line typescript/no-explicit-any
+    construct(target: C, args: [ctx: ExecutionContext, env: any], newTarget) {
       const [ctx, env] = args;
       const context = instrumentContext(ctx);
       const options = optionsCallback(env);
@@ -190,7 +231,7 @@ export function instrumentWorkflowWithSentry<
               setAsyncLocalStorageAsyncContextStrategy();
 
               return withIsolationScope(async isolationScope => {
-                const waitUntil = context.waitUntil.bind(context);
+                const waitUntil = getOriginalWaitUntil(context).bind(context);
                 const client = init({ ...options, ctx: context, enableDedupe: false });
                 isolationScope.setClient(client);
 

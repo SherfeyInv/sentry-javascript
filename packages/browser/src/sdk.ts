@@ -2,9 +2,9 @@ import type { Client, Integration, Options } from '@sentry/core/browser';
 import {
   conversationIdIntegration,
   dedupeIntegration,
+  eventFiltersIntegration,
   functionToStringIntegration,
   getIntegrationsToSetup,
-  inboundFiltersIntegration,
   initAndBind,
   setNormalizeStringifier,
   stackParserFromStackParserOptions,
@@ -19,10 +19,16 @@ import { globalHandlersIntegration } from './integrations/globalhandlers';
 import { httpContextIntegration } from './integrations/httpcontext';
 import { linkedErrorsIntegration } from './integrations/linkederrors';
 import { spotlightBrowserIntegration } from './integrations/spotlight';
+import {
+  spanStreamingIntegration,
+  INTEGRATION_NAME as SPAN_STREAMING_INTEGRATION_NAME,
+} from './integrations/spanstreaming';
 import { defaultStackParser } from './stack-parsers';
 import { makeFetchTransport } from './transports/fetch';
 import { normalizeStringifyValue } from './normalizeStringifyValue';
 import { checkAndWarnIfIsEmbeddedBrowserExtension } from './utils/detectBrowserExtension';
+
+declare const __SENTRY_TRACING__: boolean;
 
 /** Get the default integrations for the browser SDK. */
 export function getDefaultIntegrations(_options: Options): Integration[] {
@@ -31,9 +37,7 @@ export function getDefaultIntegrations(_options: Options): Integration[] {
    * `getDefaultIntegrations` but with an adjusted set of integrations.
    */
   return [
-    // TODO(v11): Replace with `eventFiltersIntegration` once we remove the deprecated `inboundFiltersIntegration`
-    // eslint-disable-next-line deprecation/deprecation
-    inboundFiltersIntegration(),
+    eventFiltersIntegration(),
     functionToStringIntegration(),
     conversationIdIntegration(),
     browserApiErrorsIntegration(),
@@ -110,14 +114,24 @@ export function init(options: BrowserOptions = {}): Client | undefined {
   }
   /*! rollup-include-development-only-end */
 
+  const integrations = getIntegrationsToSetup({
+    integrations: options.integrations,
+    defaultIntegrations,
+  });
+
+  if (
+    (typeof __SENTRY_TRACING__ === 'undefined' || __SENTRY_TRACING__) &&
+    options.traceLifecycle !== 'static' &&
+    !integrations.some(integration => integration.name === SPAN_STREAMING_INTEGRATION_NAME)
+  ) {
+    integrations.push(spanStreamingIntegration());
+  }
+
   const clientOptions: BrowserClientOptions = {
     ...options,
     enabled: shouldDisableBecauseIsBrowserExtenstion ? false : options.enabled,
     stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
-    integrations: getIntegrationsToSetup({
-      integrations: options.integrations,
-      defaultIntegrations,
-    }),
+    integrations,
     transport: options.transport || makeFetchTransport,
   };
 

@@ -22,20 +22,16 @@ To get started, first install the `@sentry/cloudflare` package:
 npm install @sentry/cloudflare
 ```
 
-Then either set the `nodejs_als` or `nodejs_compat` compatibility flags in your `wrangler.jsonc`/`wrangler.toml` config. This is because the SDK needs access to the `AsyncLocalStorage` API to work correctly.
+Then set the `nodejs_compat` compatibility flag in your `wrangler.jsonc`/`wrangler.toml` config. This is because the SDK needs access to Node.js compatibility APIs to work correctly.
 
 ```jsonc {tabTitle:JSON} {filename:wrangler.jsonc}
 {
-  "compatibility_flags": [
-    "nodejs_als",
-    // "nodejs_compat"
-  ],
+  "compatibility_flags": ["nodejs_compat"],
 }
 ```
 
 ```toml {tabTitle:Toml} {filename:wrangler.toml}
-compatibility_flags = ["nodejs_als"]
-# compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat"]
 ```
 
 ## Setup (Cloudflare Pages)
@@ -171,16 +167,12 @@ Sentry.captureEvent({
 
 ## Cloudflare D1 Instrumentation
 
-You can use the `instrumentD1WithSentry` method to instrument [Cloudflare D1](https://developers.cloudflare.com/d1/),
-Cloudflare's serverless SQL database with Sentry.
+`withSentry()` automatically instruments all [Cloudflare D1](https://developers.cloudflare.com/d1/) bindings on `env`,
+Cloudflare's serverless SQL database. Just use the binding as usual:
 
 ```javascript
-import * as Sentry from '@sentry/cloudflare';
-
 // env.DB is the D1 DB binding configured in your `wrangler.toml`
-const db = Sentry.instrumentD1WithSentry(env.DB);
-// Now you can use the database as usual
-await db.prepare('SELECT * FROM table WHERE id = ?').bind(1).run();
+await env.DB.prepare('SELECT * FROM table WHERE id = ?').bind(1).run();
 ```
 
 ## Cron Monitoring (Cloudflare Workers)

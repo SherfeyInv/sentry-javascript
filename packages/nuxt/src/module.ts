@@ -7,12 +7,16 @@ import {
   createResolver,
   defineNuxtModule,
 } from '@nuxt/kit';
+// Needed to make TS evaluate the augmentation of Nitro types (https://github.com/nuxt/nuxt/pull/34039)
+import type {} from '@nuxt/nitro-server';
+
 import { consoleSandbox } from '@sentry/core';
 import * as path from 'path';
 import type { SentryNuxtModuleOptions } from './common/types';
 import { addDynamicImportEntryFileWrapper, addSentryTopImport, addServerConfigToBuild } from './vite/addServerConfig';
 import { addDatabaseInstrumentation } from './vite/databaseConfig';
 import { addMiddlewareImports, addMiddlewareInstrumentation } from './vite/middlewareConfig';
+import { setupOrchestrion } from './vite/orchestrion';
 import { setupSourceMaps } from './vite/sourceMaps';
 import { addStorageInstrumentation } from './vite/storageConfig';
 import { addOTelCommonJSImportAlias, findDefaultSdkInitFile, getNitroMajorVersion } from './vite/utils';
@@ -82,6 +86,11 @@ export default defineNuxtModule<ModuleOptions>({
     const isNitroV3 = (await getNitroMajorVersion()) >= 3;
     const nuxtMajor = parseInt((nuxt as unknown as { _version: string })._version?.split('.')[0] ?? '3', 10);
     const isMinNuxtV4 = nuxtMajor >= 4;
+
+    // Orchestrion runs on both the Node path (gated on a server config file) and the Cloudflare path
+    // (which has no server config file — the SDK is set up via `sentryCloudflareNitroPlugin`). The
+    // Cloudflare detection happens inside, keyed off the resolved Nitro preset.
+    setupOrchestrion(nuxt, !!serverConfigFile, moduleOptions.buildTimeInstrumentation);
 
     if (serverConfigFile) {
       if (isNitroV3) {

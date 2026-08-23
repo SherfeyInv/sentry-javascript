@@ -3,6 +3,7 @@ import type { WrappedFunction } from '@sentry/core';
 import type { Hono, MiddlewareHandler } from 'hono';
 import { Hono as HonoClass } from 'hono';
 import { DEBUG_BUILD } from '../debug-build';
+import { isMiddleware } from '../utils/isMiddleware';
 import { patchAppRequest } from './patchAppRequest';
 import { wrapMiddlewareWithSpan } from './wrapMiddlewareSpan';
 
@@ -45,7 +46,7 @@ function createRouteHook(): { handle: RouteHookHandle; onSubAppMounted: (subApp:
     onSubAppMounted: (subApp: HonoAny) => {
       if (activated) {
         DEBUG_BUILD && debug.log(`[hono] Instrumenting sub-app at mount time (${subApp.routes.length} routes).`);
-        wrapSubAppMiddleware(subApp.routes as HonoRoute[]);
+        wrapSubAppMiddleware(subApp.routes);
         patchAppRequest(subApp);
       } else {
         DEBUG_BUILD &&
@@ -128,8 +129,8 @@ export function wrapSubAppMiddleware(routes: HonoRoute[]): void {
 
     const isLastForGroup = lastIndexByKey.get(`${route.method}\0${route.path}`) === i;
 
-    const isMiddleware = !isLastForGroup || (route.method === 'ALL' && route.handler.length >= 2);
-    if (isMiddleware) {
+    const isMW = !isLastForGroup || (route.method === 'ALL' && isMiddleware(route.handler));
+    if (isMW) {
       route.handler = wrapMiddlewareWithSpan(route.handler);
     }
   }

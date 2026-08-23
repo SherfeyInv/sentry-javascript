@@ -1,11 +1,12 @@
 import { getClient } from '../currentScopes';
-import { DEBUG_BUILD } from '../debug-build';
 import { addConsoleInstrumentationHandler } from '../instrument/console';
 import { defineIntegration } from '../integration';
 import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN } from '../semanticAttributes';
 import type { ConsoleLevel } from '../types/instrument';
 import type { IntegrationFn } from '../types/integration';
-import { CONSOLE_LEVELS, debug } from '../utils/debug-logger';
+import { CONSOLE_LEVELS } from '../utils/debug-logger';
+import { isPlainObject } from '../utils/is';
+import { normalize } from '../utils/normalize';
 import { _INTERNAL_captureLog } from './internal';
 import { createConsoleTemplateAttributes, formatConsoleArgs, hasConsoleSubstitutions } from './utils';
 
@@ -13,7 +14,7 @@ interface CaptureConsoleOptions {
   levels: ConsoleLevel[];
 }
 
-const INTEGRATION_NAME = 'ConsoleLogs';
+const INTEGRATION_NAME = 'ConsoleLogs' as const;
 
 const DEFAULT_ATTRIBUTES = {
   [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.log.console',
@@ -25,11 +26,7 @@ const _consoleLoggingIntegration = ((options: Partial<CaptureConsoleOptions> = {
   return {
     name: INTEGRATION_NAME,
     setup(client) {
-      const { enableLogs, normalizeDepth = 3, normalizeMaxBreadth = 1_000 } = client.getOptions();
-      if (!enableLogs) {
-        DEBUG_BUILD && debug.warn('`enableLogs` is not enabled, ConsoleLogs integration disabled');
-        return;
-      }
+      const { normalizeDepth = 3, normalizeMaxBreadth = 1_000 } = client.getOptions();
 
       const unsubscribe = addConsoleInstrumentationHandler(({ args, level }) => {
         if (getClient() !== client || !levels.includes(level)) {
@@ -52,12 +49,32 @@ const _consoleLoggingIntegration = ((options: Partial<CaptureConsoleOptions> = {
 
         const isLevelLog = level === 'log';
 
-        const shouldGenerateTemplate =
-          args.length > 1 && typeof args[0] === 'string' && !hasConsoleSubstitutions(args[0]);
-        const attributes = {
-          ...DEFAULT_ATTRIBUTES,
-          ...(shouldGenerateTemplate ? createConsoleTemplateAttributes(firstArg, followingArgs) : {}),
-        };
+        const attributes: Record<string, unknown> = { ...DEFAULT_ATTRIBUTES };
+
+        if (isPlainObject(firstArg)) {
+          // Object-first: extract object keys as attributes, remaining args as parameters
+          Object.assign(attributes, normalize(firstArg, normalizeDepth, normalizeMaxBreadth));
+
+          const remainingArgsStartIndex = typeof args[1] === 'string' ? 2 : 1;
+          const remainingArgs = args.slice(remainingArgsStartIndex);
+
+          remainingArgs.forEach((arg, index) => {
+            attributes[`sentry.message.parameter.${index}`] = normalize(arg, normalizeDepth, normalizeMaxBreadth);
+          });
+        } else {
+          // Fallback: template + parameters when first arg is a string without substitutions
+          const shouldGenerateTemplate =
+            followingArgs.length > 0 && typeof firstArg === 'string' && !hasConsoleSubstitutions(firstArg);
+
+          if (shouldGenerateTemplate) {
+            const templateAttrs = createConsoleTemplateAttributes(firstArg, followingArgs);
+            for (const [key, value] of Object.entries(templateAttrs)) {
+              attributes[key] = key.startsWith('sentry.message.parameter.')
+                ? normalize(value, normalizeDepth, normalizeMaxBreadth)
+                : value;
+            }
+          }
+        }
 
         _INTERNAL_captureLog({
           level: isLevelLog ? 'info' : level,
@@ -73,7 +90,7 @@ const _consoleLoggingIntegration = ((options: Partial<CaptureConsoleOptions> = {
 }) satisfies IntegrationFn;
 
 /**
- * Captures calls to the `console` API as logs in Sentry. Requires the `enableLogs` option to be enabled.
+ * Captures calls to the `console` API as logs in Sentry.
  *
  * @experimental This feature is experimental and may be changed or removed in future versions.
  *
@@ -87,7 +104,6 @@ const _consoleLoggingIntegration = ((options: Partial<CaptureConsoleOptions> = {
  * import * as Sentry from '@sentry/browser';
  *
  * Sentry.init({
- *   enableLogs: true,
  *   integrations: [Sentry.consoleLoggingIntegration({ levels: ['error', 'warn'] })],
  * });
  * ```

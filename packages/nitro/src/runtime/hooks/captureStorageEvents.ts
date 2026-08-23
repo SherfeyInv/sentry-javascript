@@ -1,16 +1,20 @@
+import * as dc from 'node:diagnostics_channel';
+import { SENTRY_OP } from '@sentry/conventions/attributes';
 import {
-  captureException,
+  DATABASE_CACHE_GET_SPAN_OP,
+  DATABASE_CACHE_PUT_SPAN_OP,
+  DATABASE_CACHE_REMOVE_SPAN_OP,
+} from '@sentry/conventions/op';
+import {
   flushIfServerless,
   GLOBAL_OBJ,
+  isObjectLike,
   SEMANTIC_ATTRIBUTE_CACHE_HIT,
   SEMANTIC_ATTRIBUTE_CACHE_KEY,
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SPAN_STATUS_ERROR,
-  SPAN_STATUS_OK,
-  startSpanManual,
+  startInactiveSpan,
 } from '@sentry/core';
-import { tracingChannel, type TracingChannelContextWithSpan } from '@sentry/opentelemetry/tracing-channel';
+import { bindTracingChannelToSpan } from '@sentry/server-utils';
 import type { TraceContext } from 'unstorage/tracing';
 
 const ORIGIN = 'auto.cache.nitro';
@@ -34,7 +38,25 @@ const TRACED_OPERATIONS = [
 
 type TracedOperation = (typeof TRACED_OPERATIONS)[number];
 
-const CACHE_HIT_OPERATIONS = new Set<TracedOperation>(['hasItem', 'getItem', 'getItemRaw']);
+const CACHE_HIT_OPERATIONS = new Set<TracedOperation>(['hasItem', 'getItem', 'getItemRaw', 'getItems']);
+
+/**
+ * Maps each unstorage operation to a convention cache op. Reads (including existence and key
+ * listing) are `cache.get`, writes are `cache.put`, and deletions are `cache.remove`.
+ * The precise operation stays available on `db.operation.name`.
+ */
+const OPERATION_SPAN_OPS = {
+  hasItem: DATABASE_CACHE_GET_SPAN_OP,
+  getItem: DATABASE_CACHE_GET_SPAN_OP,
+  getItemRaw: DATABASE_CACHE_GET_SPAN_OP,
+  getItems: DATABASE_CACHE_GET_SPAN_OP,
+  getKeys: DATABASE_CACHE_GET_SPAN_OP,
+  setItem: DATABASE_CACHE_PUT_SPAN_OP,
+  setItemRaw: DATABASE_CACHE_PUT_SPAN_OP,
+  setItems: DATABASE_CACHE_PUT_SPAN_OP,
+  removeItem: DATABASE_CACHE_REMOVE_SPAN_OP,
+  clear: DATABASE_CACHE_REMOVE_SPAN_OP,
+} as const satisfies Record<TracedOperation, string>;
 
 const CACHED_FN_HANDLERS_RE = /^nitro:(functions|handlers):/i;
 
@@ -57,56 +79,60 @@ function setupStorageTracingChannel(operation: TracedOperation): void {
   const keys = (data: TraceContext): string[] => data.keys ?? [];
   const mountBase = (data: TraceContext): string => (data.base ?? '').replace(/:$/, '');
 
-  const channel = tracingChannel<TraceContext>(`unstorage.${operation}`, data => {
-    const cacheKeys = keys(data);
+  // Bail if this is not available
+  if (!dc.tracingChannel) {
+    return;
+  }
 
-    return startSpanManual(
-      {
+  bindTracingChannelToSpan(
+    dc.tracingChannel<TraceContext>(`unstorage.${operation}`),
+    data => {
+      const cacheKeys = keys(data);
+
+      return startInactiveSpan({
         name: cacheKeys.join(', ') || operation,
         attributes: {
-          [SEMANTIC_ATTRIBUTE_SENTRY_OP]: `cache.${normalizeMethodName(operation)}`,
+          [SENTRY_OP]: OPERATION_SPAN_OPS[operation],
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: ORIGIN,
           [SEMANTIC_ATTRIBUTE_CACHE_KEY]: cacheKeys.length > 1 ? cacheKeys : cacheKeys[0],
           'db.operation.name': operation,
           'db.collection.name': mountBase(data),
           'db.system.name': data.driver?.name ?? 'unknown',
         },
-      },
-      span => span,
-    );
-  });
-
-  channel.subscribe({
-    asyncEnd(data: TracingChannelContextWithSpan<TraceContext & { result?: unknown }>) {
-      if (data._sentrySpan && CACHE_HIT_OPERATIONS.has(operation)) {
-        const hit = operation === 'hasItem' ? Boolean(data.result) : isCacheHit(data.keys?.[0], data.result);
-        data._sentrySpan.setAttribute(SEMANTIC_ATTRIBUTE_CACHE_HIT, hit);
-      }
-
-      data._sentrySpan?.setStatus({ code: SPAN_STATUS_OK });
-      data._sentrySpan?.end();
-
-      void flushIfServerless();
-    },
-    error(data: TracingChannelContextWithSpan<TraceContext & { error?: unknown }>) {
-      captureException(data.error, {
-        mechanism: { handled: false, type: ORIGIN },
       });
-
-      data._sentrySpan?.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
-      data._sentrySpan?.end();
-
-      void flushIfServerless();
     },
-  });
+    {
+      beforeSpanEnd(span, data) {
+        // Error status is set by the binding; the error itself is captured at the request boundary,
+        // not here (cache ops aren't an error boundary). Only enrich the success path.
+        if (!('error' in data)) {
+          const result = (data as { result?: unknown }).result;
+          if (CACHE_HIT_OPERATIONS.has(operation)) {
+            span.setAttribute(SEMANTIC_ATTRIBUTE_CACHE_HIT, resolveCacheHit(operation, data.keys?.[0], result));
+          }
+        }
+
+        void flushIfServerless();
+      },
+    },
+  );
 }
 
-function normalizeMethodName(methodName: string): string {
-  return methodName.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-}
+/**
+ * Resolves the `cache.hit` value for a read operation. `hasItem` returns a boolean directly,
+ * `getItems` returns a `{ key, value }[]` where a hit means at least one entry has a value,
+ * and single-key reads fall back to the value-based `isCacheHit` check.
+ */
+function resolveCacheHit(operation: TracedOperation, key: unknown, result: unknown): boolean {
+  if (operation === 'hasItem') {
+    return Boolean(result);
+  }
 
-function isEmptyValue(value: unknown): value is null | undefined {
-  return value === null || value === undefined;
+  if (operation === 'getItems') {
+    return Array.isArray(result) && result.some(item => isObjectLike(item) && item.value != null);
+  }
+
+  return isCacheHit(key, result);
 }
 
 interface CacheEntry<T = unknown> {
@@ -122,7 +148,7 @@ interface ResponseCacheEntry {
 
 function isCacheHit(key: unknown, value: unknown): boolean {
   try {
-    const isEmpty = isEmptyValue(value);
+    const isEmpty = value == null;
     if (isEmpty || typeof key !== 'string' || !CACHED_FN_HANDLERS_RE.test(key)) {
       return !isEmpty;
     }
@@ -139,7 +165,7 @@ function validateCacheEntry(
   key: string,
   entry: CacheEntry | CacheEntry<ResponseCacheEntry & { status: number }>,
 ): boolean {
-  if (isEmptyValue(entry.value)) {
+  if (entry.value == null) {
     return false;
   }
 

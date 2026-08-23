@@ -2,10 +2,10 @@ import * as Sentry from '@sentry/node';
 import { loggingTransport } from '@sentry-internal/node-integration-tests';
 
 Sentry.init({
+  traceLifecycle: 'static',
   dsn: 'https://public@dsn.ingest.sentry.io/1337',
   release: '1.0.0',
   environment: 'test',
-  enableLogs: true,
   transport: loggingTransport,
 });
 
@@ -20,8 +20,8 @@ async function run(): Promise<void> {
   // global scope, log attribute
   Sentry.logger.info('log_after_global_scope', { log_attr: 'log_attr_2' }, {});
 
-  Sentry.withIsolationScope(isolationScope => {
-    isolationScope.setAttribute('isolation_scope_1_attr', { value: 100, unit: 'millisecond' });
+  Sentry.withIsolationScope(() => {
+    Sentry.setAttribute('isolation_scope_1_attr', { value: 100, unit: 'millisecond' });
 
     // global scope, isolation scope, log attribute
     Sentry.logger.info('log_with_isolation_scope', { log_attr: 'log_attr_3' }, {});

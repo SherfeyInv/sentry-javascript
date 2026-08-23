@@ -6,6 +6,8 @@ describe('hapi auto-instrumentation', () => {
     cleanupChildProcesses();
   });
 
+  const origin = 'auto.http.hapi';
+
   const EXPECTED_TRANSACTION = {
     transaction: 'GET /',
     spans: expect.arrayContaining([
@@ -14,12 +16,12 @@ describe('hapi auto-instrumentation', () => {
           'http.route': '/',
           'http.method': 'GET',
           'hapi.type': 'router',
-          'sentry.origin': 'auto.http.otel.hapi',
-          'sentry.op': 'router.hapi',
+          'sentry.origin': origin,
+          'sentry.op': 'router',
         }),
         description: 'GET /',
-        op: 'router.hapi',
-        origin: 'auto.http.otel.hapi',
+        op: 'router',
+        origin,
         status: 'ok',
       }),
     ]),
@@ -40,6 +42,43 @@ describe('hapi auto-instrumentation', () => {
     test('should auto-instrument `@hapi/hapi` package.', async () => {
       const runner = createRunner().expect({ transaction: EXPECTED_TRANSACTION }).start();
       runner.makeRequest('get', '/');
+      await runner.completed();
+    });
+
+    test('should instrument plugin routes and server extensions.', async () => {
+      const runner = createRunner()
+        .expect({
+          transaction: {
+            transaction: 'GET /plugin-route',
+            spans: expect.arrayContaining([
+              expect.objectContaining({
+                description: 'GET /plugin-route',
+                op: 'handler',
+                origin,
+                data: expect.objectContaining({
+                  'http.route': '/plugin-route',
+                  'hapi.type': 'plugin',
+                  'hapi.plugin.name': 'testPlugin',
+                  'sentry.op': 'handler',
+                  'sentry.origin': origin,
+                }),
+              }),
+              expect.objectContaining({
+                description: 'ext - onPreResponse',
+                op: 'middleware',
+                origin,
+                data: expect.objectContaining({
+                  'hapi.type': 'server.ext',
+                  'server.ext.type': 'onPreResponse',
+                  'sentry.op': 'middleware',
+                  'sentry.origin': origin,
+                }),
+              }),
+            ]),
+          },
+        })
+        .start();
+      runner.makeRequest('get', '/plugin-route');
       await runner.completed();
     });
 

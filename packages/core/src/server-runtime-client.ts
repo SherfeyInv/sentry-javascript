@@ -2,6 +2,10 @@ import { createCheckInEnvelope } from './checkin';
 import { Client } from './client';
 import { getIsolationScope } from './currentScopes';
 import { DEBUG_BUILD } from './debug-build';
+import {
+  spanStreamingIntegration,
+  INTEGRATION_NAME as SPAN_STREAMING_INTEGRATION_NAME,
+} from './integrations/spanStreaming';
 import type { Scope } from './scope';
 import { DEFAULT_TRANSPORT_BUFFER_SIZE } from './transports/base';
 import { addUserAgentToTransportHeaders } from './transports/userAgent';
@@ -24,6 +28,8 @@ export interface ServerRuntimeClientOptions extends ClientOptions<BaseTransportO
   serverName?: string;
 }
 
+declare const __SENTRY_TRACING__: boolean;
+
 /**
  * The Sentry Server Runtime Client SDK.
  */
@@ -38,6 +44,17 @@ export class ServerRuntimeClient<
    */
   public constructor(options: O) {
     addUserAgentToTransportHeaders(options);
+
+    // When span streaming is enabled (`traceLifecycle: 'stream'`), the `spanStreamingIntegration`
+    // is required to flush spans. We add it here so the individual server SDKs don't have to.
+    // A user-provided `spanStreamingIntegration` always takes precedence over the one we add.
+    if (
+      (typeof __SENTRY_TRACING__ === 'undefined' || __SENTRY_TRACING__) &&
+      options.traceLifecycle !== 'static' &&
+      !options.integrations.some(i => i.name === SPAN_STREAMING_INTEGRATION_NAME)
+    ) {
+      options.integrations.push(spanStreamingIntegration());
+    }
 
     super(options);
 

@@ -8,9 +8,9 @@ export {
   addEventProcessor,
   addIntegration,
   amqplibIntegration,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   anrIntegration,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   disableAnrDetectionForCallback,
   captureCheckIn,
   captureConsoleIntegration,
@@ -20,7 +20,6 @@ export {
   captureMessage,
   captureSession,
   close,
-  connectIntegration,
   consoleIntegration,
   contextLinesIntegration,
   continueTrace,
@@ -36,7 +35,6 @@ export {
   fastifyIntegration,
   flush,
   functionToStringIntegration,
-  generateInstrumentOnce,
   genericPoolIntegration,
   getActiveSpan,
   getAutoPerformanceIntegrations,
@@ -54,8 +52,6 @@ export {
   httpIntegration,
   httpServerIntegration,
   httpServerSpansIntegration,
-  // eslint-disable-next-line deprecation/deprecation
-  inboundFiltersIntegration,
   eventFiltersIntegration,
   initOpenTelemetry,
   isInitialized,
@@ -97,17 +93,20 @@ export {
   setMeasurement,
   setTag,
   setTags,
-  setupConnectErrorHandler,
+  setAttribute,
+  setAttributes,
   setupExpressErrorHandler,
   setupHapiErrorHandler,
   setupKoaErrorHandler,
   setUser,
   spanToBaggageHeader,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spotlightIntegration,
   startInactiveSpan,
   startNewTrace,
+  bindScopeToEmitter,
   suppressTracing,
   startSession,
   startSpan,
@@ -124,7 +123,7 @@ export {
   instrumentOpenAiClient,
   instrumentAnthropicAiClient,
   instrumentGoogleGenAIClient,
-  instrumentLangGraph,
+  instrumentStateGraph,
   instrumentStateGraphCompile,
   zodErrorsIntegration,
   logger,
@@ -132,6 +131,8 @@ export {
   createConsolaReporter,
   createSentryWinstonTransport,
   spanStreamingIntegration,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
   withStreamedSpan,
 } from '@sentry/node';
 
@@ -142,3 +143,4 @@ export { init, getRemixDefaultIntegrations } from './sdk';
 export { captureRemixServerException } from './errors';
 export { sentryHandleError, wrapHandleErrorWithSentry, instrumentBuild } from './instrumentServer';
 export { generateSentryServerTimingHeader } from './serverTimingTracePropagation';
+export { remixIntegration } from './integrations/RemixIntegration';

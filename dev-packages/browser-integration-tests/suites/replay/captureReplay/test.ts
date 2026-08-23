@@ -29,6 +29,7 @@ sentryTest('should capture replays (@sentry/browser export)', async ({ getLocalT
     replay_id: expect.stringMatching(/\w{32}/),
     replay_start_timestamp: expect.any(Number),
     segment_id: 0,
+    segment_names: [],
     replay_type: 'session',
     event_id: expect.stringMatching(/\w{32}/),
     environment: 'production',
@@ -41,7 +42,7 @@ sentryTest('should capture replays (@sentry/browser export)', async ({ getLocalT
     },
     sdk: {
       integrations: expect.arrayContaining([
-        'InboundFilters',
+        'EventFilters',
         'FunctionToString',
         'BrowserApiErrors',
         'Breadcrumbs',
@@ -55,7 +56,7 @@ sentryTest('should capture replays (@sentry/browser export)', async ({ getLocalT
       version: SDK_VERSION,
       name: 'sentry.javascript.browser',
       settings: {
-        infer_ip: 'never',
+        infer_ip: 'auto',
       },
     },
     request: {
@@ -77,6 +78,7 @@ sentryTest('should capture replays (@sentry/browser export)', async ({ getLocalT
     replay_id: expect.stringMatching(/\w{32}/),
     replay_start_timestamp: expect.any(Number),
     segment_id: 1,
+    segment_names: [],
     replay_type: 'session',
     event_id: expect.stringMatching(/\w{32}/),
     environment: 'production',
@@ -89,7 +91,7 @@ sentryTest('should capture replays (@sentry/browser export)', async ({ getLocalT
     },
     sdk: {
       integrations: expect.arrayContaining([
-        'InboundFilters',
+        'EventFilters',
         'FunctionToString',
         'BrowserApiErrors',
         'Breadcrumbs',
@@ -103,7 +105,7 @@ sentryTest('should capture replays (@sentry/browser export)', async ({ getLocalT
       version: SDK_VERSION,
       name: 'sentry.javascript.browser',
       settings: {
-        infer_ip: 'never',
+        infer_ip: 'auto',
       },
     },
     request: {

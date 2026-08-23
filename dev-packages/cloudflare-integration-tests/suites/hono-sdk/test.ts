@@ -22,6 +22,7 @@ it('Hono app captures parametrized errors (Hono SDK)', async ({ signal }) => {
             ],
           },
           request: {
+            cookies: {},
             headers: expect.any(Object),
             method: 'GET',
             url: expect.stringContaining('/error/param-123'),
@@ -39,7 +40,7 @@ it('Hono app captures parametrized errors (Hono SDK)', async ({ signal }) => {
             },
           ],
         },
-        { includeSampleRand: true, sdk: 'hono' },
+        { includeSamplingFields: true, includeSampleRand: true, sdk: 'hono' },
       ),
     )
 

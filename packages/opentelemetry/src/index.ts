@@ -1,5 +1,9 @@
-export * from './exports';
+export { getScopesFromContext } from './utils/contextData';
 
-// Node-specific exports
-export { SentryAsyncLocalStorageContextManager } from './asyncLocalStorageContextManager';
-export type { AsyncLocalStorageLookup } from './contextManager';
+export { SentryPropagator } from './propagator';
+export { SentryTracerProvider } from './tracerProvider';
+
+export { type AsyncLocalStorageLookup } from './asyncLocalStorageContextManager';
+
+export { setOpenTelemetryContextAsyncContextStrategy } from './asyncContextStrategy';
+export { registerPrepareSpanScope } from './prepareSpanScope';

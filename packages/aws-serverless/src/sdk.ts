@@ -1,5 +1,5 @@
 import type { Scope } from '@sentry/core';
-import { consoleSandbox, debug } from '@sentry/core';
+import { debug } from '@sentry/core';
 import { captureException, captureMessage, flush, getCurrentScope, withScope } from '@sentry/node';
 import type { Context, Handler, StreamifyHandler } from 'aws-lambda';
 import { performance } from 'perf_hooks';
@@ -32,12 +32,6 @@ export interface WrapperOptions {
    * @default false
    */
   captureAllSettledReasons: boolean;
-  // TODO(v11): Remove this option since its no longer used.
-  /**
-   * @deprecated This option has no effect and will be removed in a future major version.
-   * If you want to disable tracing, set `SENTRY_TRACES_SAMPLE_RATE` to `0.0`, otherwise OpenTelemetry will automatically trace the handler.
-   */
-  startTrace: boolean;
 }
 
 /** */
@@ -59,17 +53,6 @@ function getRejectedReasons<T>(results: PromiseSettledResult<T>[]): T[] {
     if (result.status === 'rejected' && result.reason) rejected.push(result.reason);
     return rejected;
   }, []);
-}
-
-/**
- * TODO(v11): Remove this function
- * @deprecated This function is no longer used and will be removed in a future major version.
- */
-export function tryPatchHandler(_taskRoot: string, _handlerPath: string): void {
-  consoleSandbox(() => {
-    // eslint-disable-next-line no-console
-    console.warn('The `tryPatchHandler` function is deprecated and will be removed in a future major version.');
-  });
 }
 
 /**
@@ -129,7 +112,7 @@ function setupTimeoutWarning(context: Context, options: WrapperOptions): NodeJS.
         scope.setTag('timeout', humanReadableTimeout);
         captureMessage(`Possible function timeout: ${context.functionName}`, 'warning');
       });
-    }, timeoutWarningDelay) as unknown as NodeJS.Timeout;
+    }, timeoutWarningDelay);
   }
 
   return undefined;
@@ -139,7 +122,7 @@ export const AWS_HANDLER_HIGHWATERMARK_SYMBOL = Symbol.for('aws.lambda.runtime.h
 export const AWS_HANDLER_STREAMING_SYMBOL = Symbol.for('aws.lambda.runtime.handler.streaming');
 export const AWS_HANDLER_STREAMING_RESPONSE = 'response';
 
-function isStreamingHandler(handler: Handler | StreamifyHandler): handler is StreamifyHandler {
+export function isStreamingHandler(handler: Handler | StreamifyHandler): handler is StreamifyHandler {
   return (
     (handler as unknown as Record<symbol, unknown>)[AWS_HANDLER_STREAMING_SYMBOL] === AWS_HANDLER_STREAMING_RESPONSE
   );
@@ -168,23 +151,12 @@ export function wrapHandler<TEvent, TResult>(
 ): Handler<TEvent, TResult> | StreamifyHandler<TEvent, TResult> {
   const START_TIME = performance.now();
 
-  // eslint-disable-next-line deprecation/deprecation
-  if (typeof wrapOptions.startTrace !== 'undefined') {
-    consoleSandbox(() => {
-      // eslint-disable-next-line no-console
-      console.warn(
-        'The `startTrace` option is deprecated and will be removed in a future major version. If you want to disable tracing, set `SENTRY_TRACES_SAMPLE_RATE` to `0.0`.',
-      );
-    });
-  }
-
   const options: WrapperOptions = {
     flushTimeout: 2000,
     callbackWaitsForEmptyEventLoop: false,
     captureTimeoutWarning: true,
     timeoutWarningLimit: 500,
     captureAllSettledReasons: false,
-    startTrace: true, // TODO(v11): Remove this option. Set to true here to satisfy the type, but has no effect.
     ...wrapOptions,
   };
 
@@ -241,7 +213,7 @@ export function wrapHandler<TEvent, TResult>(
           });
         }
       } catch (e) {
-        // Errors should already captured in the instrumentation's `responseHook`,
+        // Errors should already be captured in the AwsLambda instrumentation's error handler,
         // we capture them here just to be safe. Double captures are deduplicated by the SDK.
         captureException(e, scope => markEventUnhandled(scope, 'auto.function.aws_serverless.handler'));
         throw e;
@@ -288,7 +260,7 @@ function wrapStreamingHandler<TEvent, TResult>(
 
         return await handler(event, responseStream, context);
       } catch (e) {
-        // Errors should already captured in the instrumentation's `responseHook`,
+        // Errors should already be captured in the AwsLambda instrumentation's error handler,
         // we capture them here just to be safe. Double captures are deduplicated by the SDK.
         captureException(e, scope => markEventUnhandled(scope, 'auto.function.aws_serverless.handler'));
         throw e;

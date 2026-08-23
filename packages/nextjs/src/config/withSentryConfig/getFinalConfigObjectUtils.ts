@@ -92,23 +92,7 @@ export function maybeCreateRouteManifest(
   incomingUserNextConfigObject: NextConfigObject,
   userSentryOptions: SentryBuildOptions,
 ): RouteManifest | undefined {
-  // Handle deprecated option with warning
-  // eslint-disable-next-line deprecation/deprecation
-  if (userSentryOptions.disableManifestInjection) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[@sentry/nextjs] The `disableManifestInjection` option is deprecated. Use `routeManifestInjection: false` instead.',
-    );
-  }
-
-  // If explicitly disabled, skip
   if (userSentryOptions.routeManifestInjection === false) {
-    return undefined;
-  }
-
-  // Still check the deprecated option if the new option is not set
-  // eslint-disable-next-line deprecation/deprecation
-  if (userSentryOptions.routeManifestInjection === undefined && userSentryOptions.disableManifestInjection) {
     return undefined;
   }
 
@@ -154,6 +138,16 @@ export function maybeSetClientTraceMetadataOption(
   incomingUserNextConfigObject: NextConfigObject,
   nextJsVersion: string | undefined,
 ): void {
+  // With Cache Components enabled, the page shell — and therefore the document's `sentry-trace`/
+  // `baggage` meta tags — can be prerendered and rendered in an async context detached from the
+  // runtime `http.server` request. The trace captured into those meta tags is therefore stale and
+  // unrelated to the actual request. If we enabled `clientTraceMetadata`, the browser pageload would
+  // continue that stale trace, producing a misleading distributed trace. So we don't enable the meta
+  // tags here; the browser pageload starts a fresh trace instead.
+  if (incomingUserNextConfigObject.cacheComponents) {
+    return;
+  }
+
   // Add the `clientTraceMetadata` experimental option based on Next.js version. The option got introduced in Next.js version 15.0.0 (actually 14.3.0-canary.64).
   // Adding the option on lower versions will cause Next.js to print nasty warnings we wouldn't confront our users with.
   if (nextJsVersion) {
@@ -295,7 +289,7 @@ export type VercelCronsConfigResult = {
  * information about which instrumentation approach to use.
  *
  * - `_experimental.vercelCronsMonitoring`: New span-based approach (works for both App Router and Pages Router)
- * - `automaticVercelMonitors`: Old wrapper-based approach (Pages Router only)
+ * - `webpack.automaticVercelMonitors`: Old wrapper-based approach (Pages Router only)
  *
  * If both are enabled, the new approach is preferred and a warning is logged.
  */
@@ -334,7 +328,7 @@ export function maybeGetVercelCronsConfig(userSentryOptions: SentryBuildOptions)
     result.strategy = 'spans';
   } else {
     debug.log(
-      "[@sentry/nextjs] Creating Sentry cron monitors for your Vercel Cron Jobs. You can disable this feature by setting the 'automaticVercelMonitors' option to false in your Next.js config.",
+      "[@sentry/nextjs] Creating Sentry cron monitors for your Vercel Cron Jobs. You can disable this feature by setting the 'webpack.automaticVercelMonitors' option to false in your Next.js config.",
     );
     result.strategy = 'wrapper';
   }

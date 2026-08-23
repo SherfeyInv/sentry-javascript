@@ -3,6 +3,7 @@ import {
   consoleLoggingIntegrationShim,
   elementTimingIntegrationShim,
   loggerShim,
+  metricsShim,
   spanStreamingIntegrationShim,
   fetchStreamPerformanceIntegrationShim,
 } from '@sentry-internal/integration-shims';
@@ -10,10 +11,9 @@ import { feedbackAsyncIntegration } from './feedbackAsync';
 
 export * from './index.bundle.base';
 
-// TODO(v11): Export metricsShim here once we remove metrics from the base bundle.
-export { consoleLoggingIntegrationShim as consoleLoggingIntegration, loggerShim as logger };
+export { consoleLoggingIntegrationShim as consoleLoggingIntegration, loggerShim as logger, metricsShim as metrics };
 
-export { getFeedback, sendFeedback } from '@sentry-internal/feedback';
+export { getFeedback, sendFeedback } from '@sentry/feedback';
 
 export {
   browserTracingIntegrationShim as browserTracingIntegration,
@@ -24,4 +24,4 @@ export {
   fetchStreamPerformanceIntegrationShim as fetchStreamPerformanceIntegration,
 };
 
-export { replayIntegration, getReplay } from '@sentry-internal/replay';
+export { replayIntegration, getReplay } from '@sentry/replay';

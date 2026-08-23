@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  getCapturedScopesOnSpan,
   getCurrentScope,
-  getGlobalScope,
   getIsolationScope,
   getMainCarrier,
   getTraceData,
   Scope,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   setAsyncContextStrategy,
   setCurrentClient,
   spanToJSON,
@@ -17,6 +18,7 @@ import { getAsyncContextStrategy } from '../../../src/asyncContext';
 import {
   continueTrace,
   getDynamicSamplingContextFromSpan,
+  isTracingSuppressed,
   registerSpanErrorInstrumentation,
   SentrySpan,
   startInactiveSpan,
@@ -29,10 +31,11 @@ import { SentryNonRecordingSpan } from '../../../src/tracing/sentryNonRecordingS
 import { startNewTrace } from '../../../src/tracing/trace';
 import type { Event } from '../../../src/types/event';
 import type { Span } from '../../../src/types/span';
-import type { StartSpanOptions } from '../../../src/types/startSpanOptions';
 import { _setSpanForScope } from '../../../src/utils/spanOnScope';
 import { getActiveSpan, getRootSpan, getSpanDescendants, spanIsSampled } from '../../../src/utils/spanUtils';
 import { getDefaultTestClientOptions, TestClient } from '../../mocks/client';
+import { SUPPRESS_TRACING_KEY } from '../../../src/tracing/constants';
+import { resetGlobals } from '../../testutils';
 
 const enum Type {
   Sync = 'sync',
@@ -45,9 +48,7 @@ describe('startSpan', () => {
   beforeEach(() => {
     registerSpanErrorInstrumentation();
 
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -100,8 +101,8 @@ describe('startSpan', () => {
       }
       expect(_span).toBeDefined();
 
-      expect(spanToJSON(_span!).description).toEqual('GET users/[id]');
-      expect(spanToJSON(_span!).status).toEqual(isError ? 'internal_error' : undefined);
+      expect(spanToJSON(_span!).name).toEqual('GET users/[id]');
+      expect(spanToJSON(_span!).status).toEqual(isError ? 'error' : 'ok');
     });
 
     it('allows for transaction to be mutated', async () => {
@@ -118,7 +119,7 @@ describe('startSpan', () => {
         //
       }
 
-      expect(spanToJSON(_span!).op).toEqual('http.server');
+      expect(spanToJSON(_span!).attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP]).toEqual('http.server');
     });
 
     it('creates a span with correct description', async () => {
@@ -142,9 +143,9 @@ describe('startSpan', () => {
       const spans = getSpanDescendants(_span!);
 
       expect(spans).toHaveLength(2);
-      expect(spanToJSON(spans[1]!).description).toEqual('SELECT * from users');
+      expect(spanToJSON(spans[1]!).name).toEqual('SELECT * from users');
       expect(spanToJSON(spans[1]!).parent_span_id).toEqual(_span!.spanContext().spanId);
-      expect(spanToJSON(spans[1]!).status).toEqual(isError ? 'internal_error' : undefined);
+      expect(spanToJSON(spans[1]!).status).toEqual(isError ? 'error' : 'ok');
     });
 
     it('allows for span to be mutated', async () => {
@@ -169,7 +170,7 @@ describe('startSpan', () => {
       const spans = getSpanDescendants(_span!);
 
       expect(spans).toHaveLength(2);
-      expect(spanToJSON(spans[1]!).op).toEqual('db.query');
+      expect(spanToJSON(spans[1]!).attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP]).toEqual('db.query');
     });
 
     it('correctly sets the span origin', async () => {
@@ -194,17 +195,20 @@ describe('startSpan', () => {
       expect(_span).toBeDefined();
       const jsonSpan = spanToJSON(_span!);
       expect(jsonSpan).toEqual({
-        data: {
+        attributes: {
           'sentry.origin': 'auto.http.browser',
           'sentry.sample_rate': 1,
           'sentry.source': 'custom',
+          ...(isError && { 'sentry.status.message': 'internal_error' }),
         },
-        origin: 'auto.http.browser',
-        description: 'GET users/[id]',
+        name: 'GET users/[id]',
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
+        parent_span_id: undefined,
         start_timestamp: expect.any(Number),
-        status: isError ? 'internal_error' : undefined,
-        timestamp: expect.any(Number),
+        end_timestamp: expect.any(Number),
+        is_segment: true,
+        status: isError ? 'error' : 'ok',
+        links: undefined,
         trace_id: expect.stringMatching(/[a-f0-9]{32}/),
       });
     });
@@ -230,18 +234,73 @@ describe('startSpan', () => {
     setCurrentClient(client);
     client.init();
 
+    getCurrentScope().setPropagationContext({
+      traceId: '12345678901234567890123456789012',
+      sampleRand: 0.42,
+    });
+
+    let scopeInCallback: Scope | undefined;
     const span = startSpan({ name: 'GET users/[id]' }, span => {
+      scopeInCallback = getCurrentScope();
       return span;
     });
 
     expect(span).toBeDefined();
     expect(span).toBeInstanceOf(SentryNonRecordingSpan);
+    expect(span.spanContext().traceId).toBe('12345678901234567890123456789012');
     expect(getDynamicSamplingContextFromSpan(span)).toEqual({
       environment: 'production',
-      sample_rate: '0',
-      sampled: 'false',
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-      transaction: 'GET users/[id]',
+    });
+
+    // Scopes are captured on the placeholder so consumers (e.g. SentryTraceProvider) can read them.
+    // `startSpan` forks the scope, so the captured scope is the one active inside the callback.
+    expect(getCapturedScopesOnSpan(span).scope).toBe(scopeInCallback);
+    expect(getCapturedScopesOnSpan(span).isolationScope).toBe(getIsolationScope());
+  });
+
+  it('freezes a continued trace empty DSC as-is when tracing is disabled', () => {
+    const options = getDefaultTestClientOptions({});
+    client = new TestClient(options);
+    setCurrentClient(client);
+    client.init();
+
+    // A continued `sentry-trace` without baggage yields an empty frozen DSC marker.
+    getCurrentScope().setPropagationContext({
+      traceId: '12345678901234567890123456789012',
+      sampleRand: 0.42,
+      dsc: {},
+    });
+
+    const span = startSpan({ name: 'GET users/[id]' }, span => {
+      return span;
+    });
+
+    expect(span).toBeInstanceOf(SentryNonRecordingSpan);
+    expect(span.spanContext().traceId).toBe('12345678901234567890123456789012');
+    // We are not head of trace: don't fabricate client fields or inject the local transaction.
+    expect(getDynamicSamplingContextFromSpan(span)).toEqual({});
+  });
+
+  it('does not add a url-source span name to the DSC when tracing is disabled', () => {
+    const options = getDefaultTestClientOptions({});
+    client = new TestClient(options);
+    setCurrentClient(client);
+    client.init();
+
+    const span = startSpan(
+      {
+        name: '/users/123e4567-e89b-12d3-a456-426614174000',
+        attributes: { [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url' },
+      },
+      span => span,
+    );
+
+    expect(span).toBeInstanceOf(SentryNonRecordingSpan);
+    // URLs might contain PII, so the span name must not end up in the DSC.
+    expect(getDynamicSamplingContextFromSpan(span)).toEqual({
+      environment: 'production',
+      trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     });
   });
 
@@ -249,12 +308,12 @@ describe('startSpan', () => {
     const span = startSpan({ name: 'GET users/[id]' }, span => {
       expect(span).toBeDefined();
       expect(span).toBeInstanceOf(SentrySpan);
-      expect(spanToJSON(span).timestamp).toBeUndefined();
+      expect(spanToJSON(span).end_timestamp).toBeUndefined();
       return span;
     });
 
     expect(span).toBeDefined();
-    expect(spanToJSON(span).timestamp).toBeDefined();
+    expect(spanToJSON(span).end_timestamp).toBeDefined();
   });
 
   it('allows to pass a `startTime`', () => {
@@ -514,6 +573,7 @@ describe('startSpan', () => {
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: expect.stringMatching(/[a-f0-9]{32}/),
         origin: 'manual',
+        status: 'ok',
       },
     });
     expect(outerTransaction?.spans).toEqual([{ name: 'inner span', id: expect.any(String) }]);
@@ -539,6 +599,7 @@ describe('startSpan', () => {
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: outerTraceId,
         origin: 'manual',
+        status: 'ok',
       },
     });
     expect(innerTransaction?.spans).toEqual([{ name: 'inner span 2', id: expect.any(String) }]);
@@ -723,6 +784,27 @@ describe('startSpan', () => {
       });
     });
 
+    it('passes a `sentry.op` attribute to the tracesSampler when `op` is set', () => {
+      tracesSampler.mockReturnValueOnce(true);
+
+      const options = getDefaultTestClientOptions({ tracesSampler });
+      client = new TestClient(options);
+      setCurrentClient(client);
+      client.init();
+
+      startSpan({ name: 'outer', op: 'test.op', attributes: { test1: 'aa' } }, () => {});
+
+      expect(tracesSampler).toHaveBeenLastCalledWith({
+        parentSampled: undefined,
+        name: 'outer',
+        attributes: {
+          'sentry.op': 'test.op',
+          test1: 'aa',
+        },
+        inheritOrSampleWith: expect.any(Function),
+      });
+    });
+
     it.each([false, 0])('returns a negative sampling decision if tracesSampler returns %s', tracesSamplerResult => {
       tracesSampler.mockReturnValueOnce(tracesSamplerResult);
 
@@ -743,6 +825,20 @@ describe('startSpan', () => {
         name: 'outer',
         inheritOrSampleWith: expect.any(Function),
       });
+    });
+
+    it('passes normalizedRequest from the isolation scope to the sampling context', () => {
+      const options = getDefaultTestClientOptions({ tracesSampler });
+      client = new TestClient(options);
+      setCurrentClient(client);
+      client.init();
+
+      const normalizedRequest = { url: '/test?query=123', method: 'GET', query_string: 'query=123' };
+      getIsolationScope().setSDKProcessingMetadata({ normalizedRequest });
+
+      startSpan({ name: 'outer' }, () => {});
+
+      expect(tracesSampler).toHaveBeenLastCalledWith(expect.objectContaining({ normalizedRequest }));
     });
   });
 
@@ -791,74 +887,13 @@ describe('startSpan', () => {
       });
     });
   });
-
-  it('uses implementation from ACS, if it exists', () => {
-    const staticSpan = new SentrySpan({ spanId: 'aha', sampled: true });
-
-    const carrier = getMainCarrier();
-
-    const customFn = vi.fn((_options: StartSpanOptions, callback: (span: Span) => string) => {
-      callback(staticSpan);
-      return 'aha';
-    }) as typeof startSpan;
-
-    const acs = {
-      ...getAsyncContextStrategy(carrier),
-      startSpan: customFn,
-    };
-    setAsyncContextStrategy(acs);
-
-    const result = startSpan({ name: 'GET users/[id]' }, span => {
-      expect(span).toEqual(staticSpan);
-      return 'oho?';
-    });
-
-    expect(result).toBe('aha');
-  });
-
-  describe('[experimental] standalone spans', () => {
-    it('starts a standalone segment span if standalone is set', () => {
-      const span = startSpan(
-        {
-          name: 'test span',
-          experimental: { standalone: true },
-        },
-        span => {
-          return span;
-        },
-      );
-
-      const spanJson = spanToJSON(span);
-      expect(spanJson.is_segment).toBe(true);
-      expect(spanJson.segment_id).toBe(spanJson.span_id);
-      expect(spanJson.segment_id).toMatch(/^[a-f0-9]{16}$/);
-    });
-
-    it.each([undefined, false])("doesn't set segment properties if standalone is falsy (%s)", standalone => {
-      const span = startSpan(
-        {
-          name: 'test span',
-          experimental: { standalone },
-        },
-        span => {
-          return span;
-        },
-      );
-
-      const spanJson = spanToJSON(span);
-      expect(spanJson.is_segment).toBeUndefined();
-      expect(spanJson.segment_id).toBeUndefined();
-    });
-  });
 });
 
 describe('startSpanManual', () => {
   beforeEach(() => {
     registerSpanErrorInstrumentation();
 
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -874,7 +909,9 @@ describe('startSpanManual', () => {
     setCurrentClient(client);
     client.init();
 
+    let scopeInCallback: Scope | undefined;
     const span = startSpanManual({ name: 'GET users/[id]' }, span => {
+      scopeInCallback = getCurrentScope();
       return span;
     });
 
@@ -882,20 +919,22 @@ describe('startSpanManual', () => {
     expect(span).toBeInstanceOf(SentryNonRecordingSpan);
     expect(getDynamicSamplingContextFromSpan(span)).toEqual({
       environment: 'production',
-      sample_rate: '0',
-      sampled: 'false',
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-      transaction: 'GET users/[id]',
     });
+
+    // Scopes are captured on the placeholder so consumers (e.g. SentryTraceProvider) can read them.
+    // `startSpanManual` forks the scope, so the captured scope is the one active inside the callback.
+    expect(getCapturedScopesOnSpan(span).scope).toBe(scopeInCallback);
+    expect(getCapturedScopesOnSpan(span).isolationScope).toBe(getIsolationScope());
   });
 
   it('creates & finishes span', async () => {
     startSpanManual({ name: 'GET users/[id]' }, (span, finish) => {
       expect(span).toBeDefined();
       expect(span).toBeInstanceOf(SentrySpan);
-      expect(spanToJSON(span).timestamp).toBeUndefined();
+      expect(spanToJSON(span).end_timestamp).toBeUndefined();
       finish();
-      expect(spanToJSON(span).timestamp).toBeDefined();
+      expect(spanToJSON(span).end_timestamp).toBeDefined();
     });
   });
 
@@ -1135,6 +1174,7 @@ describe('startSpanManual', () => {
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: expect.stringMatching(/[a-f0-9]{32}/),
         origin: 'manual',
+        status: 'ok',
       },
     });
     expect(outerTransaction?.spans).toEqual([{ name: 'inner span', id: expect.any(String) }]);
@@ -1160,6 +1200,7 @@ describe('startSpanManual', () => {
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: outerTraceId,
         origin: 'manual',
+        status: 'ok',
       },
     });
     expect(innerTransaction?.spans).toEqual([{ name: 'inner span 2', id: expect.any(String) }]);
@@ -1340,39 +1381,13 @@ describe('startSpanManual', () => {
       });
     });
   });
-
-  it('uses implementation from ACS, if it exists', () => {
-    const staticSpan = new SentrySpan({ spanId: 'aha', sampled: true });
-
-    const carrier = getMainCarrier();
-
-    const customFn = vi.fn((_options: StartSpanOptions, callback: (span: Span) => string) => {
-      callback(staticSpan);
-      return 'aha';
-    }) as unknown as typeof startSpanManual;
-
-    const acs = {
-      ...getAsyncContextStrategy(carrier),
-      startSpanManual: customFn,
-    };
-    setAsyncContextStrategy(acs);
-
-    const result = startSpanManual({ name: 'GET users/[id]' }, span => {
-      expect(span).toEqual(staticSpan);
-      return 'oho?';
-    });
-
-    expect(result).toBe('aha');
-  });
 });
 
 describe('startInactiveSpan', () => {
   beforeEach(() => {
     registerSpanErrorInstrumentation();
 
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -1380,6 +1395,42 @@ describe('startInactiveSpan', () => {
     client = new TestClient(options);
     setCurrentClient(client);
     client.init();
+  });
+
+  it('includes the scope the span was started on when finished', async () => {
+    const beforeSendTransaction = vi.fn(event => event);
+
+    const options = getDefaultTestClientOptions({ tracesSampleRate: 1, beforeSendTransaction });
+    client = new TestClient(options);
+    setCurrentClient(client);
+    client.init();
+
+    let span: Span | undefined;
+
+    withScope(scope => {
+      scope.setTag('scope', 1);
+      span = startInactiveSpan({ name: 'my-span' });
+      // The span captures the scope it was started on, so later mutations of that scope
+      // are reflected on the transaction.
+      scope.setTag('scope_after_span', 2);
+    });
+
+    withScope(scope => {
+      scope.setTag('scope', 2);
+      span?.end();
+    });
+
+    await client.flush();
+
+    expect(beforeSendTransaction).toHaveBeenCalledTimes(1);
+    expect(beforeSendTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // The span-start scope is captured, including `scope_after_span` (set on the same scope
+        // after span start), but not `scope: 2` (a different scope active at `end()`).
+        tags: { scope: 1, scope_after_span: 2 },
+      }),
+      expect.anything(),
+    );
   });
 
   it('returns a non recording span if tracing is disabled', () => {
@@ -1394,11 +1445,12 @@ describe('startInactiveSpan', () => {
     expect(span).toBeInstanceOf(SentryNonRecordingSpan);
     expect(getDynamicSamplingContextFromSpan(span)).toEqual({
       environment: 'production',
-      sample_rate: '0',
-      sampled: 'false',
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-      transaction: 'GET users/[id]',
     });
+
+    // Scopes are captured on the placeholder so consumers (e.g. SentryTraceProvider) can read them.
+    expect(getCapturedScopesOnSpan(span).scope).toBe(getCurrentScope());
+    expect(getCapturedScopesOnSpan(span).isolationScope).toBe(getIsolationScope());
   });
 
   it('creates & finishes span', async () => {
@@ -1406,11 +1458,11 @@ describe('startInactiveSpan', () => {
 
     expect(span).toBeDefined();
     expect(span).toBeInstanceOf(SentrySpan);
-    expect(spanToJSON(span).timestamp).toBeUndefined();
+    expect(spanToJSON(span).end_timestamp).toBeUndefined();
 
     span.end();
 
-    expect(spanToJSON(span).timestamp).toBeDefined();
+    expect(spanToJSON(span).end_timestamp).toBeDefined();
   });
 
   it('does not set span on scope', () => {
@@ -1422,6 +1474,30 @@ describe('startInactiveSpan', () => {
     span.end();
 
     expect(getActiveSpan()).toBeUndefined();
+  });
+
+  // A root span reads its trace from the current scope only. The isolation
+  // scope's propagation context must not contribute: mixing the two yields
+  // a span whose `parent_span_id` and frozen DSC describe a different trace
+  // than its own `trace_id`.
+  it('ignores the propagation context on the isolation scope', () => {
+    const isolationTraceId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    getIsolationScope().setPropagationContext({
+      traceId: isolationTraceId,
+      sampleRand: 0.1,
+      parentSpanId: 'bbbbbbbbbbbbbbbb',
+      sampled: true,
+      dsc: { trace_id: isolationTraceId, transaction: 'from-isolation-scope' },
+    });
+
+    const currentTraceId = getCurrentScope().getPropagationContext().traceId;
+    const span = startInactiveSpan({ name: 'GET users/[id]' });
+
+    expect(spanToJSON(span).trace_id).toBe(currentTraceId);
+    expect(spanToJSON(span).parent_span_id).toBeUndefined();
+    expect(getDynamicSamplingContextFromSpan(span)).toEqual(
+      expect.objectContaining({ trace_id: currentTraceId, transaction: 'GET users/[id]' }),
+    );
   });
 
   it('allows to pass a scope', () => {
@@ -1498,7 +1574,7 @@ describe('startInactiveSpan', () => {
     expect(span2LinkJSON?.span_id).toBe(span1JSON.span_id);
 
     // sampling decision is inherited
-    expect(span2LinkJSON?.sampled).toBe(Boolean(spanToJSON(rawSpan1).data['sentry.sample_rate']));
+    expect(span2LinkJSON?.sampled).toBe(Boolean(spanToJSON(rawSpan1).attributes['sentry.sample_rate']));
   });
 
   it('allows to force a transaction with forceTransaction=true', async () => {
@@ -1561,6 +1637,7 @@ describe('startInactiveSpan', () => {
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: expect.stringMatching(/[a-f0-9]{32}/),
         origin: 'manual',
+        status: 'ok',
       },
     });
     expect(outerTransaction?.spans).toEqual([{ name: 'inner span', id: expect.any(String) }]);
@@ -1586,6 +1663,7 @@ describe('startInactiveSpan', () => {
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: outerTraceId,
         origin: 'manual',
+        status: 'ok',
       },
     });
     expect(innerTransaction?.spans).toEqual([]);
@@ -1806,32 +1884,11 @@ describe('startInactiveSpan', () => {
       expect(childSpans).toContain(innerSpan);
     });
   });
-
-  it('uses implementation from ACS, if it exists', () => {
-    const staticSpan = new SentrySpan({ spanId: 'aha', sampled: true });
-
-    const carrier = getMainCarrier();
-
-    const customFn = vi.fn((_options: StartSpanOptions) => {
-      return staticSpan;
-    }) as unknown as typeof startInactiveSpan;
-
-    const acs = {
-      ...getAsyncContextStrategy(carrier),
-      startInactiveSpan: customFn,
-    };
-    setAsyncContextStrategy(acs);
-
-    const result = startInactiveSpan({ name: 'GET users/[id]' });
-    expect(result).toBe(staticSpan);
-  });
 });
 
 describe('continueTrace', () => {
   beforeEach(() => {
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -2159,9 +2216,7 @@ describe('continueTrace', () => {
 
 describe('getActiveSpan', () => {
   beforeEach(() => {
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -2220,9 +2275,7 @@ describe('getActiveSpan', () => {
 
 describe('withActiveSpan()', () => {
   beforeEach(() => {
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -2291,9 +2344,9 @@ describe('withActiveSpan()', () => {
 
 describe('span hooks', () => {
   beforeEach(() => {
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
+
+    setAsyncContextStrategy(undefined);
 
     const options = getDefaultTestClientOptions({ tracesSampleRate: 1.0 });
     client = new TestClient(options);
@@ -2310,11 +2363,11 @@ describe('span hooks', () => {
     const endedSpans: string[] = [];
 
     client.on('spanStart', span => {
-      startedSpans.push(spanToJSON(span).description || '');
+      startedSpans.push(spanToJSON(span).name);
     });
 
     client.on('spanEnd', span => {
-      endedSpans.push(spanToJSON(span).description || '');
+      endedSpans.push(spanToJSON(span).name);
     });
 
     startSpan({ name: 'span1' }, () => {
@@ -2336,13 +2389,41 @@ describe('span hooks', () => {
     expect(startedSpans).toEqual(['span1', 'span2', 'span3', 'span5', 'span4']);
     expect(endedSpans).toEqual(['span5', 'span3', 'span2', 'span1']);
   });
+
+  it('captures scopes on a root span before the spanStart event fires', () => {
+    let scopeAtSpanStart: Scope | undefined;
+    let isolationScopeAtSpanStart: Scope | undefined;
+    client.on('spanStart', span => {
+      scopeAtSpanStart = getCapturedScopesOnSpan(span).scope;
+      isolationScopeAtSpanStart = getCapturedScopesOnSpan(span).isolationScope;
+    });
+
+    startInactiveSpan({ name: 'root span' });
+
+    expect(scopeAtSpanStart).toBe(getCurrentScope());
+    expect(isolationScopeAtSpanStart).toBe(getIsolationScope());
+  });
+
+  it('captures scopes on a child span before the spanStart event fires', () => {
+    let scopeAtSpanStart: Scope | undefined;
+    let isolationScopeAtSpanStart: Scope | undefined;
+    client.on('spanStart', span => {
+      scopeAtSpanStart = getCapturedScopesOnSpan(span).scope;
+      isolationScopeAtSpanStart = getCapturedScopesOnSpan(span).isolationScope;
+    });
+
+    startSpan({ name: 'parent span' }, () => {
+      startInactiveSpan({ name: 'child span' });
+
+      expect(scopeAtSpanStart).toBe(getCurrentScope());
+      expect(isolationScopeAtSpanStart).toBe(getIsolationScope());
+    });
+  });
 });
 
 describe('suppressTracing', () => {
   beforeEach(() => {
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -2399,9 +2480,7 @@ describe('suppressTracing', () => {
   });
 
   it("doesn't record a client outcome for suppressed spans", () => {
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
 
     setAsyncContextStrategy(undefined);
 
@@ -2469,10 +2548,61 @@ describe('suppressTracing', () => {
   });
 });
 
+describe('isTracingSuppressed', () => {
+  beforeEach(() => {
+    resetGlobals();
+
+    setAsyncContextStrategy(undefined);
+
+    const options = getDefaultTestClientOptions({ tracesSampleRate: 1 });
+    client = new TestClient(options);
+    setCurrentClient(client);
+    client.init();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns false when tracing is not suppressed', () => {
+    expect(isTracingSuppressed()).toBe(false);
+  });
+
+  it('returns true while inside suppressTracing', () => {
+    const suppressed = suppressTracing(() => isTracingSuppressed());
+    expect(suppressed).toBe(true);
+  });
+
+  it('returns false again after suppressTracing has finished', () => {
+    suppressTracing(() => {
+      expect(isTracingSuppressed()).toBe(true);
+    });
+
+    expect(isTracingSuppressed()).toBe(false);
+  });
+
+  it('only suppresses tracing within the active scope', () => {
+    withScope(() => {
+      const suppressed = suppressTracing(() => isTracingSuppressed());
+      expect(suppressed).toBe(true);
+    });
+
+    // Outside of the suppressed scope, tracing is no longer suppressed
+    expect(isTracingSuppressed()).toBe(false);
+  });
+
+  it('respects a scope passed in explicitly', () => {
+    const scope = getCurrentScope().clone();
+    scope.setSDKProcessingMetadata({ [SUPPRESS_TRACING_KEY]: true });
+
+    expect(isTracingSuppressed(scope)).toBe(true);
+    expect(isTracingSuppressed()).toBe(false);
+  });
+});
+
 describe('startNewTrace', () => {
   beforeEach(() => {
-    getCurrentScope().clear();
-    getIsolationScope().clear();
+    resetGlobals();
   });
 
   it('creates a new propagation context on the current scope', () => {
@@ -2501,9 +2631,7 @@ describe('startNewTrace', () => {
 describe('ignoreSpans (core path, streaming)', () => {
   beforeEach(() => {
     registerSpanErrorInstrumentation();
-    getCurrentScope().clear();
-    getIsolationScope().clear();
-    getGlobalScope().clear();
+    resetGlobals();
     setAsyncContextStrategy(undefined);
   });
 
@@ -2545,9 +2673,16 @@ describe('ignoreSpans (core path, streaming)', () => {
     client.init();
     const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
 
-    startSpan({ name: 'root' }, () => {
-      startSpan({ name: 'ignored-child' }, span => {
-        expect(span).toBeInstanceOf(SentryNonRecordingSpan);
+    startSpan({ name: 'root' }, rootSpan => {
+      startSpan({ name: 'ignored-child' }, ignoredSpan1 => {
+        expect(ignoredSpan1).toBeInstanceOf(SentryNonRecordingSpan);
+        expect(getRootSpan(ignoredSpan1)).toBe(rootSpan);
+
+        startSpan({ name: 'ignored-child' }, ignoredSpan2 => {
+          expect(ignoredSpan2).toBeInstanceOf(SentryNonRecordingSpan);
+          // since ignoredSpan1 is not active, ignoredSpan2 also has root as its parent
+          expect(getRootSpan(ignoredSpan2)).toBe(rootSpan);
+        });
       });
     });
 
@@ -2824,5 +2959,21 @@ describe('ignoreSpans (core path, streaming)', () => {
     const span = startInactiveSpan({ name: 'ignored-segment' });
     expect(span.spanContext().traceId).toBe(getCurrentScope().getPropagationContext().traceId);
     expect(span.spanContext().traceId).toBe('abc');
+  });
+
+  it('captures scopes on an ignored streamed span so its DSC can be resolved from the scope', () => {
+    const options = getDefaultTestClientOptions({
+      tracesSampleRate: 1,
+      traceLifecycle: 'stream',
+      ignoreSpans: ['ignored'],
+    });
+    client = new TestClient(options);
+    setCurrentClient(client);
+    client.init();
+
+    const span = startInactiveSpan({ name: 'ignored' });
+
+    expect(getCapturedScopesOnSpan(span).scope).toBe(getCurrentScope());
+    expect(getCapturedScopesOnSpan(span).isolationScope).toBe(getIsolationScope());
   });
 });

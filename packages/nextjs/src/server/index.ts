@@ -1,16 +1,9 @@
 // import/export got a false positive, and affects most of our index barrel files
 // can be removed once following issue is fixed: https://github.com/import-js/eslint-plugin-import/issues/703
 /* eslint-disable import/export */
-import { ATTR_URL_QUERY, SEMATTRS_HTTP_TARGET } from '@opentelemetry/semantic-conventions';
+import { HTTP_TARGET, URL_QUERY } from '@sentry/conventions/attributes';
 import type { EventProcessor } from '@sentry/core';
-import {
-  applySdkMetadata,
-  debug,
-  getClient,
-  getGlobalScope,
-  GLOBAL_OBJ,
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-} from '@sentry/core';
+import { applySdkMetadata, debug, getClient, getGlobalScope, getRootSpan, GLOBAL_OBJ } from '@sentry/core';
 import type { NodeClient, NodeOptions } from '@sentry/node';
 import { getDefaultIntegrations, httpIntegration, init as nodeInit } from '@sentry/node';
 import { DEBUG_BUILD } from '../common/debug-build';
@@ -21,6 +14,9 @@ import { isBuild } from '../common/utils/isBuild';
 import { isCloudflareWaitUntilAvailable } from '../common/utils/responseEnd';
 import { setUrlProcessingMetadata } from '../common/utils/setUrlProcessingMetadata';
 import { distDirRewriteFramesIntegration } from './distDirRewriteFramesIntegration';
+import { enhanceMiddlewareRootSpan } from '../common/enhanceMiddlewareRootSpan';
+import { backfillHttpServerStatus } from '../common/utils/backfillHttpServerStatus';
+import { createLiveRootSpanAdapter } from '../common/utils/liveRootSpanAdapter';
 import { enhanceHandleRequestRootSpan } from './enhanceHandleRequestRootSpan';
 import { handleOnSpanStart } from './handleOnSpanStart';
 import { prepareSafeIdGeneratorContext } from './prepareSafeIdGeneratorContext';
@@ -28,6 +24,9 @@ import { maybeCompleteCronCheckIn } from './vercelCronsMonitoring';
 import { maybeCleanupQueueSpan } from './vercelQueuesMonitoring';
 
 export * from '@sentry/node';
+
+// Explicitly re-export so it is statically detectable by turbopack
+export { pinoIntegration } from '@sentry/node';
 
 export { captureUnderscoreErrorException } from '../common/pages-router-instrumentation/_error';
 
@@ -38,6 +37,9 @@ const globalWithInjectedValues = GLOBAL_OBJ as typeof GLOBAL_OBJ & {
   _sentryRewriteFramesDistDir?: string;
   _sentryRelease?: string;
 };
+
+// Call at module level so `next build` prerender workers still register the runner without `init`
+prepareSafeIdGeneratorContext();
 
 /**
  * A passthrough error boundary for the server that doesn't depend on any react. Error boundaries don't catch SSR errors
@@ -104,7 +106,7 @@ export function init(options: NodeOptions): NodeClient | undefined {
   if (!DEBUG_BUILD && options.debug) {
     // eslint-disable-next-line no-console
     console.warn(
-      '[@sentry/nextjs] You have enabled `debug: true`, but Sentry debug logging was removed from your bundle (likely via `withSentryConfig({ disableLogger: true })` / `webpack.treeshake.removeDebugLogging: true`). Set that option to `false` to see Sentry debug output.',
+      '[@sentry/nextjs] You have enabled `debug: true`, but Sentry debug logging was removed from your bundle (likely via `webpack.treeshake.removeDebugLogging: true`). Set that option to `false` to see Sentry debug output.',
     );
   }
 
@@ -120,7 +122,7 @@ export function init(options: NodeOptions): NodeClient | undefined {
   // Turn off Next.js' own fetch instrumentation (only when we manage OTEL)
   // https://github.com/lforst/nextjs-fork/blob/1994fd186defda77ad971c36dc3163db263c993f/packages/next/src/server/lib/patch-fetch.ts#L245
   // Enable with custom OTel setup: https://github.com/getsentry/sentry-javascript/issues/17581
-  if (!options.skipOpenTelemetrySetup) {
+  if (options.enableOpenTelemetrySetup ?? true) {
     process.env.NEXT_OTEL_FETCH_DISABLED = '1';
   }
 
@@ -138,6 +140,9 @@ export function init(options: NodeOptions): NodeClient | undefined {
     environment: options.environment || process.env.SENTRY_ENVIRONMENT || getVercelEnv(false) || process.env.NODE_ENV,
     release: process.env._sentryRelease || globalWithInjectedValues._sentryRelease,
     defaultIntegrations: customDefaultIntegrations,
+    // Next.js emits its own OpenTelemetry spans, so it defaults to registering the Sentry tracer
+    // provider (unlike most Node-based SDKs). A user-provided value still overrides this via `...options`.
+    enableOpenTelemetrySetup: true,
     ...options,
     // Override runtime to 'cloudflare' when running on OpenNext/Cloudflare
     ...cloudflareConfig,
@@ -152,7 +157,7 @@ export function init(options: NodeOptions): NodeClient | undefined {
     /^\/404$/,
     // App router /404 and /_not-found segments (any HTTP method)
     /^(GET|HEAD|POST|PUT|DELETE|CONNECT|OPTIONS|TRACE|PATCH) \/(404|_not-found)$/,
-    // Next.js 13 root transactions named "NextServer.getRequestHandler" containing useless tracing
+    // Root transactions named "NextServer.getRequestHandler" containing useless tracing
     /^NextServer\.getRequestHandler$/,
     // Spans flagged via TRANSACTION_ATTR_SHOULD_DROP_TRANSACTION
     // (set in `dropMiddlewareTunnelRequests` during `spanStart`)
@@ -182,21 +187,36 @@ export function init(options: NodeOptions): NodeClient | undefined {
     // because we didn't get the chance to do `suppressTracing`, since this happens outside of userland.
     // We need to drop these spans.
     if (
-      // eslint-disable-next-line deprecation/deprecation
-      (typeof spanAttributes[SEMATTRS_HTTP_TARGET] === 'string' &&
-        // eslint-disable-next-line deprecation/deprecation
-        spanAttributes[SEMATTRS_HTTP_TARGET].includes('sentry_key') &&
-        // eslint-disable-next-line deprecation/deprecation
-        spanAttributes[SEMATTRS_HTTP_TARGET].includes('sentry_client')) ||
-      (typeof spanAttributes[ATTR_URL_QUERY] === 'string' &&
-        spanAttributes[ATTR_URL_QUERY].includes('sentry_key') &&
-        spanAttributes[ATTR_URL_QUERY].includes('sentry_client'))
+      // eslint-disable-next-line typescript/no-deprecated
+      (typeof spanAttributes[HTTP_TARGET] === 'string' &&
+        // eslint-disable-next-line typescript/no-deprecated
+        spanAttributes[HTTP_TARGET].includes('sentry_key') &&
+        // eslint-disable-next-line typescript/no-deprecated
+        spanAttributes[HTTP_TARGET].includes('sentry_client')) ||
+      (typeof spanAttributes[URL_QUERY] === 'string' &&
+        spanAttributes[URL_QUERY].includes('sentry_key') &&
+        spanAttributes[URL_QUERY].includes('sentry_client'))
     ) {
       samplingDecision.decision = false;
     }
   });
 
   client?.on('spanStart', handleOnSpanStart);
+
+  // Normalize name/op/source/status on the request root span at span end, before it is serialized into
+  // a transaction event (legacy) or streamed span JSON. Running on the live span means both lifecycles
+  // pick up the changes from one place, and the cron/queue hooks below see the finalized status.
+  client?.on('spanEnd', span => {
+    if (span !== getRootSpan(span)) {
+      return;
+    }
+
+    const mutableRootSpan = createLiveRootSpanAdapter(span);
+    enhanceHandleRequestRootSpan(mutableRootSpan);
+    enhanceMiddlewareRootSpan(mutableRootSpan);
+    backfillHttpServerStatus(span);
+  });
+
   client?.on('spanEnd', maybeCompleteCronCheckIn);
   client?.on('spanEnd', maybeCleanupQueueSpan);
 
@@ -235,45 +255,8 @@ export function init(options: NodeOptions): NodeClient | undefined {
     ),
   );
 
-  // Use the preprocessEvent hook instead of an event processor, so that the users event processors receive the most
-  // up-to-date value, but also so that the logic that detects changes to the transaction names to set the source to
-  // "custom", doesn't trigger.
-  // This handles the legacy (non-streamed) path where the segment span is emitted as a transaction event;
-  // `enhanceHandleRequestRootSpan` is adapted to operate on the event's trace context, which is the segment span's data.
-  // Span streaming bypasses event processors entirely - see the `processSegmentSpan` hook below for that path.
   client?.on('preprocessEvent', event => {
-    if (event.type === 'transaction' && event.contexts?.trace?.data) {
-      enhanceHandleRequestRootSpan({
-        attributes: event.contexts.trace.data,
-        getName: () => event.transaction,
-        setName: name => {
-          event.transaction = name;
-        },
-        setOp: op => {
-          event.contexts!.trace!.op = op;
-        },
-      });
-    }
-
     setUrlProcessingMetadata(event);
-  });
-
-  // Streamed-span counterpart of the `preprocessEvent` hook above. Streamed segment spans never become
-  // transaction events, so the same enhancement has to be applied here directly on the span JSON.
-  client?.on('processSegmentSpan', span => {
-    const attributes = (span.attributes ??= {});
-    enhanceHandleRequestRootSpan({
-      attributes,
-      getName: () => span.name,
-      setName: name => {
-        span.name = name;
-      },
-      // For streamed spans, op lives in `attributes['sentry.op']` - mirror it there so middleware
-      // overrides land somewhere readable (the legacy path uses a separate `event.contexts.trace.op`).
-      setOp: op => {
-        attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP] = op;
-      },
-    });
   });
 
   if (process.env.NODE_ENV === 'development') {

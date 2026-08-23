@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/node';
 import { loggingTransport } from '@sentry-internal/node-integration-tests';
 
 Sentry.init({
+  traceLifecycle: 'static',
   dsn: 'https://public@dsn.ingest.sentry.io/1337',
   release: '1.0.0',
   environment: 'test',
@@ -22,11 +23,9 @@ async function run(): Promise<void> {
   Sentry.setUser({ id: 'user-123', email: 'test@example.com', username: 'testuser' });
   Sentry.metrics.count('test.user.counter', 1, { attributes: { action: 'click' } });
 
-  Sentry.withScope(scope => {
-    scope.setAttribute('scope_attribute_1', 1);
-    scope.setAttributes({ scope_attribute_2: { value: 'test' }, scope_attribute_3: { value: 38, unit: 'gigabyte' } });
-    Sentry.metrics.count('test.scope.attributes.counter', 1, { attributes: { action: 'click' } });
-  });
+  Sentry.setAttribute('scope_attribute_1', 1);
+  Sentry.setAttributes({ scope_attribute_2: { value: 'test' }, scope_attribute_3: { value: 38, unit: 'gigabyte' } });
+  Sentry.metrics.count('test.scope.attributes.counter', 1, { attributes: { action: 'click' } });
 
   await Sentry.flush();
 }

@@ -91,6 +91,7 @@ export const viewHierarchyIntegration = defineIntegration((options: Options = {}
       const { x, y, width, height } = child.getBoundingClientRect();
 
       const window: ViewHierarchyWindow = {
+        // oxlint-disable-next-line typescript/no-unnecessary-type-assertion -- rule false positive: the cast drops `undefined` to satisfy `identifier: string`; tsc errors without it
         identifier: (child.id || undefined) as string,
         type: componentName || tagName,
         visible: true,
@@ -113,7 +114,7 @@ export const viewHierarchyIntegration = defineIntegration((options: Options = {}
   }
 
   return {
-    name: 'ViewHierarchy',
+    name: 'ViewHierarchy' as const,
     processEvent: (event, hint) => {
       // only capture for error events
       if (event.type !== undefined || options.shouldAttach?.(event, hint) === false) {

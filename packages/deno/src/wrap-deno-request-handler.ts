@@ -1,4 +1,6 @@
+import type { Integration, MaxRequestBodySize } from '@sentry/core';
 import {
+  captureBodyFromWinterCGRequest,
   captureException,
   continueTrace,
   getClient,
@@ -57,14 +59,21 @@ export const wrapDenoRequestHandler = <Addr extends Deno.Addr = Deno.Addr>(
     }
 
     const urlObject = parseStringToURLObject(request.url);
-    const [name, attributes] = getHttpSpanDetailsFromUrlObject(urlObject, 'server', 'auto.http.deno', request);
+    const [name, attributes] = getHttpSpanDetailsFromUrlObject(
+      urlObject,
+      'server',
+      'auto.http.deno',
+      request,
+      undefined,
+      client,
+    );
 
     const contentLength = request.headers.get('content-length');
     assignIfSet(attributes, 'http.request.body.size', contentLength && parseInt(contentLength, 10));
     assignIfSet(attributes, 'user_agent.original', request.headers.get('user-agent'));
 
-    const sendDefaultPii = client.getOptions().sendDefaultPii ?? false;
-    if (sendDefaultPii) {
+    const dataCollection = client.getDataCollectionOptions();
+    if (dataCollection.userInfo) {
       assignIfSet(
         attributes,
         'client.address',
@@ -73,11 +82,20 @@ export const wrapDenoRequestHandler = <Addr extends Deno.Addr = Deno.Addr>(
       assignIfSet(attributes, 'client.port', (info?.remoteAddr as Deno.NetAddr)?.port);
     }
 
-    Object.assign(attributes, httpHeadersToSpanAttributes(winterCGHeadersToDict(request.headers), sendDefaultPii));
+    Object.assign(attributes, httpHeadersToSpanAttributes(winterCGHeadersToDict(request.headers), dataCollection));
     attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP] = 'http.server';
     isolationScope.setSDKProcessingMetadata({
       normalizedRequest: winterCGRequestToRequestData(request),
     });
+
+    const configuredBodySize = client.getIntegrationByName<Integration & { maxRequestBodySize?: MaxRequestBodySize }>(
+      'DenoServe',
+    )?.maxRequestBodySize;
+    const effectiveBodySize =
+      configuredBodySize ?? (dataCollection.httpBodies.includes('incomingRequest') ? 'medium' : 'none');
+    if (request.method !== 'GET' && effectiveBodySize !== 'none') {
+      await captureBodyFromWinterCGRequest(request, isolationScope, effectiveBodySize);
+    }
 
     return continueTrace(
       {
@@ -95,7 +113,7 @@ export const wrapDenoRequestHandler = <Addr extends Deno.Addr = Deno.Addr>(
               status_code: res.status,
             });
             span.setAttributes(
-              httpHeadersToSpanAttributes(Object.fromEntries(res.headers), sendDefaultPii, 'response'),
+              httpHeadersToSpanAttributes(Object.fromEntries(res.headers), dataCollection, 'response'),
             );
           } catch (e) {
             span.end();

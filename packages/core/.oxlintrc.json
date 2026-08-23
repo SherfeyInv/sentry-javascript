@@ -4,7 +4,7 @@
   "jsPlugins": [
     {
       "name": "sdk",
-      "specifier": "@sentry-internal/eslint-plugin-sdk"
+      "specifier": "@sentry/eslint-plugin-sdk"
     }
   ],
   "rules": {
@@ -15,12 +15,6 @@
       "files": ["test/**/*.ts", "test/**/*.tsx"],
       "rules": {
         "sdk/no-unsafe-random-apis": "off"
-      }
-    },
-    {
-      "files": ["src/tracing/langchain/utils.ts"],
-      "rules": {
-        "max-lines": "off"
       }
     }
   ],

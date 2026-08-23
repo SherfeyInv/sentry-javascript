@@ -27,10 +27,6 @@ yarn add @sentry/opentelemetry
 Note that `@sentry/opentelemetry` depends on the following peer dependencies:
 
 - `@opentelemetry/api` version `1.0.0` or greater
-- `@opentelemetry/core` version `1.0.0` or greater
-- `@opentelemetry/semantic-conventions` version `1.0.0` or greater
-- `@opentelemetry/sdk-trace-base` version `1.0.0` or greater, or a package that implements that, like
-  `@opentelemetry/sdk-node`.
 
 ## Usage
 
@@ -76,7 +72,6 @@ function setupSentry() {
 
   // Initialize the provider
   trace.setGlobalTracerProvider(provider);
-  propagation.setGlobalPropagator(new SentryPropagator());
   context.setGlobalContextManager(new SentryAsyncLocalStorageContextManager());
 
   setOpenTelemetryContextAsyncContextStrategy();
@@ -85,6 +80,26 @@ function setupSentry() {
 
 A full setup example can be found in
 [node-experimental](https://github.com/getsentry/sentry-javascript/blob/develop/packages/node-experimental).
+
+## Sentry Tracer Provider
+
+`SentryTracerProvider` is a minimal OpenTelemetry tracer provider which creates native Sentry spans directly.
+It is useful when code uses the global OpenTelemetry API and you do not need the full OpenTelemetry SDK span processor
+and exporter pipeline.
+
+```js
+import { trace } from '@opentelemetry/api';
+import { SentryTracerProvider } from '@sentry/opentelemetry';
+
+trace.setGlobalTracerProvider(new SentryTracerProvider());
+
+const span = trace.getTracer('example').startSpan('work');
+span.end();
+```
+
+In `@sentry/node`, this is the default tracer provider.
+
+The `SentryTracerProvider` does not handle OpenTelemetry logs and metrics.
 
 ## Links
 

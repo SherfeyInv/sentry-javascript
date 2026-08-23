@@ -1,10 +1,5 @@
 // Copyright 2021 Remix Software Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 
 import type { AgnosticRouteMatch, AgnosticRouteObject } from '@remix-run/router';
 import { matchRoutes } from '@remix-run/router';
@@ -89,38 +84,4 @@ export function matchServerRoutes(
     route: match.route,
     pathnameBase: match.pathnameBase,
   }));
-}
-
-/**
- * https://github.com/remix-run/remix/blob/97999d02493e8114c39d48b76944069d58526e8d/packages/remix-server-runtime/server.ts#L573-L586
- */
-export function isIndexRequestUrl(url: URL): boolean {
-  for (const param of url.searchParams.getAll('index')) {
-    // only use bare `?index` params without a value
-    // ✅ /foo?index
-    // ✅ /foo?index&index=123
-    // ✅ /foo?index=123&index
-    // ❌ /foo?index=123
-    if (param === '') {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * https://github.com/remix-run/remix/blob/97999d02493e8114c39d48b76944069d58526e8d/packages/remix-server-runtime/server.ts#L588-L596
- */
-export function getRequestMatch(
-  url: URL,
-  matches: AgnosticRouteMatch[],
-): AgnosticRouteMatch<string, AgnosticRouteObject> {
-  const match = matches.slice(-1)[0] as AgnosticRouteMatch<string, AgnosticRouteObject>;
-
-  if (!isIndexRequestUrl(url) && match.route.id?.endsWith('/index')) {
-    return matches.slice(-2)[0] as AgnosticRouteMatch<string, AgnosticRouteObject>;
-  }
-
-  return match;
 }

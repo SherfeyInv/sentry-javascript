@@ -1,3 +1,4 @@
+// oxlint-disable max-lines
 /**
  * Provide the `http.server.request.start` subscription function that we use
  * to instrument incoming HTTP requests that use the `node:http` module.
@@ -39,6 +40,8 @@ import {
 import { safeMathRandom } from '../../utils/randomSafeContext';
 import type { SpanAttributes } from '../../types/span';
 import type { SpanStatus } from '../../types/spanStatus';
+import { URL_FULL, URL_PATH, SENTRY_KIND } from '@sentry/conventions/attributes';
+import { filterCollectedUrl } from '../../utils/data-collection/filterCollectedUrl';
 
 // Tree-shakable guard to remove all code related to tracing
 declare const __SENTRY_TRACING__: boolean;
@@ -106,14 +109,18 @@ export function instrumentServer(options: HttpInstrumentationOptions, server: Ht
       const url = request.url || '/';
       const normalizedRequest = httpRequestToRequestData(request);
       const {
-        maxRequestBodySize = 'medium',
+        maxRequestBodySize: configuredBodySize,
         ignoreRequestBody,
         sessions = true,
         sessionFlushingDelayMS = 60_000,
       } = options;
 
-      if (maxRequestBodySize !== 'none' && !ignoreRequestBody?.(url, request)) {
-        patchRequestToCaptureBody(request, isolationScope, maxRequestBodySize, INTEGRATION_NAME);
+      const effectiveBodySize =
+        configuredBodySize ??
+        (client.getDataCollectionOptions().httpBodies.includes('incomingRequest') ? 'medium' : 'none');
+
+      if (effectiveBodySize !== 'none' && !ignoreRequestBody?.(url, request)) {
+        patchRequestToCaptureBody(request, isolationScope, effectiveBodySize, INTEGRATION_NAME);
       }
 
       // Update the isolation scope, isolate this request
@@ -249,6 +256,8 @@ function buildServerSpanWrap(
         return next();
       }
 
+      const dataCollectionOptions = client.getDataCollectionOptions();
+
       if (
         shouldIgnoreSpansForIncomingRequest(request, {
           ignoreStaticAssets,
@@ -277,20 +286,12 @@ function buildServerSpanWrap(
       return startSpanManual(
         {
           name,
-          // SpanKind.SERVER = 1; pass this so the OTel sampler infers
-          // op='http.server' rather than 'http', which it does for
-          // SpanKind.INTERNAL = 0, the default
-          kind: 1,
           attributes: {
             // Sentry-specific attributes
             [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'http.server',
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.http.server',
             [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
-            // Set http.route to the URL path as a best-effort route name.
-            // Framework integrations (Express, etc.) update this via onSpanEnd.
-            'http.route': httpTargetWithoutQueryFragment,
-            // OTel kind (explicit attribute so it appears in span data)
-            'otel.kind': 'SERVER',
+            [SENTRY_KIND]: 'server',
             // Network attributes
             'net.host.ip': localAddress,
             'net.host.port': localPort,
@@ -298,9 +299,13 @@ function buildServerSpanWrap(
             'net.peer.port': remotePort,
             'sentry.http.prefetch': isKnownPrefetchRequest(request) || undefined,
             // Old Semantic Conventions attributes for compatibility
-            'http.url': fullUrl,
+            [URL_FULL]: filterCollectedUrl(fullUrl, client),
+            [URL_PATH]: urlObj?.pathname ?? httpTargetWithoutQueryFragment,
             'http.method': method,
-            'http.target': urlObj ? `${urlObj.pathname}${urlObj.search}` : httpTargetWithoutQueryFragment,
+            'http.target': filterCollectedUrl(
+              urlObj ? `${urlObj.pathname}${urlObj.search}` : httpTargetWithoutQueryFragment,
+              client,
+            ),
             'http.host': host,
             'net.host.name': hostname,
             'http.client_ip': typeof ips === 'string' ? ips.split(',')[0] : undefined,
@@ -309,7 +314,7 @@ function buildServerSpanWrap(
             'http.flavor': httpVersion,
             'net.transport': httpVersion?.toUpperCase() === 'QUIC' ? 'ip_udp' : 'ip_tcp',
             ...getRequestContentLengthAttribute(request),
-            ...httpHeadersToSpanAttributes(normalizedRequest.headers || {}, client.getDataCollectionOptions()),
+            ...httpHeadersToSpanAttributes(normalizedRequest.headers || {}, dataCollectionOptions),
           },
         },
         span => {
@@ -329,11 +334,7 @@ function buildServerSpanWrap(
               'http.status_text': response.statusMessage?.toUpperCase(),
               'http.response.status_code': response.statusCode,
               'http.status_code': response.statusCode,
-              ...httpHeadersToSpanAttributes(
-                headersToDict(response.headers),
-                client?.getDataCollectionOptions() ?? false,
-                'response',
-              ),
+              ...httpHeadersToSpanAttributes(headersToDict(response.headers), dataCollectionOptions, 'response'),
             });
             span.setStatus(status);
             onSpanEnd?.(span, request, response);

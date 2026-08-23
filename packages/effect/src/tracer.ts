@@ -1,5 +1,17 @@
+import { SENTRY_OP } from '@sentry/conventions/attributes';
+import {
+  GENERAL_FUNCTION_SPAN_OP,
+  WEB_SERVER_HTTP_CLIENT_SPAN_OP,
+  WEB_SERVER_HTTP_SERVER_SPAN_OP,
+} from '@sentry/conventions/op';
 import type { Span } from '@sentry/core';
-import { getActiveSpan, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, startInactiveSpan, withActiveSpan } from '@sentry/core';
+import {
+  isObjectLike,
+  getActiveSpan,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  startInactiveSpan,
+  withActiveSpan,
+} from '@sentry/core';
 import type * as Context from 'effect/Context';
 import * as Exit from 'effect/Exit';
 import * as Option from 'effect/Option';
@@ -11,6 +23,23 @@ function deriveOrigin(name: string): string {
   }
 
   return 'auto.function.effect';
+}
+
+/**
+ * Effect span names are chosen by user code, so the name is the only signal available. `@effect/platform`
+ * names its HTTP spans `http.server`/`http.client`, which map onto the matching Sentry ops; everything
+ * else is arbitrary user work and falls back to `function`.
+ */
+function deriveOp(name: string): string {
+  if (name.startsWith('http.server')) {
+    return WEB_SERVER_HTTP_SERVER_SPAN_OP;
+  }
+
+  if (name.startsWith('http.client')) {
+    return WEB_SERVER_HTTP_CLIENT_SPAN_OP;
+  }
+
+  return GENERAL_FUNCTION_SPAN_OP;
 }
 
 type HrTime = [number, number];
@@ -40,12 +69,7 @@ function getErrorMessage(exit: Exit.Exit<unknown, unknown>): string | undefined 
   const cause = exit.cause as unknown;
 
   // Effect v4: cause.reasons is an array of Reason objects
-  if (
-    cause &&
-    typeof cause === 'object' &&
-    'reasons' in cause &&
-    Array.isArray((cause as { reasons: unknown }).reasons)
-  ) {
+  if (isObjectLike(cause) && 'reasons' in cause && Array.isArray((cause as { reasons: unknown }).reasons)) {
     const reasons = (cause as { reasons: Array<{ _tag?: string; error?: unknown; defect?: unknown }> }).reasons;
     for (const reason of reasons) {
       if (reason._tag === 'Fail' && reason.error !== undefined) {
@@ -59,7 +83,7 @@ function getErrorMessage(exit: Exit.Exit<unknown, unknown>): string | undefined 
   }
 
   // Effect v3: cause has _tag directly
-  if (cause && typeof cause === 'object' && '_tag' in cause) {
+  if (isObjectLike(cause) && '_tag' in cause) {
     const v3Cause = cause as { _tag: string; error?: unknown; defect?: unknown };
     if (v3Cause._tag === 'Fail') {
       return String(v3Cause.error);
@@ -171,6 +195,7 @@ function createSentrySpan(
     name,
     startTime: nanosToHrTime(startTime),
     attributes: {
+      [SENTRY_OP]: deriveOp(name),
       [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: deriveOrigin(name),
     },
     ...(parentSentrySpan ? { parentSpan: parentSentrySpan } : {}),
@@ -187,7 +212,7 @@ const isEffectV4 = (() => {
     const testExit = Exit.fail('test') as unknown as { cause?: unknown };
     const cause = testExit.cause;
     // v4 causes have 'reasons' array, v3 causes have '_tag' directly
-    if (cause && typeof cause === 'object' && 'reasons' in cause) {
+    if (isObjectLike(cause) && 'reasons' in cause) {
       return true;
     }
     return false;

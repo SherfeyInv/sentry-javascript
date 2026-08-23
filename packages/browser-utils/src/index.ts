@@ -4,38 +4,49 @@ export {
   addTtfbInstrumentationHandler,
   addLcpInstrumentationHandler,
   addInpInstrumentationHandler,
-} from './metrics/instrument';
+} from './instrumentation/performanceObserver';
 
 export {
   addPerformanceEntries,
   startTrackingInteractions,
   startTrackingLongTasks,
   startTrackingLongAnimationFrames,
+} from './performance/entries';
+
+export {
+  addWebVitalsToSpan,
+  // eslint-disable-next-line typescript/no-deprecated
   startTrackingWebVitals,
-  startTrackingINP,
   registerInpInteractionListener,
-} from './metrics/browserMetrics';
+} from './web-vitals/tracking';
 
-export { elementTimingIntegration, startTrackingElementTiming } from './metrics/elementTiming';
+// eslint-disable-next-line typescript/no-deprecated
+export { elementTimingIntegration, startTrackingElementTiming } from './performance/elementTiming';
 
-export { extractNetworkProtocol } from './metrics/utils';
+export { userTimingIntegration } from './performance/userTiming';
 
-export { trackClsAsSpan, trackInpAsSpan, trackLcpAsSpan } from './metrics/webVitalSpans';
+export { extractNetworkProtocol } from './performance/utils';
 
-export { addClickKeypressInstrumentationHandler } from './instrument/dom';
+export { trackClsAsSpan, trackInpAsSpan, trackLcpAsSpan } from './web-vitals/spans';
 
-export { addHistoryInstrumentationHandler } from './instrument/history';
+export { whenIdleOrHidden } from './web-vitals/utils';
+
+export { addClickKeypressInstrumentationHandler } from './instrumentation/dom';
+
+export { addHistoryInstrumentationHandler } from './instrumentation/history';
 
 export { fetch, setTimeout, clearCachedImplementation, getNativeImplementation } from './getNativeImplementation';
 
-export { addXhrInstrumentationHandler, SENTRY_XHR_DATA_KEY } from './instrument/xhr';
+export { addXhrInstrumentationHandler, SENTRY_XHR_DATA_KEY } from './instrumentation/xhr';
 
 export { getBodyString, getFetchRequestArgBody, serializeFormData, parseXhrResponseHeaders } from './networkUtils';
 
-export { resourceTimingToSpanAttributes } from './metrics/resourceTiming';
+export { resourceTimingToSpanAttributes } from './performance/resourceTiming';
 
 export { htmlTreeAsString } from './htmlTreeAsString';
 
 export { isElement } from './is';
+
+export { getAbsoluteUrl } from './instrumentation/location';
 
 export type { FetchHint, NetworkMetaWarning, XhrHint } from './types';

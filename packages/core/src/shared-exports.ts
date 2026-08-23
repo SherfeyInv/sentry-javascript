@@ -4,16 +4,15 @@
 /* eslint-disable max-lines */
 
 export type { ClientClass as SentryCoreCurrentScopes } from './sdk';
-export type { AsyncContextStrategy } from './asyncContext/types';
+export type { AsyncContextStrategy, TracingChannelBinding } from './asyncContext/types';
 export type { Carrier } from './carrier';
 export type { OfflineStore, OfflineTransportOptions } from './transports/offline';
 export type { IntegrationIndex } from './integration';
 export * from './tracing';
 export * from './semanticAttributes';
-export { createEventEnvelope, createSessionEnvelope, createSpanEnvelope } from './envelope';
+export type { RawAttributes } from './attributes';
+export { createEventEnvelope, createSessionEnvelope } from './envelope';
 export {
-  captureCheckIn,
-  withMonitor,
   captureException,
   captureEvent,
   captureMessage,
@@ -25,6 +24,8 @@ export {
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
   setConversationId,
   isInitialized,
@@ -34,6 +35,7 @@ export {
   captureSession,
   addEventProcessor,
 } from './exports';
+export { withMonitor, captureCheckIn } from './monitor';
 export {
   getCurrentScope,
   getIsolationScope,
@@ -47,7 +49,8 @@ export {
   hasExternalPropagationContext,
 } from './currentScopes';
 export { getDefaultCurrentScope, getDefaultIsolationScope } from './defaultScopes';
-export { setAsyncContextStrategy } from './asyncContext';
+export { setAsyncContextStrategy, getAsyncContextStrategy } from './asyncContext';
+export { waitForTracingChannelBinding } from './asyncContext/tracing-channel-binding';
 export { getGlobalSingleton, getMainCarrier } from './carrier';
 export { makeSession, closeSession, updateSession } from './session';
 export { Scope } from './scope';
@@ -59,7 +62,13 @@ export { initAndBind, setCurrentClient } from './sdk';
 export { createTransport } from './transports/base';
 export { makeOfflineTransport } from './transports/offline';
 export { makeMultiplexedTransport, MULTIPLEXED_TRANSPORT_EXTRA_KEY } from './transports/multiplexed';
-export { getIntegrationsToSetup, addIntegration, defineIntegration, installedIntegrations } from './integration';
+export {
+  getIntegrationsToSetup,
+  addIntegration,
+  defineIntegration,
+  extendIntegration,
+  installedIntegrations,
+} from './integration';
 export {
   _INTERNAL_skipAiProviderWrapping,
   _INTERNAL_shouldSkipAiProviderWrapping,
@@ -68,14 +77,18 @@ export {
 export { filterKeyValueData as _INTERNAL_filterKeyValueData } from './utils/data-collection/filterKeyValueData';
 export { filterCookies as _INTERNAL_filterCookies } from './utils/data-collection/filterCookies';
 export { filterQueryParams as _INTERNAL_filterQueryParams } from './utils/data-collection/filterQueryParams';
+export { filterCollectedUrl, filterCollectedUrlQuery } from './utils/data-collection/filterCollectedUrl';
 export { envToBool } from './utils/envToBool';
 export { applyScopeDataToEvent, mergeScopeData, getCombinedScopeData } from './utils/scopeData';
 export { prepareEvent } from './utils/prepareEvent';
 export type { ExclusiveEventHintOrCaptureContext } from './utils/prepareEvent';
 export { createCheckInEnvelope } from './checkin';
 export { hasSpansEnabled } from './utils/hasSpansEnabled';
-export { withStreamedSpan } from './tracing/spans/beforeSendSpan';
-export { isStreamedBeforeSendSpanCallback } from './tracing/spans/beforeSendSpan';
+export {
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
+  withStreamedSpan,
+} from './tracing/spans/beforeSendSpan';
 export { safeSetSpanJSONAttributes } from './tracing/spans/captureSpan';
 export { isSentryRequestUrl } from './utils/isSentryRequestUrl';
 export { handleCallbackErrors } from './utils/handleCallbackErrors';
@@ -83,14 +96,13 @@ export { parameterize, fmt } from './utils/parameterize';
 export type { HandleTunnelRequestOptions } from './utils/tunnel';
 export { handleTunnelRequest } from './utils/tunnel';
 export { addAutoIpAddressToSession } from './utils/ipAddress';
-// eslint-disable-next-line deprecation/deprecation
-export { addAutoIpAddressToUser } from './utils/ipAddress';
 export {
   convertSpanLinksForEnvelope,
   spanToTraceHeader,
+  spanToStaticSpanJSON,
   spanToJSON,
-  spanToStreamedSpanJSON,
   spanIsSampled,
+  spanIsSentrySpan,
   spanToTraceContext,
   getSpanDescendants,
   getStatusMessage,
@@ -108,6 +120,7 @@ export { getTraceData } from './utils/traceData';
 export { shouldPropagateTraceForUrl } from './utils/tracePropagationTargets';
 export { getTraceMetaTags } from './utils/meta';
 export { debounce } from './utils/debounce';
+export { uniq } from './utils/array';
 export { makeWeakRef, derefWeakRef } from './utils/weakRef';
 export type { MaybeWeakRef } from './utils/weakRef';
 export { shouldIgnoreSpan } from './utils/should-ignore-span';
@@ -124,10 +137,10 @@ export {
 } from './utils/request';
 export type { MaxRequestBodySize } from './utils/request';
 export { DEFAULT_ENVIRONMENT, DEV_ENVIRONMENT } from './constants';
+export { spanKindToName } from './spanKind';
+export type { SpanKind, SpanKindNumber } from './spanKind';
 export { addBreadcrumb } from './breadcrumbs';
 export { functionToStringIntegration } from './integrations/functiontostring';
-// eslint-disable-next-line deprecation/deprecation
-export { inboundFiltersIntegration } from './integrations/eventFilters';
 export { eventFiltersIntegration } from './integrations/eventFilters';
 export { linkedErrorsIntegration } from './integrations/linkederrors';
 export { moduleMetadataIntegration } from './integrations/moduleMetadata';
@@ -147,7 +160,7 @@ export { conversationIdIntegration } from './integrations/conversationId';
 export { profiler } from './profiling';
 // eslint thinks the entire function is deprecated (while only one overload is actually deprecated)
 // Therefore:
-// eslint-disable-next-line deprecation/deprecation
+// eslint-disable-next-line typescript/no-deprecated
 export { instrumentFetchRequest, _INTERNAL_getTracingHeadersForFetchRequest } from './fetch';
 export { captureFeedback } from './feedback';
 export type { ReportDialogOptions } from './report-dialog';
@@ -162,38 +175,6 @@ export {
 export * as metrics from './metrics/public-api';
 export type { MetricOptions } from './metrics/public-api';
 export { createConsolaReporter } from './integrations/consola';
-export { addVercelAiProcessors } from './tracing/vercel-ai';
-export { _INTERNAL_getSpanContextForToolCallId, _INTERNAL_cleanupToolCallSpanContext } from './tracing/vercel-ai/utils';
-export { toolCallSpanContextMap as _INTERNAL_toolCallSpanContextMap } from './tracing/vercel-ai/constants';
-export { instrumentOpenAiClient } from './tracing/openai';
-export { OPENAI_INTEGRATION_NAME } from './tracing/openai/constants';
-export { instrumentAnthropicAiClient } from './tracing/anthropic-ai';
-export { ANTHROPIC_AI_INTEGRATION_NAME } from './tracing/anthropic-ai/constants';
-export { instrumentGoogleGenAIClient } from './tracing/google-genai';
-export { GOOGLE_GENAI_INTEGRATION_NAME } from './tracing/google-genai/constants';
-export type { GoogleGenAIResponse } from './tracing/google-genai/types';
-export { createLangChainCallbackHandler, instrumentLangChainEmbeddings } from './tracing/langchain';
-export { _INTERNAL_mergeLangChainCallbackHandler } from './tracing/langchain/utils';
-export { LANGCHAIN_INTEGRATION_NAME } from './tracing/langchain/constants';
-export type { LangChainOptions, LangChainIntegration } from './tracing/langchain/types';
-export { instrumentStateGraphCompile, instrumentCreateReactAgent, instrumentLangGraph } from './tracing/langgraph';
-export { LANGGRAPH_INTEGRATION_NAME } from './tracing/langgraph/constants';
-export type { LangGraphOptions, LangGraphIntegration, CompiledGraph } from './tracing/langgraph/types';
-export type { OpenAiClient, OpenAiOptions, InstrumentedMethod } from './tracing/openai/types';
-export type {
-  AnthropicAiClient,
-  AnthropicAiOptions,
-  AnthropicAiInstrumentedMethod,
-  AnthropicAiResponse,
-} from './tracing/anthropic-ai/types';
-export type {
-  GoogleGenAIClient,
-  GoogleGenAIChat,
-  GoogleGenAIOptions,
-  GoogleGenAIInstrumentedMethod,
-} from './tracing/google-genai/types';
-// eslint-disable-next-line deprecation/deprecation
-export type { GoogleGenAIIstrumentedMethod } from './tracing/google-genai/types';
 export { SpanBuffer } from './tracing/spans/spanBuffer';
 export { hasSpanStreamingEnabled } from './tracing/spans/hasSpanStreamingEnabled';
 export { spanStreamingIntegration } from './integrations/spanStreaming';
@@ -208,7 +189,7 @@ export {
 export { applyAggregateErrorsToEvent } from './utils/aggregate-errors';
 export { getBreadcrumbLogLevelFromHttpStatusCode } from './utils/breadcrumb-log-level';
 export { dsnFromString, dsnToString, makeDsn } from './utils/dsn';
-// eslint-disable-next-line deprecation/deprecation
+// eslint-disable-next-line typescript/no-deprecated
 export { SentryError } from './utils/error';
 export { GLOBAL_OBJ } from './utils/worldwide';
 export type { InternalGlobal } from './utils/worldwide';
@@ -220,21 +201,22 @@ export { addHandler, maybeInstrument, resetInstrumentationHandlers, triggerHandl
 export {
   isDOMError,
   isDOMException,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   isElement,
   isError,
   isErrorEvent,
   isEvent,
   isInstanceOf,
+  isObjectLike,
   isParameterizedString,
   isPlainObject,
   isPrimitive,
   isRegExp,
   isString,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   isSyntheticEvent,
   isThenable,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   isVueViewModel,
 } from './utils/is';
 export { isBrowser } from './utils/isBrowser';
@@ -255,7 +237,7 @@ export { setNormalizationDepthOverrideHint, setSkipNormalizationHint } from './u
 export {
   addNonEnumerableProperty,
   convertToPlainObject,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   dropUndefinedKeys,
   extractExceptionKeysForMessage,
   fill,
@@ -276,14 +258,14 @@ export {
   stackParserFromStackParserOptions,
   stripSentryFramesAndReverse,
 } from './utils/stacktrace';
-export { isMatchingPattern, safeJoin, snipLine, stringMatchesSomePattern, truncate } from './utils/string';
+export { isMatchingPattern, safeJoin, stringify, snipLine, stringMatchesSomePattern, truncate } from './utils/string';
 export {
   isNativeFunction,
   supportsDOMException,
   supportsErrorEvent,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   supportsFetch,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   supportsReferrerPolicy,
 } from './utils/supports';
 export { SyncPromise, rejectedSyncPromise, resolvedSyncPromise } from './utils/syncpromise';
@@ -292,6 +274,7 @@ export {
   TRACEPARENT_REGEXP,
   extractTraceparentData,
   generateSentryTraceHeader,
+  isContinuingTrace,
   propagationContextFromHeaders,
   shouldContinueTrace,
   generateTraceparentHeader,
@@ -303,7 +286,6 @@ export {
   createAttachmentEnvelopeItem,
   createEnvelope,
   createEventEnvelopeHeaders,
-  createSpanEnvelopeItem,
   envelopeContainsItemType,
   envelopeItemTypeToDataCategory,
   forEachEnvelopeItem,
@@ -339,6 +321,8 @@ export {
   isURLObjectRelative,
   getSanitizedUrlStringFromUrlObject,
   stripDataUrlContent,
+  getUrlQuery,
+  getUrlFragment,
 } from './utils/url';
 export {
   eventFromMessage,
@@ -365,7 +349,6 @@ export type {
   CultureContext,
   TraceContext,
   CloudResourceContext,
-  MissingInstrumentationContext,
 } from './types/context';
 export type { DataCategory } from './types/datacategory';
 export type { DsnComponents, DsnLike, DsnProtocol } from './types/dsn';
@@ -395,9 +378,7 @@ export type {
   ProfileItem,
   ProfileChunkEnvelope,
   ProfileChunkItem,
-  SpanEnvelope,
   StreamedSpanEnvelope,
-  SpanItem,
   LogEnvelope,
   MetricEnvelope,
 } from './types/envelope';
@@ -483,7 +464,7 @@ export type {
   SerializedStreamedSpanContainer,
   StreamedSpanJSON,
 } from './types/span';
-export type { SpanStatus } from './types/spanStatus';
+export type { SpanStatus, SpanStatusType } from './types/spanStatus';
 export type { Log, LogSeverityLevel } from './types/log';
 export type { SpanLink } from './types/link';
 export type {
@@ -491,7 +472,7 @@ export type {
   MetricType,
   SerializedMetric,
   SerializedMetricContainer,
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   SerializedMetricAttributeValue,
 } from './types/metric';
 export type { TimedEvent } from './types/timedEvent';
@@ -536,9 +517,11 @@ export type { LegacyCSPReport } from './types/csp';
 export type { SerializedLog, SerializedLogContainer } from './types/log';
 export type {
   BuildTimeOptionsBase,
-  UnstableVitePluginOptions,
-  UnstableRollupPluginOptions,
-  UnstableWebpackPluginOptions,
+  ModuleMetadata,
+  ModuleMetadataCallback,
+  ModuleMetadataCallbackArgs,
+  ReactComponentAnnotationOptions,
+  ResolveSourceMapHook,
 } from './build-time-plugins/buildTimeOptionsBase';
 export type { RandomSafeContextRunner as _INTERNAL_RandomSafeContextRunner } from './utils/randomSafeContext';
 export {

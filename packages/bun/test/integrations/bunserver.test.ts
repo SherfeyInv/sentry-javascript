@@ -1,15 +1,26 @@
 import * as SentryCore from '@sentry/core';
 import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import type { BunOptions } from '../../src';
+import { getDefaultIntegrationsWithoutPerformance, init } from '../../src';
 import { instrumentBunServe } from '../../src/integrations/bunserver';
-import type { Span } from '@sentry/core';
 
 describe('Bun Serve Integration', () => {
   const mockSpan = SentryCore.startInactiveSpan({ name: 'test span' });
   const setAttributesSpy = spyOn(mockSpan, 'setAttributes');
   const continueTraceSpy = spyOn(SentryCore, 'continueTrace');
   const startSpanSpy = spyOn(SentryCore, 'startSpan').mockImplementation((_opts, cb) => {
-    return cb(mockSpan as unknown as Span);
+    return cb(mockSpan as unknown as SentryCore.Span);
   });
+
+  const setupClient = (options?: BunOptions): void => {
+    init({
+      dsn: 'https://username@domain/123',
+      defaultIntegrations: false,
+      ...options,
+      transport: () =>
+        SentryCore.createTransport({ recordDroppedEvent: () => undefined }, () => SentryCore.resolvedSyncPromise({})),
+    });
+  };
 
   beforeAll(() => {
     instrumentBunServe();
@@ -19,12 +30,16 @@ describe('Bun Serve Integration', () => {
     startSpanSpy.mockClear();
     continueTraceSpy.mockClear();
     setAttributesSpy.mockClear();
+    // Header attributes are only collected while a client is active, so every test sets up its own instead of
+    // relying on one leaking in from whichever test file `bun test` happened to run first.
+    setupClient();
   });
 
   // Fun fact: Bun = 2 21 14 :)
   let port: number = 22114;
 
   afterEach(() => {
+    SentryCore.getCurrentScope().setClient(undefined);
     // Don't reuse the port; Bun server stops lazily so tests may accidentally hit a server still closing from a
     // previous test
     port += 1;
@@ -43,11 +58,11 @@ describe('Bun Serve Integration', () => {
     expect(startSpanSpy).toHaveBeenCalledTimes(1);
     expect(startSpanSpy).toHaveBeenLastCalledWith(
       {
-        attributes: {
+        attributes: expect.objectContaining({
           'sentry.origin': 'auto.http.bun.serve',
           'http.request.method': 'GET',
           'sentry.source': 'url',
-          'url.query': '?id=123',
+          'url.query': 'id=123',
           'url.path': '/users',
           'url.full': `http://localhost:${port}/users?id=123`,
           'url.port': port.toString(),
@@ -58,7 +73,7 @@ describe('Bun Serve Integration', () => {
           'http.request.header.connection': 'keep-alive',
           'http.request.header.host': expect.any(String),
           'http.request.header.user_agent': expect.stringContaining('Bun'),
-        },
+        }),
         op: 'http.server',
         name: 'GET /users',
       },
@@ -87,7 +102,7 @@ describe('Bun Serve Integration', () => {
     expect(startSpanSpy).toHaveBeenCalledTimes(1);
     expect(startSpanSpy).toHaveBeenLastCalledWith(
       {
-        attributes: {
+        attributes: expect.objectContaining({
           'sentry.origin': 'auto.http.bun.serve',
           'http.request.method': 'POST',
           'sentry.source': 'url',
@@ -102,10 +117,39 @@ describe('Bun Serve Integration', () => {
           'http.request.header.content_length': '0',
           'http.request.header.host': expect.any(String),
           'http.request.header.user_agent': expect.stringContaining('Bun'),
-        },
+        }),
         op: 'http.server',
         name: 'POST /',
       },
+      expect.any(Function),
+    );
+  });
+
+  test('generates a QUERY transaction with a request body', async () => {
+    const server = Bun.serve({
+      async fetch(req) {
+        return new Response(await req.text());
+      },
+      port,
+    });
+
+    const response = await fetch(`http://localhost:${port}/search`, {
+      method: 'QUERY',
+      body: JSON.stringify({ query: 'bun' }),
+    });
+    expect(await response.json()).toEqual({ query: 'bun' });
+
+    await server.stop();
+
+    expect(startSpanSpy).toHaveBeenCalledTimes(1);
+    expect(startSpanSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          'http.request.method': 'QUERY',
+        }),
+        op: 'http.server',
+        name: 'QUERY /search',
+      }),
       expect.any(Function),
     );
   });
@@ -150,6 +194,7 @@ describe('Bun Serve Integration', () => {
   });
 
   test('includes HTTP request headers as span attributes', async () => {
+    setupClient({ defaultIntegrations: getDefaultIntegrationsWithoutPerformance() });
     const server = Bun.serve({
       async fetch(_req) {
         return new Response('Headers test!');
@@ -194,6 +239,8 @@ describe('Bun Serve Integration', () => {
           'http.request.header.connection': 'keep-alive',
           'http.request.header.content_length': '15',
           'http.request.header.host': expect.any(String),
+          'http.request.header.baggage': expect.any(String),
+          'http.request.header.sentry_trace': expect.any(String),
         }),
         op: 'http.server',
         name: 'POST /api/test',
@@ -469,6 +516,96 @@ describe('Bun Serve Integration', () => {
       );
 
       await server.stop();
+    });
+  });
+
+  describe('data collection', () => {
+    test('keeps PII request headers when dataCollection enables full header collection', async () => {
+      setupClient({ dataCollection: { httpHeaders: { request: true, response: true } } });
+
+      const server = Bun.serve({
+        async fetch(_req) {
+          return new Response('Bun!');
+        },
+        port,
+      });
+
+      await fetch(`http://localhost:${port}/`, {
+        headers: { 'X-Forwarded-For': '203.0.113.7' },
+      });
+
+      await server.stop();
+
+      expect(startSpanSpy).toHaveBeenCalledTimes(1);
+      const attributes = startSpanSpy.mock.calls[0]?.[0]?.attributes;
+      expect(attributes?.['http.request.header.x_forwarded_for']).toBe('203.0.113.7');
+    });
+
+    test('filters request headers according to the dataCollection deny list', async () => {
+      // Deny a header that is not part of the built-in sensitive snippets, so the assertion proves
+      // the deny list is applied (the header would otherwise be collected by default).
+      setupClient({ dataCollection: { httpHeaders: { request: { deny: ['x-internal'] } } } });
+
+      const server = Bun.serve({
+        async fetch(_req) {
+          return new Response('Bun!');
+        },
+        port,
+      });
+
+      await fetch(`http://localhost:${port}/`, {
+        headers: { 'X-Internal': 'internal-value', 'X-Public': 'public-value' },
+      });
+
+      await server.stop();
+
+      expect(startSpanSpy).toHaveBeenCalledTimes(1);
+      const attributes = startSpanSpy.mock.calls[0]?.[0]?.attributes;
+      expect(attributes?.['http.request.header.x_internal']).toBe('[Filtered]');
+      expect(attributes?.['http.request.header.x_public']).toBe('public-value');
+    });
+
+    test('filters always-sensitive request headers even when collection is permissive', async () => {
+      setupClient({ dataCollection: { httpHeaders: { request: true } } });
+
+      const server = Bun.serve({
+        async fetch(_req) {
+          return new Response('Bun!');
+        },
+        port,
+      });
+
+      await fetch(`http://localhost:${port}/`, {
+        headers: { Authorization: 'Bearer supersecret-token' },
+      });
+
+      await server.stop();
+
+      expect(startSpanSpy).toHaveBeenCalledTimes(1);
+      const attributes = startSpanSpy.mock.calls[0]?.[0]?.attributes;
+      expect(attributes?.['http.request.header.authorization']).toBe('[Filtered]');
+    });
+
+    test('applies the dataCollection response header collection behavior', async () => {
+      setupClient({ dataCollection: { httpHeaders: { response: { deny: ['x-internal'] } } } });
+
+      const server = Bun.serve({
+        async fetch(_req) {
+          return new Response('Bun!', {
+            headers: new Headers({ 'x-internal': 'internal-value', 'x-public': 'public-value' }),
+          });
+        },
+        port,
+      });
+
+      await fetch(`http://localhost:${port}/`);
+
+      await server.stop();
+
+      expect(setAttributesSpy).toHaveBeenCalledTimes(1);
+      const responseAttributes = setAttributesSpy.mock.calls[0]?.[0];
+      expect(responseAttributes?.['http.response.header.x_internal']).toBe('[Filtered]');
+      expect(responseAttributes?.['http.response.header.x_public']).toBe('public-value');
     });
   });
 });

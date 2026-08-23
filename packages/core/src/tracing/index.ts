@@ -1,10 +1,22 @@
 export { registerSpanErrorInstrumentation } from './errors';
-export { setCapturedScopesOnSpan, getCapturedScopesOnSpan } from './utils';
+export {
+  setCapturedScopesOnSpan,
+  getCapturedScopesOnSpan,
+  markSpanAsTracerProviderSpan,
+  spanIsTracerProviderSpan,
+} from './utils';
 export { startIdleSpan, TRACING_DEFAULTS } from './idleSpan';
 export { SentrySpan } from './sentrySpan';
+export { _INTERNAL_setDeferSegmentSpanCapture } from './deferSegmentSpanCapture';
 export { SentryNonRecordingSpan } from './sentryNonRecordingSpan';
-export { setHttpStatus, getSpanStatusFromHttpCode } from './spanstatus';
-export { SPAN_STATUS_ERROR, SPAN_STATUS_OK, SPAN_STATUS_UNSET } from './spanstatus';
+export {
+  setHttpStatus,
+  getSpanStatusFromHttpCode,
+  isStatusErrorMessageValid,
+  SPAN_STATUS_ERROR,
+  SPAN_STATUS_OK,
+  SPAN_STATUS_UNSET,
+} from './spanstatus';
 export {
   startSpan,
   startInactiveSpan,
@@ -12,9 +24,11 @@ export {
   continueTrace,
   withActiveSpan,
   suppressTracing,
+  isTracingSuppressed,
   startNewTrace,
-  SUPPRESS_TRACING_KEY,
+  spanIsIgnored,
 } from './trace';
+export { bindScopeToEmitter } from './bindScopeToEmitter';
 export {
   getDynamicSamplingContextFromClient,
   getDynamicSamplingContextFromSpan,

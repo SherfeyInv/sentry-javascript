@@ -1,3 +1,4 @@
+import { URL_FULL } from '@sentry/conventions/attributes';
 import type { IntegrationFn, Span } from '@sentry/core';
 import {
   addFetchEndInstrumentationHandler,
@@ -9,6 +10,7 @@ import {
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   startInactiveSpan,
   stripDataUrlContent,
+  filterCollectedUrl,
 } from '@sentry/core';
 
 const responseToStreamSpan = new WeakMap<object, Span>();
@@ -33,7 +35,7 @@ const STREAMING_CONTENT_TYPES = ['text/event-stream', 'application/x-ndjson', 'a
  */
 export const fetchStreamPerformanceIntegration = defineIntegration(() => {
   return {
-    name: 'FetchStreamPerformance',
+    name: 'FetchStreamPerformance' as const,
 
     setup() {
       // End the stream span when the response body finishes resolving
@@ -80,7 +82,7 @@ export const fetchStreamPerformanceIntegration = defineIntegration(() => {
             name: `${method} ${sanitizedUrl}`,
             startTime: handlerData.endTimestamp,
             attributes: {
-              url: stripDataUrlContent(url),
+              [URL_FULL]: filterCollectedUrl(stripDataUrlContent(url)),
               'http.method': method,
               type: 'fetch',
               [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'http.client.stream',

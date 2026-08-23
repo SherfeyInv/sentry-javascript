@@ -31,6 +31,11 @@ test.describe('client-specific performance events', () => {
           op: 'navigation',
           origin: 'auto.navigation.sveltekit',
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+          data: {
+            'url.path': '/nav1',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/nav1$/),
+            'url.template': '/nav1',
+          },
         },
       },
     });
@@ -44,6 +49,11 @@ test.describe('client-specific performance events', () => {
           op: 'navigation',
           origin: 'auto.navigation.sveltekit',
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+          data: {
+            'url.path': '/',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/$/),
+            'url.template': '/',
+          },
         },
       },
     });
@@ -57,6 +67,11 @@ test.describe('client-specific performance events', () => {
           op: 'navigation',
           origin: 'auto.navigation.sveltekit',
           trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+          data: {
+            'url.path': '/nav2',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/nav2$/),
+            'url.template': '/nav2',
+          },
         },
       },
     });
@@ -81,51 +96,51 @@ test.describe('client-specific performance events', () => {
     expect(componentTxnEvent.spans).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.init', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.mount', 'sentry.origin': 'auto.ui.svelte' },
           description: '<components/+page>',
-          op: 'ui.svelte.init',
+          op: 'ui.mount',
           origin: 'auto.ui.svelte',
         }),
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.init', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.mount', 'sentry.origin': 'auto.ui.svelte' },
           description: '<Component1>',
-          op: 'ui.svelte.init',
+          op: 'ui.mount',
           origin: 'auto.ui.svelte',
         }),
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.init', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.mount', 'sentry.origin': 'auto.ui.svelte' },
           description: '<Component2>',
-          op: 'ui.svelte.init',
+          op: 'ui.mount',
           origin: 'auto.ui.svelte',
         }),
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.init', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.mount', 'sentry.origin': 'auto.ui.svelte' },
           description: '<Component3>',
-          op: 'ui.svelte.init',
+          op: 'ui.mount',
           origin: 'auto.ui.svelte',
         }),
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.update', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.update', 'sentry.origin': 'auto.ui.svelte' },
           description: '<components/+page>',
-          op: 'ui.svelte.update',
+          op: 'ui.update',
           origin: 'auto.ui.svelte',
         }),
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.update', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.update', 'sentry.origin': 'auto.ui.svelte' },
           description: '<Component1>',
-          op: 'ui.svelte.update',
+          op: 'ui.update',
           origin: 'auto.ui.svelte',
         }),
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.update', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.update', 'sentry.origin': 'auto.ui.svelte' },
           description: '<Component2>',
-          op: 'ui.svelte.update',
+          op: 'ui.update',
           origin: 'auto.ui.svelte',
         }),
         expect.objectContaining({
-          data: { 'sentry.op': 'ui.svelte.update', 'sentry.origin': 'auto.ui.svelte' },
+          data: { 'sentry.op': 'ui.update', 'sentry.origin': 'auto.ui.svelte' },
           description: '<Component3>',
-          op: 'ui.svelte.update',
+          op: 'ui.update',
           origin: 'auto.ui.svelte',
         }),
       ]),

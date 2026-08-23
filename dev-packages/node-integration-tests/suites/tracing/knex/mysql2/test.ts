@@ -1,9 +1,10 @@
 import { describe, expect } from 'vitest';
-import { createEsmAndCjsTests } from '../../../../utils/runner';
+import { createEsmAndCjsTests, describeWithDockerCompose } from '../../../../utils/runner';
 
-describe('knex auto instrumentation', () => {
+describeWithDockerCompose('knex auto instrumentation', { workingDirectory: [__dirname] }, () => {
   // Update this if another knex version is installed
   const KNEX_VERSION = '2.5.1';
+  const ORIGIN = 'auto.db.knex';
 
   describe('with `mysql2` client', () => {
     createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createRunner, test) => {
@@ -14,59 +15,55 @@ describe('knex auto instrumentation', () => {
             expect.objectContaining({
               data: expect.objectContaining({
                 'knex.version': KNEX_VERSION,
-                'db.system': 'mysql2',
-                'db.name': 'tests',
+                'db.system.name': 'mysql2',
+                'db.namespace': 'tests',
                 'db.user': 'root',
-                'sentry.origin': 'auto.db.otel.knex',
+                'sentry.origin': ORIGIN,
                 'sentry.op': 'db',
-                'net.peer.name': 'localhost',
-                'net.peer.port': 3307,
+                'server.address': 'localhost',
+                'server.port': 3307,
               }),
               status: 'ok',
               description:
                 'create table `User` (`id` int unsigned not null auto_increment primary key, `createdAt` timestamp(3) not null default CURRENT_TIMESTAMP(3), `email` text not null, `name` text not null)',
-              origin: 'auto.db.otel.knex',
+              origin: ORIGIN,
             }),
             expect.objectContaining({
               data: expect.objectContaining({
                 'knex.version': KNEX_VERSION,
-                'db.system': 'mysql2',
-                'db.name': 'tests',
+                'db.system.name': 'mysql2',
+                'db.namespace': 'tests',
                 'db.user': 'root',
-                'sentry.origin': 'auto.db.otel.knex',
+                'sentry.origin': ORIGIN,
                 'sentry.op': 'db',
-                'net.peer.name': 'localhost',
-                'net.peer.port': 3307,
+                'server.address': 'localhost',
+                'server.port': 3307,
               }),
               status: 'ok',
               description: 'insert into `User` (`email`, `name`) values (?, ?)',
-              origin: 'auto.db.otel.knex',
+              origin: ORIGIN,
             }),
 
             expect.objectContaining({
               data: expect.objectContaining({
                 'knex.version': KNEX_VERSION,
-                'db.operation': 'select',
+                'db.operation.name': 'select',
                 'db.sql.table': 'User',
-                'db.system': 'mysql2',
-                'db.name': 'tests',
-                'db.statement': 'select * from `User`',
+                'db.system.name': 'mysql2',
+                'db.namespace': 'tests',
+                'db.query.text': 'select * from `User`',
                 'db.user': 'root',
-                'sentry.origin': 'auto.db.otel.knex',
+                'sentry.origin': ORIGIN,
                 'sentry.op': 'db',
               }),
               status: 'ok',
               description: 'select * from `User`',
-              origin: 'auto.db.otel.knex',
+              origin: ORIGIN,
             }),
           ]),
         };
 
-        await createRunner()
-          .withDockerCompose({ workingDirectory: [__dirname] })
-          .expect({ transaction: EXPECTED_TRANSACTION })
-          .start()
-          .completed();
+        await createRunner().expect({ transaction: EXPECTED_TRANSACTION }).start().completed();
       });
     });
   });

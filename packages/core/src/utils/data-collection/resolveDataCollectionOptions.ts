@@ -1,13 +1,14 @@
 import type { DataCollection, ResolvedDataCollection } from '../../types/datacollection';
-import { defaultPiiToCollectionOptions } from './defaultPiiToCollectionOptions';
 
 const DEFAULTS: ResolvedDataCollection = {
-  userInfo: false,
+  userInfo: true,
   cookies: true,
   httpHeaders: { request: true, response: true },
-  httpBodies: [],
-  queryParams: true,
+  httpBodies: ['incomingRequest', 'outgoingRequest', 'incomingResponse', 'outgoingResponse'],
+  urlQueryParams: true,
+  graphQL: { document: true, variables: true },
   genAI: { inputs: true, outputs: true },
+  databaseQueryData: true,
   stackFrameVariables: true,
   frameContextLines: 5,
 };
@@ -16,32 +17,31 @@ const DEFAULTS: ResolvedDataCollection = {
  * Resolves the effective `DataCollection` configuration from client options.
  *
  * Precedence:
- * 1. Fields explicitly set in `dataCollection`
- * 2. If `sendDefaultPii` is set and `dataCollection` is absent, bridge via `defaultPiiToCollectionOptions`
- * 3. Spec defaults
+ * 1. Spec defaults
+ * 2. Fields explicitly set in `dataCollection`
  */
-export function resolveDataCollectionOptions(options: {
-  dataCollection?: DataCollection;
-  sendDefaultPii?: boolean;
-}): ResolvedDataCollection {
-  const base = options.dataCollection != null ? DEFAULTS : defaultPiiToCollectionOptions(options.sendDefaultPii);
-
+export function resolveDataCollectionOptions(options: { dataCollection?: DataCollection }): ResolvedDataCollection {
   const dc = options.dataCollection ?? {};
 
   return {
-    userInfo: dc.userInfo ?? base.userInfo,
-    cookies: dc.cookies ?? base.cookies,
+    userInfo: dc.userInfo ?? DEFAULTS.userInfo,
+    cookies: dc.cookies ?? DEFAULTS.cookies,
     httpHeaders: {
-      request: dc.httpHeaders?.request ?? base.httpHeaders.request,
-      response: dc.httpHeaders?.response ?? base.httpHeaders.response,
+      request: dc.httpHeaders?.request ?? DEFAULTS.httpHeaders.request,
+      response: dc.httpHeaders?.response ?? DEFAULTS.httpHeaders.response,
     },
-    httpBodies: dc.httpBodies ?? base.httpBodies,
-    queryParams: dc.queryParams ?? base.queryParams,
+    httpBodies: dc.httpBodies ?? DEFAULTS.httpBodies,
+    urlQueryParams: dc.urlQueryParams ?? DEFAULTS.urlQueryParams,
+    graphQL: {
+      document: dc.graphQL?.document ?? DEFAULTS.graphQL.document,
+      variables: dc.graphQL?.variables ?? DEFAULTS.graphQL.variables,
+    },
     genAI: {
-      inputs: dc.genAI?.inputs ?? base.genAI.inputs,
-      outputs: dc.genAI?.outputs ?? base.genAI.outputs,
+      inputs: dc.genAI?.inputs ?? DEFAULTS.genAI.inputs,
+      outputs: dc.genAI?.outputs ?? DEFAULTS.genAI.outputs,
     },
-    stackFrameVariables: dc.stackFrameVariables ?? base.stackFrameVariables,
-    frameContextLines: dc.frameContextLines ?? base.frameContextLines,
+    databaseQueryData: dc.databaseQueryData ?? DEFAULTS.databaseQueryData,
+    stackFrameVariables: dc.stackFrameVariables ?? DEFAULTS.stackFrameVariables,
+    frameContextLines: dc.frameContextLines ?? DEFAULTS.frameContextLines,
   };
 }
