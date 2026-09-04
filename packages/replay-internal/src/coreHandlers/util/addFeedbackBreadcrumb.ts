@@ -1,7 +1,6 @@
-import { EventType } from '@sentry-internal/rrweb';
 import type { FeedbackEvent } from '@sentry/core';
-
-import type { ReplayBreadcrumbFrameEvent, ReplayContainer } from '../../types';
+import { EventType } from '@sentry/rrweb';
+import type { ReplayContainer } from '../../types';
 
 /**
  * Add a feedback breadcrumb event to replay.
@@ -17,7 +16,7 @@ export function addFeedbackBreadcrumb(replay: ReplayContainer, event: FeedbackEv
 
     // This should never reject
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
-    replay.throttledAddEvent({
+    void replay.throttledAddEvent({
       type: EventType.Custom,
       timestamp: event.timestamp * 1000,
       data: {
@@ -31,7 +30,7 @@ export function addFeedbackBreadcrumb(replay: ReplayContainer, event: FeedbackEv
           },
         },
       },
-    } as ReplayBreadcrumbFrameEvent);
+    });
 
     return false;
   });

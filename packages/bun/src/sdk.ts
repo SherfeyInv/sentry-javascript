@@ -1,41 +1,61 @@
+import * as os from 'node:os';
+import type { Integration, Options } from '@sentry/core';
 import {
+  applySdkMetadata,
+  eventFiltersIntegration,
   functionToStringIntegration,
-  inboundFiltersIntegration,
+  hasSpansEnabled,
   linkedErrorsIntegration,
   requestDataIntegration,
 } from '@sentry/core';
-import type { Integration, Options } from '@sentry/core';
 import type { NodeClient } from '@sentry/node';
 import {
   consoleIntegration,
   contextLinesIntegration,
+  getAutoPerformanceIntegrations,
   httpIntegration,
   init as initNode,
   modulesIntegration,
-  nativeNodeFetchIntegration,
   nodeContextIntegration,
   onUncaughtExceptionIntegration,
   onUnhandledRejectionIntegration,
+  processSessionIntegration,
 } from '@sentry/node';
-
-import { BunClient } from './client';
 import { bunServerIntegration } from './integrations/bunserver';
+import { fetchIntegration } from './integrations/fetch';
 import { makeFetchTransport } from './transports';
 import type { BunOptions } from './types';
+import { bunHttpServerIntegration } from './integrations/bunHttpServer';
 
-/** Get the default integrations for the Bun SDK. */
-export function getDefaultIntegrations(_options: Options): Integration[] {
-  // We return a copy of the defaultIntegrations here to avoid mutating this
+/**
+ * The performance integrations for bun: the OTel auto-performance set, but with
+ * the orchestrion diagnostics-channel subscribers swapped in for their OTel
+ * equivalents *only* when the orchestrion channels were actually injected (i.e.
+ * the app was built with `@sentry/bun/plugin`). Without that, the channels
+ * never fire — and the OTel versions rely on a runtime require-hook bun doesn't
+ * support — so leave the auto-performance set alone.
+ */
+function getPerformanceIntegrations(options: Options): Integration[] {
+  if (!hasSpansEnabled(options)) {
+    return [];
+  }
+
+  return getAutoPerformanceIntegrations();
+}
+
+/** Get the default integrations for the Bun SDK, excluding performance integrations. */
+export function getDefaultIntegrationsWithoutPerformance(): Integration[] {
+  // Return a fresh array on each call so callers can safely mutate the result.
   return [
     // Common
-    inboundFiltersIntegration(),
+    eventFiltersIntegration(),
     functionToStringIntegration(),
     linkedErrorsIntegration(),
     requestDataIntegration(),
     // Native Wrappers
     consoleIntegration(),
     httpIntegration(),
-    nativeNodeFetchIntegration(),
+    fetchIntegration(),
     // Global Handlers
     onUncaughtExceptionIntegration(),
     onUnhandledRejectionIntegration(),
@@ -43,9 +63,16 @@ export function getDefaultIntegrations(_options: Options): Integration[] {
     contextLinesIntegration(),
     nodeContextIntegration(),
     modulesIntegration(),
+    processSessionIntegration(),
     // Bun Specific
     bunServerIntegration(),
+    bunHttpServerIntegration(),
   ];
+}
+
+/** Get the default integrations for the Bun SDK. */
+export function getDefaultIntegrations(options: Options): Integration[] {
+  return [...getDefaultIntegrationsWithoutPerformance(), ...getPerformanceIntegrations(options)];
 }
 
 /**
@@ -92,12 +119,37 @@ export function getDefaultIntegrations(_options: Options): Integration[] {
  *
  * @see {@link BunOptions} for documentation on configuration options.
  */
-export function init(options: BunOptions = {}): NodeClient | undefined {
-  options.clientClass = BunClient;
+export function init(userOptions: BunOptions = {}): NodeClient | undefined {
+  return _init(userOptions, getDefaultIntegrations);
+}
+
+/**
+ * Initialize Sentry for Bun, without any integrations added by default.
+ */
+export function initWithoutDefaultIntegrations(userOptions: BunOptions = {}): NodeClient | undefined {
+  return _init(userOptions, () => []);
+}
+
+/**
+ * Internal initialization function.
+ */
+function _init(
+  userOptions: BunOptions = {},
+  getDefaultIntegrationsImpl: (options: Options) => Integration[],
+): NodeClient | undefined {
+  applySdkMetadata(userOptions, 'bun');
+
+  const options = {
+    ...userOptions,
+    platform: 'javascript',
+    runtime: { name: 'bun', version: typeof Bun !== 'undefined' ? Bun.version : 'unknown' },
+    serverName: userOptions.serverName || global.process.env.SENTRY_NAME || os.hostname(),
+  };
+
   options.transport = options.transport || makeFetchTransport;
 
   if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = getDefaultIntegrations(options);
+    options.defaultIntegrations = getDefaultIntegrationsImpl(options);
   }
 
   return initNode(options);

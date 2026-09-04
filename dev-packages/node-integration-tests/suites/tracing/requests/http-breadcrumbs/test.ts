@@ -1,13 +1,14 @@
-import { createRunner } from '../../../../utils/runner';
-import { createTestServer } from '../../../../utils/server';
+import { createTestServer } from '@sentry-internal/test-utils';
+import { describe, expect } from 'vitest';
+import { createEsmAndCjsTests } from '../../../../utils/runner';
 
-test('outgoing http requests create breadcrumbs', done => {
-  createTestServer(done)
-    .start()
-    .then(([SERVER_URL, closeTestServer]) => {
-      createRunner(__dirname, 'scenario.ts')
+describe('outgoing http', () => {
+  createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('outgoing http requests create breadcrumbs', async () => {
+      const [SERVER_URL, closeTestServer] = await createTestServer().start();
+
+      await createRunner()
         .withEnv({ SERVER_URL })
-        .ensureNoErrorOutput()
         .expect({
           event: {
             breadcrumbs: [
@@ -70,6 +71,9 @@ test('outgoing http requests create breadcrumbs', done => {
             },
           },
         })
-        .start(closeTestServer);
+        .start()
+        .completed();
+      closeTestServer();
     });
+  });
 });

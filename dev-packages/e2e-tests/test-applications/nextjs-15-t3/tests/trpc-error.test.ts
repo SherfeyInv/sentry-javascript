@@ -1,0 +1,48 @@
+import { expect, test } from '@playwright/test';
+import { waitForError, waitForTransaction } from '@sentry-internal/test-utils';
+
+test('should capture error with trpc context', async ({ page }) => {
+  const errorEventPromise = waitForError('nextjs-15-t3', errorEvent => {
+    return errorEvent?.exception?.values?.[0]?.value === 'Error thrown in trpc router';
+  });
+
+  await page.goto('/');
+  await page.click('#error-button');
+
+  const trpcError = await errorEventPromise;
+
+  expect(trpcError).toBeDefined();
+  expect(trpcError.contexts?.trpc).toBeDefined();
+  expect(trpcError.contexts?.trpc?.procedure_type).toEqual('mutation');
+  expect(trpcError.contexts?.trpc?.procedure_path).toBe('post.throwError');
+  expect(trpcError.contexts?.trpc?.input).toEqual({ name: 'I love dogs' });
+
+  const exceptionValues = trpcError.exception?.values;
+  expect(exceptionValues).toHaveLength(2);
+  expect(exceptionValues?.[0]?.type).toBe('Error');
+  expect(exceptionValues?.[0]?.value).toBe('Error thrown in trpc router');
+  expect(exceptionValues?.[0]?.mechanism).toEqual({
+    handled: true,
+    type: 'chained',
+    exception_id: 1,
+    parent_id: 0,
+    source: 'cause',
+  });
+  expect(exceptionValues?.[1]?.mechanism).toEqual({
+    handled: false,
+    type: 'auto.rpc.trpc.middleware',
+    exception_id: 0,
+  });
+});
+
+test('should create transaction with trpc input for error', async ({ page }) => {
+  const trpcTransactionPromise = waitForTransaction('nextjs-15-t3', async transactionEvent => {
+    return transactionEvent?.transaction === 'POST /api/trpc/[trpc]';
+  });
+
+  await page.goto('/');
+  await page.click('#error-button');
+
+  const trpcTransaction = await trpcTransactionPromise;
+  expect(trpcTransaction).toBeDefined();
+});

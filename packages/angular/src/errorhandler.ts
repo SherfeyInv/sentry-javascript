@@ -1,11 +1,10 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import type { ErrorHandler as AngularErrorHandler, OnDestroy } from '@angular/core';
 import { Inject, Injectable } from '@angular/core';
-import * as Sentry from '@sentry/browser';
 import type { ReportDialogOptions } from '@sentry/browser';
-import { consoleSandbox, isString } from '@sentry/core';
+import * as Sentry from '@sentry/browser';
 import type { Event } from '@sentry/core';
-
+import { consoleSandbox, isString } from '@sentry/core';
 import { runOutsideAngular } from './zone';
 
 /**
@@ -27,7 +26,7 @@ export interface ErrorHandlerOptions {
 function tryToUnwrapZonejsError(error: unknown): unknown | Error {
   // TODO: once Angular14 is the minimum requirement ERROR_ORIGINAL_ERROR and
   //  getOriginalError from error.ts can be used directly.
-  return error && (error as { ngOriginalError: Error }).ngOriginalError
+  return (error as { ngOriginalError?: Error })?.ngOriginalError
     ? (error as { ngOriginalError: Error }).ngOriginalError
     : error;
 }
@@ -40,6 +39,7 @@ function extractHttpModuleError(error: HttpErrorResponse): string | Error {
 
   // ... or an`ErrorEvent`, which can provide us with the message but no stack...
   // guarding `ErrorEvent` against `undefined` as it's not defined in Node environments
+  // oxlint-disable-next-line typescript/prefer-optional-chain
   if (typeof ErrorEvent !== 'undefined' && error.error instanceof ErrorEvent && error.error.message) {
     return error.error.message;
   }
@@ -112,7 +112,7 @@ class SentryErrorHandler implements AngularErrorHandler, OnDestroy {
     // Capture handled exception and send it to Sentry.
     const eventId = runOutsideAngular(() =>
       Sentry.captureException(extractedError, {
-        mechanism: { type: 'angular', handled: false },
+        mechanism: { type: 'auto.function.angular.error_handler', handled: false },
       }),
     );
 

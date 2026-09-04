@@ -1,5 +1,5 @@
-import type { IntegrationFn } from '@sentry/core';
-import { applyAggregateErrorsToEvent, defineIntegration } from '@sentry/core';
+import type { IntegrationFn } from '@sentry/core/browser';
+import { applyAggregateErrorsToEvent, defineIntegration } from '@sentry/core/browser';
 import { exceptionFromError } from '../eventbuilder';
 
 interface LinkedErrorsOptions {
@@ -10,7 +10,7 @@ interface LinkedErrorsOptions {
 const DEFAULT_KEY = 'cause';
 const DEFAULT_LIMIT = 5;
 
-const INTEGRATION_NAME = 'LinkedErrors';
+const INTEGRATION_NAME = 'LinkedErrors' as const;
 
 const _linkedErrorsIntegration = ((options: LinkedErrorsOptions = {}) => {
   const limit = options.limit || DEFAULT_LIMIT;
@@ -25,7 +25,6 @@ const _linkedErrorsIntegration = ((options: LinkedErrorsOptions = {}) => {
         // This differs from the LinkedErrors integration in core by using a different exceptionFromError function
         exceptionFromError,
         options.stackParser,
-        options.maxValueLength,
         key,
         limit,
         event,

@@ -1,30 +1,20 @@
-import type {
-  CheckIn,
-  Event,
-  EventHint,
-  EventProcessor,
-  Extra,
-  Extras,
-  FinishedCheckIn,
-  MonitorConfig,
-  Primitive,
-  Session,
-  SessionContext,
-  SeverityLevel,
-  User,
-} from './types-hoist';
-
-import { getClient, getCurrentScope, getIsolationScope, withIsolationScope } from './currentScopes';
+import type { AttributeObject, RawAttribute, RawAttributes } from './attributes';
+import { getClient, getCurrentScope, getIsolationScope } from './currentScopes';
 import { DEBUG_BUILD } from './debug-build';
 import type { CaptureContext } from './scope';
 import { closeSession, makeSession, updateSession } from './session';
-import { isThenable } from './utils-hoist/is';
-import { logger } from './utils-hoist/logger';
-import { uuid4 } from './utils-hoist/misc';
-import { timestampInSeconds } from './utils-hoist/time';
-import { GLOBAL_OBJ } from './utils-hoist/worldwide';
+import type { Event, EventHint } from './types/event';
+import type { EventProcessor } from './types/eventprocessor';
+import type { Extra, Extras } from './types/extra';
+import type { Primitive } from './types/misc';
+import type { Session, SessionContext } from './types/session';
+import type { SeverityLevel } from './types/severity';
+import type { User } from './types/user';
+import { debug } from './utils/debug-logger';
 import type { ExclusiveEventHintOrCaptureContext } from './utils/prepareEvent';
 import { parseEventHintOrCaptureContext } from './utils/prepareEvent';
+import { getCombinedScopeData } from './utils/scopeData';
+import { GLOBAL_OBJ } from './utils/worldwide';
 
 /**
  * Captures an exception event and sends it to Sentry.
@@ -48,8 +38,8 @@ export function captureMessage(message: string, captureContext?: CaptureContext 
   // This is necessary to provide explicit scopes upgrade, without changing the original
   // arity of the `captureMessage(message, level)` method.
   const level = typeof captureContext === 'string' ? captureContext : undefined;
-  const context = typeof captureContext !== 'string' ? { captureContext } : undefined;
-  return getCurrentScope().captureMessage(message, level, context);
+  const hint = typeof captureContext !== 'string' ? { captureContext } : undefined;
+  return getCurrentScope().captureMessage(message, level, hint);
 }
 
 /**
@@ -110,6 +100,51 @@ export function setTag(key: string, value: Primitive): void {
 }
 
 /**
+ * Sets attributes on the isolation scope.
+ *
+ * These attributes are applied to logs, metrics and streamed spans.
+ *
+ * Supported attribute value types are `string`, `number`, `boolean`, `string[]`, `number[]` and `boolean[]`.
+ *
+ * @param attributes - The attributes to set on the scope, as key-value pairs.
+ *
+ * @example
+ * ```typescript
+ * Sentry.setAttributes({
+ *   is_admin: true,
+ *   payment_selection: 'credit_card',
+ *   render_duration: 150,
+ * });
+ * ```
+ */
+export function setAttributes<T extends Record<string, unknown>>(attributes: RawAttributes<T>): void {
+  getIsolationScope().setAttributes(attributes);
+}
+
+/**
+ * Sets an attribute on the isolation scope.
+ *
+ * These attributes are applied to logs, metrics and streamed spans.
+ *
+ * Supported attribute value types are `string`, `number`, `boolean`, `string[]`, `number[]` and `boolean[]`.
+ *
+ * @param key - The attribute key.
+ * @param value - The attribute value.
+ *
+ * @example
+ * ```typescript
+ * Sentry.setAttribute('is_admin', true);
+ * Sentry.setAttribute('render_duration', 150);
+ * ```
+ */
+export function setAttribute<
+  // oxlint-disable-next-line typescript-eslint/no-explicit-any
+  T extends (RawAttribute<T> extends { value: any } | { unit: any } ? AttributeObject : unknown),
+>(key: string, value: RawAttribute<T>): void {
+  getIsolationScope().setAttribute(key, value);
+}
+
+/**
  * Updates user context information for future events.
  *
  * @param user User context object to be set in the current context. Pass `null` to unset the user.
@@ -119,85 +154,27 @@ export function setUser(user: User | null): void {
 }
 
 /**
+ * Sets the conversation ID for the current isolation scope.
+ *
+ * @param conversationId The conversation ID to set. Pass `null` or `undefined` to unset the conversation ID.
+ */
+export function setConversationId(conversationId: string | null | undefined): void {
+  getIsolationScope().setConversationId(conversationId);
+}
+
+/**
  * The last error event id of the isolation scope.
  *
  * Warning: This function really returns the last recorded error event id on the current
  * isolation scope. If you call this function after handling a certain error and another error
  * is captured in between, the last one is returned instead of the one you might expect.
  * Also, ids of events that were never sent to Sentry (for example because
- * they were dropped in `beforeSend`) could be returned.
+ * they were dropped by sampling or `beforeSend`) could be returned.
  *
  * @returns The last event id of the isolation scope.
  */
 export function lastEventId(): string | undefined {
   return getIsolationScope().lastEventId();
-}
-
-/**
- * Create a cron monitor check in and send it to Sentry.
- *
- * @param checkIn An object that describes a check in.
- * @param upsertMonitorConfig An optional object that describes a monitor config. Use this if you want
- * to create a monitor automatically when sending a check in.
- */
-export function captureCheckIn(checkIn: CheckIn, upsertMonitorConfig?: MonitorConfig): string {
-  const scope = getCurrentScope();
-  const client = getClient();
-  if (!client) {
-    DEBUG_BUILD && logger.warn('Cannot capture check-in. No client defined.');
-  } else if (!client.captureCheckIn) {
-    DEBUG_BUILD && logger.warn('Cannot capture check-in. Client does not support sending check-ins.');
-  } else {
-    return client.captureCheckIn(checkIn, upsertMonitorConfig, scope);
-  }
-
-  return uuid4();
-}
-
-/**
- * Wraps a callback with a cron monitor check in. The check in will be sent to Sentry when the callback finishes.
- *
- * @param monitorSlug The distinct slug of the monitor.
- * @param upsertMonitorConfig An optional object that describes a monitor config. Use this if you want
- * to create a monitor automatically when sending a check in.
- */
-export function withMonitor<T>(
-  monitorSlug: CheckIn['monitorSlug'],
-  callback: () => T,
-  upsertMonitorConfig?: MonitorConfig,
-): T {
-  const checkInId = captureCheckIn({ monitorSlug, status: 'in_progress' }, upsertMonitorConfig);
-  const now = timestampInSeconds();
-
-  function finishCheckIn(status: FinishedCheckIn['status']): void {
-    captureCheckIn({ monitorSlug, status, checkInId, duration: timestampInSeconds() - now });
-  }
-
-  return withIsolationScope(() => {
-    let maybePromiseResult: T;
-    try {
-      maybePromiseResult = callback();
-    } catch (e) {
-      finishCheckIn('error');
-      throw e;
-    }
-
-    if (isThenable(maybePromiseResult)) {
-      Promise.resolve(maybePromiseResult).then(
-        () => {
-          finishCheckIn('ok');
-        },
-        e => {
-          finishCheckIn('error');
-          throw e;
-        },
-      );
-    } else {
-      finishCheckIn('ok');
-    }
-
-    return maybePromiseResult;
-  });
 }
 
 /**
@@ -213,7 +190,7 @@ export async function flush(timeout?: number): Promise<boolean> {
   if (client) {
     return client.flush(timeout);
   }
-  DEBUG_BUILD && logger.warn('Cannot flush events. No client defined.');
+  DEBUG_BUILD && debug.warn('Cannot flush events. No client defined.');
   return Promise.resolve(false);
 }
 
@@ -230,7 +207,7 @@ export async function close(timeout?: number): Promise<boolean> {
   if (client) {
     return client.close(timeout);
   }
-  DEBUG_BUILD && logger.warn('Cannot flush events and disable SDK. No client defined.');
+  DEBUG_BUILD && debug.warn('Cannot flush events and disable SDK. No client defined.');
   return Promise.resolve(false);
 }
 
@@ -244,7 +221,7 @@ export function isInitialized(): boolean {
 /** If the SDK is initialized & enabled. */
 export function isEnabled(): boolean {
   const client = getClient();
-  return !!client && client.getOptions().enabled !== false && !!client.getTransport();
+  return client?.getOptions().enabled !== false && !!client?.getTransport();
 }
 
 /**
@@ -265,20 +242,21 @@ export function addEventProcessor(callback: EventProcessor): void {
  */
 export function startSession(context?: SessionContext): Session {
   const isolationScope = getIsolationScope();
-  const currentScope = getCurrentScope();
+
+  const { user } = getCombinedScopeData(isolationScope, getCurrentScope());
 
   // Will fetch userAgent if called from browser sdk
   const { userAgent } = GLOBAL_OBJ.navigator || {};
 
   const session = makeSession({
-    user: currentScope.getUser() || isolationScope.getUser(),
+    user,
     ...(userAgent && { userAgent }),
     ...context,
   });
 
   // End existing session if there's one
   const currentSession = isolationScope.getSession();
-  if (currentSession && currentSession.status === 'ok') {
+  if (currentSession?.status === 'ok') {
     updateSession(currentSession, { status: 'exited' });
   }
 
@@ -286,10 +264,6 @@ export function startSession(context?: SessionContext): Session {
 
   // Afterwards we set the new session on the scope
   isolationScope.setSession(session);
-
-  // TODO (v8): Remove this and only use the isolation scope(?).
-  // For v7 though, we can't "soft-break" people using getCurrentHub().getScope().setSession()
-  currentScope.setSession(session);
 
   return session;
 }
@@ -309,10 +283,6 @@ export function endSession(): void {
 
   // the session is over; take it off of the scope
   isolationScope.setSession();
-
-  // TODO (v8): Remove this and only use the isolation scope(?).
-  // For v7 though, we can't "soft-break" people using getCurrentHub().getScope().setSession()
-  currentScope.setSession();
 }
 
 /**
@@ -320,11 +290,8 @@ export function endSession(): void {
  */
 function _sendSessionUpdate(): void {
   const isolationScope = getIsolationScope();
-  const currentScope = getCurrentScope();
   const client = getClient();
-  // TODO (v8): Remove currentScope and only use the isolation scope(?).
-  // For v7 though, we can't "soft-break" people using getCurrentHub().getScope().setSession()
-  const session = currentScope.getSession() || isolationScope.getSession();
+  const session = isolationScope.getSession();
   if (session && client) {
     client.captureSession(session);
   }

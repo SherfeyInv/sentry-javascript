@@ -1,6 +1,5 @@
 import { expect } from '@playwright/test';
 import type { Event } from '@sentry/core';
-
 import { sentryTest } from '../../../../utils/fixtures';
 import { getFirstSentryEnvelopeRequest, shouldSkipTracingTest } from '../../../../utils/helpers';
 
@@ -13,6 +12,8 @@ sentryTest(
     }
     const url = await getLocalTestUrl({ testDir: __dirname });
 
+    await page.route('**/path/to/script.js', route => route.fulfill({ path: `${__dirname}/assets/script.js` }));
+
     await page.goto(url);
 
     const navigationTransactionEventPromise = getFirstSentryEnvelopeRequest<Event>(page);
@@ -23,7 +24,7 @@ sentryTest(
 
     expect(navigationTransactionEvent.contexts?.trace?.op).toBe('navigation');
 
-    const longTaskSpans = navigationTransactionEvent?.spans?.filter(span => span.op === 'ui.long-task');
+    const longTaskSpans = navigationTransactionEvent?.spans?.filter(span => span.op === 'ui.long_task');
     expect(longTaskSpans).toHaveLength(0);
   },
 );

@@ -1,5 +1,4 @@
 import * as path from 'path';
-
 import type { SentryOptions } from './types';
 
 /**
@@ -14,16 +13,14 @@ export function buildSdkInitFileImportSnippet(filePath: string): string {
  * default options.
  */
 export function buildClientSnippet(options: SentryOptions): string {
-  /* eslint-disable deprecation/deprecation */
   return `import * as Sentry from "@sentry/astro";
 
 Sentry.init({
   ${buildCommonInitOptions(options)}
   integrations: [${buildClientIntegrations(options)}],
-  replaysSessionSampleRate: ${options.replaysSessionSampleRate ?? 0.1},
-  replaysOnErrorSampleRate: ${options.replaysOnErrorSampleRate ?? 1.0},
+  replaysSessionSampleRate: 0.1,
+  replaysOnErrorSampleRate: 1.0,
 });`;
-  /* eslint-enable deprecation/deprecation */
 }
 
 /**
@@ -38,24 +35,17 @@ Sentry.init({
 });`;
 }
 
-/* eslint-disable deprecation/deprecation */
-const buildCommonInitOptions = (options: SentryOptions): string => `dsn: ${
-  options.dsn ? JSON.stringify(options.dsn) : 'import.meta.env.PUBLIC_SENTRY_DSN'
-},
+const buildCommonInitOptions = (options: SentryOptions): string => `dsn: import.meta.env.PUBLIC_SENTRY_DSN,
   debug: ${options.debug ? true : false},
-  environment: ${options.environment ? JSON.stringify(options.environment) : 'import.meta.env.PUBLIC_VERCEL_ENV'},
-  release: ${options.release ? JSON.stringify(options.release) : 'import.meta.env.PUBLIC_VERCEL_GIT_COMMIT_SHA'},
-  tracesSampleRate: ${options.tracesSampleRate ?? 1.0},${
-    options.sampleRate ? `\n  sampleRate: ${options.sampleRate},` : ''
-  }`;
-/* eslint-enable deprecation/deprecation */
+  environment: import.meta.env.PUBLIC_VERCEL_ENV,
+  release: ${
+    options.release?.name ? JSON.stringify(options.release.name) : 'import.meta.env.PUBLIC_VERCEL_GIT_COMMIT_SHA'
+  },
+  tracesSampleRate: 1.0,`;
 
 /**
- * We don't include the `BrowserTracing` integration if `bundleSizeOptimizations.excludeTracing` is falsy.
- * Likewise, we don't include the `Replay` integration if the replaysSessionSampleRate
- * and replaysOnErrorSampleRate are set to 0.
- *
- * This way, we avoid unnecessarily adding the integrations and thereby enable tree shaking of the integrations.
+ * We don't include the `BrowserTracing` integration if `bundleSizeOptimizations.excludeTracing` is set.
+ * The `Replay` integration, however, is always included with default sample rates in the generated snippet.
  */
 const buildClientIntegrations = (options: SentryOptions): string => {
   const integrations: string[] = [];
@@ -64,18 +54,7 @@ const buildClientIntegrations = (options: SentryOptions): string => {
     integrations.push('Sentry.browserTracingIntegration()');
   }
 
-  if (
-    // eslint-disable-next-line deprecation/deprecation
-    options.replaysSessionSampleRate == null ||
-    // eslint-disable-next-line deprecation/deprecation
-    options.replaysSessionSampleRate ||
-    // eslint-disable-next-line deprecation/deprecation
-    options.replaysOnErrorSampleRate == null ||
-    // eslint-disable-next-line deprecation/deprecation
-    options.replaysOnErrorSampleRate
-  ) {
-    integrations.push('Sentry.replayIntegration()');
-  }
+  integrations.push('Sentry.replayIntegration()');
 
   return integrations.join(', ');
 };

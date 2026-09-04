@@ -1,45 +1,31 @@
-import { DiagLogLevel, diag } from '@opentelemetry/api';
-import { Resource } from '@opentelemetry/resources';
-import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
+import { diag, DiagLogLevel, propagation, trace } from '@opentelemetry/api';
+import type { Client, Integration } from '@sentry/core';
 import {
-  ATTR_SERVICE_NAME,
-  ATTR_SERVICE_VERSION,
-  SEMRESATTRS_SERVICE_NAMESPACE,
-} from '@opentelemetry/semantic-conventions';
-import type { Client, Integration, Options } from '@sentry/core';
-import {
-  GLOBAL_OBJ,
-  SDK_VERSION,
+  consoleIntegration,
+  conversationIdIntegration,
   createStackParser,
+  debug,
   dedupeIntegration,
+  eventFiltersIntegration,
   functionToStringIntegration,
   getCurrentScope,
   getIntegrationsToSetup,
-  hasTracingEnabled,
-  inboundFiltersIntegration,
+  GLOBAL_OBJ,
   linkedErrorsIntegration,
-  logger,
   nodeStackLineParser,
   requestDataIntegration,
   stackParserFromStackParserOptions,
 } from '@sentry/core';
 import {
   SentryPropagator,
-  SentrySampler,
-  SentrySpanProcessor,
-  enhanceDscWithOpenTelemetryRootSpanName,
-  openTelemetrySetupCheck,
+  SentryTracerProvider,
   setOpenTelemetryContextAsyncContextStrategy,
-  setupEventContextTrace,
-  wrapContextManagerClass,
 } from '@sentry/opentelemetry';
 import { VercelEdgeClient } from './client';
-import { DEBUG_BUILD } from './debug-build';
 import { winterCGFetchIntegration } from './integrations/wintercg-fetch';
 import { makeEdgeTransport } from './transports';
 import type { VercelEdgeOptions } from './types';
 import { getVercelEnv } from './utils/vercel';
-import { AsyncLocalStorageContextManager } from './vendored/async-local-storage-context-manager';
 
 declare const process: {
   env: Record<string, string>;
@@ -47,27 +33,29 @@ declare const process: {
 
 const nodeStackParser = createStackParser(nodeStackLineParser());
 
-/** Get the default integrations for the browser SDK. */
-export function getDefaultIntegrations(options: Options): Integration[] {
+/** Get the default integrations for the Vercel Edge SDK. */
+export function getDefaultIntegrations(): Integration[] {
   return [
     dedupeIntegration(),
-    inboundFiltersIntegration(),
+    eventFiltersIntegration(),
     functionToStringIntegration(),
+    conversationIdIntegration(),
     linkedErrorsIntegration(),
     winterCGFetchIntegration(),
-    ...(options.sendDefaultPii ? [requestDataIntegration()] : []),
+    consoleIntegration(),
+    requestDataIntegration(),
   ];
 }
 
 /** Inits the Sentry NextJS SDK on the Edge Runtime. */
-export function init(options: VercelEdgeOptions = {}): Client | undefined {
+export function init(options: VercelEdgeOptions = {}): Client {
   setOpenTelemetryContextAsyncContextStrategy();
 
   const scope = getCurrentScope();
   scope.update(options.initialScope);
 
   if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = getDefaultIntegrations(options);
+    options.defaultIntegrations = getDefaultIntegrations();
   }
 
   if (options.dsn === undefined && process.env.SENTRY_DSN) {
@@ -85,21 +73,13 @@ export function init(options: VercelEdgeOptions = {}): Client | undefined {
     const detectedRelease = getSentryRelease();
     if (detectedRelease !== undefined) {
       options.release = detectedRelease;
-    } else {
-      // If release is not provided, then we should disable autoSessionTracking
-      // eslint-disable-next-line deprecation/deprecation
-      options.autoSessionTracking = false;
     }
   }
 
   options.environment =
     options.environment || process.env.SENTRY_ENVIRONMENT || getVercelEnv(false) || process.env.NODE_ENV;
 
-  // eslint-disable-next-line deprecation/deprecation
-  if (options.autoSessionTracking === undefined && options.dsn !== undefined) {
-    // eslint-disable-next-line deprecation/deprecation
-    options.autoSessionTracking = true;
-  }
+  options.traceLifecycle = options.traceLifecycle ?? getTraceLifecycleFromEnv(process.env.SENTRY_TRACE_LIFECYCLE);
 
   const client = new VercelEdgeClient({
     ...options,
@@ -114,43 +94,11 @@ export function init(options: VercelEdgeOptions = {}): Client | undefined {
 
   // If users opt-out of this, they _have_ to set up OpenTelemetry themselves
   // There is no way to use this SDK without OpenTelemetry!
-  if (!options.skipOpenTelemetrySetup) {
+  if (options.enableOpenTelemetrySetup ?? true) {
     setupOtel(client);
-    validateOpenTelemetrySetup();
   }
-
-  enhanceDscWithOpenTelemetryRootSpanName(client);
-  setupEventContextTrace(client);
 
   return client;
-}
-
-function validateOpenTelemetrySetup(): void {
-  if (!DEBUG_BUILD) {
-    return;
-  }
-
-  const setup = openTelemetrySetupCheck();
-
-  const required: ReturnType<typeof openTelemetrySetupCheck> = ['SentryContextManager', 'SentryPropagator'];
-
-  if (hasTracingEnabled()) {
-    required.push('SentrySpanProcessor');
-  }
-
-  for (const k of required) {
-    if (!setup.includes(k)) {
-      logger.error(
-        `You have to set up the ${k}. Without this, the OpenTelemetry & Sentry integration will not work properly.`,
-      );
-    }
-  }
-
-  if (!setup.includes('SentrySampler')) {
-    logger.warn(
-      'You have to set up the SentrySampler. Without this, the OpenTelemetry & Sentry integration may still work, but sample rates set for the Sentry SDK will not be respected. If you use a custom sampler, make sure to use `wrapSamplingDecision`.',
-    );
-  }
 }
 
 // exported for tests
@@ -160,48 +108,30 @@ export function setupOtel(client: VercelEdgeClient): void {
     setupOpenTelemetryLogger();
   }
 
-  // Create and configure NodeTracerProvider
-  const provider = new BasicTracerProvider({
-    sampler: new SentrySampler(client),
-    resource: new Resource({
-      [ATTR_SERVICE_NAME]: 'edge',
-      // eslint-disable-next-line deprecation/deprecation
-      [SEMRESATTRS_SERVICE_NAMESPACE]: 'sentry',
-      [ATTR_SERVICE_VERSION]: SDK_VERSION,
-    }),
-    forceFlushTimeoutMillis: 500,
-    spanProcessors: [
-      new SentrySpanProcessor({
-        timeout: client.getOptions().maxSpanWaitDuration,
-      }),
-    ],
-  });
+  const provider = new SentryTracerProvider();
 
-  const SentryContextManager = wrapContextManagerClass(AsyncLocalStorageContextManager);
-
-  // Initialize the provider
-  provider.register({
-    propagator: new SentryPropagator(),
-    contextManager: new SentryContextManager(),
-  });
+  trace.setGlobalTracerProvider(provider);
+  propagation.setGlobalPropagator(new SentryPropagator());
 
   client.traceProvider = provider;
 }
 
 /**
- * Setup the OTEL logger to use our own logger.
+ * Setup the OTEL logger to use our own debug logger.
  */
 function setupOpenTelemetryLogger(): void {
-  const otelLogger = new Proxy(logger as typeof logger & { verbose: (typeof logger)['debug'] }, {
-    get(target, prop, receiver) {
-      const actualProp = prop === 'verbose' ? 'debug' : prop;
-      return Reflect.get(target, actualProp, receiver);
-    },
-  });
-
   // Disable diag, to ensure this works even if called multiple times
   diag.disable();
-  diag.setLogger(otelLogger, DiagLogLevel.DEBUG);
+  diag.setLogger(
+    {
+      error: debug.error,
+      warn: debug.warn,
+      info: debug.log,
+      debug: debug.log,
+      verbose: debug.log,
+    },
+    DiagLogLevel.DEBUG,
+  );
 }
 
 /**
@@ -215,7 +145,7 @@ export function getSentryRelease(fallback?: string): string | undefined {
   }
 
   // This supports the variable that sentry-webpack-plugin injects
-  if (GLOBAL_OBJ.SENTRY_RELEASE && GLOBAL_OBJ.SENTRY_RELEASE.id) {
+  if (GLOBAL_OBJ.SENTRY_RELEASE?.id) {
     return GLOBAL_OBJ.SENTRY_RELEASE.id;
   }
 
@@ -266,7 +196,9 @@ export function getSentryRelease(fallback?: string): string | undefined {
     process.env['FC_GIT_COMMIT_SHA'] ||
     // Heroku #1 https://devcenter.heroku.com/articles/heroku-ci
     process.env['HEROKU_TEST_RUN_COMMIT_VERSION'] ||
-    // Heroku #2 https://docs.sentry.io/product/integrations/deployment/heroku/#configure-releases
+    // Heroku #2 https://devcenter.heroku.com/articles/dyno-metadata#dyno-metadata
+    process.env['HEROKU_BUILD_COMMIT'] ||
+    // Heroku #3 (deprecated by Heroku, kept for backward compatibility)
     process.env['HEROKU_SLUG_COMMIT'] ||
     // Railway - https://docs.railway.app/reference/variables#git-variables
     process.env['RAILWAY_GIT_COMMIT_SHA'] ||
@@ -308,4 +240,8 @@ export function getSentryRelease(fallback?: string): string | undefined {
     possibleReleaseNameOfCiProvidersWithGenericEnvVar ||
     fallback
   );
+}
+
+function getTraceLifecycleFromEnv(envVar: string | undefined): 'static' | 'stream' | undefined {
+  return envVar === 'stream' || envVar === 'static' ? envVar : undefined;
 }

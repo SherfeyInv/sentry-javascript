@@ -1,17 +1,25 @@
-import * as http from 'http';
-import { createEnvelope, logger } from '@sentry/core';
+import * as http from 'node:http';
 import type { Envelope, EventEnvelope } from '@sentry/core';
-
+import { createEnvelope, debug } from '@sentry/core';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spotlightIntegration } from '../../src/integrations/spotlight';
 import { NodeClient } from '../../src/sdk/client';
 import { getDefaultNodeClientOptions } from '../helpers/getDefaultNodeClientOptions';
 
+vi.mock('node:http', async () => {
+  const original = await vi.importActual('node:http');
+  return {
+    ...original,
+    request: original.request,
+  };
+});
+
 describe('Spotlight', () => {
-  const loggerSpy = jest.spyOn(logger, 'warn');
+  const debugSpy = vi.spyOn(debug, 'warn');
 
   afterEach(() => {
-    loggerSpy.mockClear();
-    jest.clearAllMocks();
+    debugSpy.mockClear();
+    vi.clearAllMocks();
   });
 
   const options = getDefaultNodeClientOptions();
@@ -25,7 +33,7 @@ describe('Spotlight', () => {
   it('registers a callback on the `beforeEnvelope` hook', () => {
     const clientWithSpy = {
       ...client,
-      on: jest.fn(),
+      on: vi.fn(),
     };
     const integration = spotlightIntegration();
     // @ts-expect-error - this is fine in tests
@@ -34,18 +42,18 @@ describe('Spotlight', () => {
   });
 
   it('sends an envelope POST request to the sidecar url', () => {
-    const httpSpy = jest.spyOn(http, 'request').mockImplementationOnce(() => {
+    const httpSpy = vi.spyOn(http, 'request').mockImplementationOnce(() => {
       return {
-        on: jest.fn(),
-        write: jest.fn(),
-        end: jest.fn(),
+        on: vi.fn(),
+        write: vi.fn(),
+        end: vi.fn(),
       } as any;
     });
 
     let callback: (envelope: Envelope) => void = () => {};
     const clientWithSpy = {
       ...client,
-      on: jest.fn().mockImplementationOnce((_, cb) => (callback = cb)),
+      on: vi.fn().mockImplementationOnce((_, cb) => (callback = cb)),
     };
 
     const integration = spotlightIntegration();
@@ -73,18 +81,18 @@ describe('Spotlight', () => {
   });
 
   it('sends an envelope POST request to a custom sidecar url', () => {
-    const httpSpy = jest.spyOn(http, 'request').mockImplementationOnce(() => {
+    const httpSpy = vi.spyOn(http, 'request').mockImplementationOnce(() => {
       return {
-        on: jest.fn(),
-        write: jest.fn(),
-        end: jest.fn(),
+        on: vi.fn(),
+        write: vi.fn(),
+        end: vi.fn(),
       } as any;
     });
 
     let callback: (envelope: Envelope) => void = () => {};
     const clientWithSpy = {
       ...client,
-      on: jest.fn().mockImplementationOnce((_, cb) => (callback = cb)),
+      on: vi.fn().mockImplementationOnce((_, cb) => (callback = cb)),
     };
 
     const integration = spotlightIntegration({ sidecarUrl: 'http://mylocalhost:8888/abcd' });
@@ -115,7 +123,7 @@ describe('Spotlight', () => {
     it('an invalid URL is passed', () => {
       const integration = spotlightIntegration({ sidecarUrl: 'invalid-url' });
       integration.setup!(client);
-      expect(loggerSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid sidecar URL: invalid-url'));
+      expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('Invalid sidecar URL: invalid-url'));
     });
   });
 
@@ -126,7 +134,7 @@ describe('Spotlight', () => {
     const integration = spotlightIntegration({ sidecarUrl: 'http://localhost:8969' });
     integration.setup!(client);
 
-    expect(loggerSpy).toHaveBeenCalledWith(
+    expect(debugSpy).toHaveBeenCalledWith(
       expect.stringContaining("It seems you're not in dev mode. Do you really want to have Spotlight enabled?"),
     );
 
@@ -140,7 +148,7 @@ describe('Spotlight', () => {
     const integration = spotlightIntegration({ sidecarUrl: 'http://localhost:8969' });
     integration.setup!(client);
 
-    expect(loggerSpy).not.toHaveBeenCalledWith(
+    expect(debugSpy).not.toHaveBeenCalledWith(
       expect.stringContaining("It seems you're not in dev mode. Do you really want to have Spotlight enabled?"),
     );
 
@@ -156,7 +164,7 @@ describe('Spotlight', () => {
     const integration = spotlightIntegration({ sidecarUrl: 'http://localhost:8969' });
     integration.setup!(client);
 
-    expect(loggerSpy).not.toHaveBeenCalledWith(
+    expect(debugSpy).not.toHaveBeenCalledWith(
       expect.stringContaining("It seems you're not in dev mode. Do you really want to have Spotlight enabled?"),
     );
 
@@ -172,7 +180,7 @@ describe('Spotlight', () => {
     const integration = spotlightIntegration({ sidecarUrl: 'http://localhost:8969' });
     integration.setup!(client);
 
-    expect(loggerSpy).not.toHaveBeenCalledWith(
+    expect(debugSpy).not.toHaveBeenCalledWith(
       expect.stringContaining("It seems you're not in dev mode. Do you really want to have Spotlight enabled?"),
     );
 

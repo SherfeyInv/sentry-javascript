@@ -1,10 +1,12 @@
+import { tsPlugin } from '@sveltejs/acorn-typescript';
+import * as acorn from 'acorn';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ExportNamedDeclaration } from '@babel/types';
-import { parseModule } from 'magicast';
 import type { Plugin } from 'vite';
+import { WRAPPED_MODULE_SUFFIX } from '../common/utils';
+import type { BackwardsForwardsCompatibleKitConfig, BackwardsForwardsCompatibleSvelteConfig } from './svelteConfig';
 
-export const WRAPPED_MODULE_SUFFIX = '?sentry-auto-wrap';
+const AcornParser = acorn.Parser.extend(tsPlugin());
 
 export type AutoInstrumentSelection = {
   /**
@@ -27,6 +29,7 @@ export type AutoInstrumentSelection = {
 
 type AutoInstrumentPluginOptions = AutoInstrumentSelection & {
   debug: boolean;
+  onlyInstrumentClient: boolean;
 };
 
 /**
@@ -41,12 +44,47 @@ type AutoInstrumentPluginOptions = AutoInstrumentSelection & {
 export function makeAutoInstrumentationPlugin(options: AutoInstrumentPluginOptions): Plugin {
   const { load: wrapLoadEnabled, serverLoad: wrapServerLoadEnabled, debug } = options;
 
+  let isServerBuild: boolean | undefined = undefined;
+
+  // Whether we should skip server-side load instrumentation because SvelteKit's native server
+  // tracing is enabled. Initialized from the option (derived from `svelte.config.js`), but may be
+  // flipped to `true` in `configResolved` once we can read SvelteKit's resolved config (see below).
+  let onlyInstrumentClient = options.onlyInstrumentClient;
+
   return {
     name: 'sentry-auto-instrumentation',
     // This plugin needs to run as early as possible, before the SvelteKit plugin virtualizes all paths and ids
     enforce: 'pre',
 
+    configResolved: config => {
+      // The SvelteKit plugins trigger additional builds within the main (SSR) build.
+      // We just need a mechanism to upload source maps only once.
+      // `config.build.ssr` is `true` for that first build and `false` in the other ones.
+      // Hence we can use it as a switch to upload source maps only once in main build.
+      isServerBuild = !!config.build.ssr;
+
+      // As of SvelteKit 3, the native server-tracing config is no longer read from
+      // `svelte.config.js` (so the `onlyInstrumentClient` option, derived from it, is `false`).
+      // It's passed to the `sveltekit()` Vite plugin instead, which exposes the resolved config
+      // via its plugin `api.options`. Reading it here lets us reliably detect native tracing
+      // regardless of SvelteKit version. When it's enabled, we must not add our own server-side
+      // load instrumentation, otherwise we'd emit duplicate spans on top of SvelteKit's.
+      if (!onlyInstrumentClient && isNativeServerTracingEnabled(config.plugins)) {
+        onlyInstrumentClient = true;
+      }
+    },
+
     async load(id) {
+      // On Vite 6+ `config.build.ssr` captured in `configResolved` no longer reliably reflects the per-environment build.
+      // Prefer the environment of the current build (`this.environment.name === 'ssr'`) and fall back to
+      // `isServerBuild` for older Vite versions that don't expose environments.
+      const environmentName = (this as { environment?: { name?: string } }).environment?.name;
+      const isServerEnvironment = environmentName != null ? environmentName === 'ssr' : !!isServerBuild;
+
+      if (onlyInstrumentClient && isServerEnvironment) {
+        return null;
+      }
+
       const applyUniversalLoadWrapper =
         wrapLoadEnabled &&
         /^\+(page|layout)\.(js|ts|mjs|mts)$/.test(path.basename(id)) &&
@@ -56,6 +94,12 @@ export function makeAutoInstrumentationPlugin(options: AutoInstrumentPluginOptio
         // eslint-disable-next-line no-console
         debug && console.log(`Wrapping ${id} with Sentry load wrapper`);
         return getWrapperCode('wrapLoadWithSentry', `${id}${WRAPPED_MODULE_SUFFIX}`);
+      }
+
+      if (onlyInstrumentClient) {
+        // Now that we've checked universal files, we can early return and avoid further
+        // regexp checks below for server-only files, in case `onlyInstrumentClient` is `true`.
+        return null;
       }
 
       const applyServerLoadWrapper =
@@ -72,6 +116,39 @@ export function makeAutoInstrumentationPlugin(options: AutoInstrumentPluginOptio
       return null;
     },
   };
+}
+
+/**
+ * Detects whether SvelteKit's native server-side tracing is enabled by reading the resolved
+ * SvelteKit config that the `sveltekit()` Vite plugin exposes via its plugin `api.options`.
+ *
+ * This is the source of truth as of SvelteKit 3, where the config moved out of `svelte.config.js`
+ * and into the `sveltekit()` plugin. On older SvelteKit versions that don't expose the config this
+ * way, it simply returns `false` and we fall back to the `svelte.config.js`-derived value.
+ */
+function isNativeServerTracingEnabled(plugins: readonly Plugin[] | undefined): boolean {
+  if (!plugins) {
+    return false;
+  }
+
+  for (const plugin of plugins) {
+    const options = (
+      plugin?.api as
+        | { options?: BackwardsForwardsCompatibleSvelteConfig & BackwardsForwardsCompatibleKitConfig }
+        | undefined
+    )?.options;
+
+    // SvelteKit 3 flattened the plugin config: what used to live under `kit` now sits
+    // at the top level of the exposed options.
+    const kitConfig = options?.kit ?? options;
+
+    // SvelteKit 3 promoted `tracing` out of `experimental`; older versions nest it there.
+    if (kitConfig?.tracing?.server || kitConfig?.experimental?.tracing?.server) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -102,26 +179,32 @@ export async function canWrapLoad(id: string, debug: boolean): Promise<boolean> 
 
   const code = (await fs.promises.readFile(id, 'utf8')).toString();
 
-  const mod = parseModule(code);
-
-  const program = mod.$ast.type === 'Program' && mod.$ast;
-  if (!program) {
+  let program: acorn.Program;
+  try {
+    program = AcornParser.parse(code, {
+      sourceType: 'module',
+      ecmaVersion: 'latest',
+      locations: true,
+    });
+  } catch {
     // eslint-disable-next-line no-console
     debug && console.log(`Skipping wrapping ${id} because it doesn't contain valid JavaScript or TypeScript`);
     return false;
   }
 
   const hasLoadDeclaration = program.body
-    .filter((statement): statement is ExportNamedDeclaration => statement.type === 'ExportNamedDeclaration')
+    .filter((statement): statement is acorn.ExportNamedDeclaration => statement.type === 'ExportNamedDeclaration')
     .find(exportDecl => {
       // find `export const load = ...`
-      if (exportDecl.declaration && exportDecl.declaration.type === 'VariableDeclaration') {
+      if (exportDecl.declaration?.type === 'VariableDeclaration') {
         const variableDeclarations = exportDecl.declaration.declarations;
-        return variableDeclarations.find(decl => decl.id.type === 'Identifier' && decl.id.name === 'load');
+        return variableDeclarations.find(
+          decl => decl.type === 'VariableDeclarator' && decl.id.type === 'Identifier' && decl.id.name === 'load',
+        );
       }
 
       // find `export function load = ...`
-      if (exportDecl.declaration && exportDecl.declaration.type === 'FunctionDeclaration') {
+      if (exportDecl.declaration?.type === 'FunctionDeclaration') {
         const functionId = exportDecl.declaration.id;
         return functionId?.name === 'load';
       }
@@ -131,7 +214,8 @@ export async function canWrapLoad(id: string, debug: boolean): Promise<boolean> 
         return exportDecl.specifiers.find(specifier => {
           return (
             (specifier.exported.type === 'Identifier' && specifier.exported.name === 'load') ||
-            (specifier.exported.type === 'StringLiteral' && specifier.exported.value === 'load')
+            // ESTree/acorn represents `export { x as "load" }` with a Literal node (not Babel's StringLiteral)
+            (specifier.exported.type === 'Literal' && specifier.exported.value === 'load')
           );
         });
       }

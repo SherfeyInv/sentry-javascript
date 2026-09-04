@@ -4,1965 +4,1158 @@ These docs walk through how to migrate our JavaScript SDKs through different maj
 
 - Upgrading from [SDK 4.x to 5.x/6.x](./docs/migration/v4-to-v5_v6.md)
 - Upgrading from [SDK 6.x to 7.x](./docs/migration/v6-to-v7.md)
-- Upgrading from [SDK 7.x to 8.x](./MIGRATION.md#upgrading-from-7x-to-8x)
-- Upgrading from [SDK 8.x to 9.x](./docs/migration/v8-to-v9.md) (Work in Progress - v9 is not released yet)
+- Upgrading from [SDK 7.x to 8.x](./docs/migration/v7-to-v8.md)
+- Upgrading from [SDK 8.x to 9.x](./docs/migration/v8-to-v9.md)
+- Upgrading from [SDK 9.x to 10.x](./docs/migration/v9-to-v10.md)
+- Upgrading from [SDK 10.x to 11.x](#upgrading-from-10x-to-11x)
 
-# Upgrading from 7.x to 8.x
+# Upgrading from 10.x to 11.x
 
-The main goal of version 8 is to improve our performance monitoring APIs, integrations API, and ESM support. This
-version is breaking because we removed deprecated APIs, restructured npm package contents, and introduced new
-dependencies on OpenTelemetry. Below we will outline the steps you need to take to tackle to deprecated methods.
+Version 11 of the Sentry JavaScript SDK primarily focuses on better OpenTelemetry interoperability, more flexible instrumentation, and better out-of-the-box defaults. The biggest changes are:
 
-Before updating to `8.x` of the SDK, we recommend upgrading to the latest version of `7.x`. You can then follow
-[these steps](./MIGRATION.md#deprecations-in-7x) remove deprecated methods in `7.x` before upgrading to `8.x`.
+- **Better OpenTelemetry interoperability:** Sentry no longer takes over your OpenTelemetry setup.
+- **Better instrumentation:** It is now possible to instrument at run and build time, unlocking proper tracing on platform providers like Vercel and Netlify.
+- **Broader runtime support:** Our integrations are now usable on Cloudflare, Bun and Deno.
+- **Span streaming:** Streaming spans becomes the new default, bypassing size and span volume limits of legacy transactions.
+- **Data collection:** `sendDefaultPii` is replaced by a more granular `dataCollection` option with more permissive defaults.
+- **Node and TypeScript versions:** Node **20.19.0** is the new minimum and we raised the minimum TypeScript version.
+- **Framework versions:** We raised the minimum version of various supported frameworks.
 
-The v8 version of the JavaScript SDK requires a self-hosted version of Sentry 24.4.2 (for user feedback screenshots) or
-higher. Lower versions may continue to work, but may not support all features (e.g. the new user feedback APIs).
+Since some of these changes are not caught by TypeScript or other tooling, we recommend reading through this entire guide before upgrading. For an early overview see [#22056 "What's coming in v11"](https://github.com/getsentry/sentry-javascript/issues/22056).
 
-## 1. Version Support changes:
+Version 11 of the SDK is compatible with Sentry self-hosted versions 24.4.2 or higher (unchanged from v10).
+Lower versions may continue to work, but may not support all features.
 
-**Node.js**: We now officially support Node 14.18+ for our CJS package, and Node 18.19.1+ for our ESM package. This
-applies to `@sentry/node` and all of our node-based server-side sdks (`@sentry/nextjs`, `@sentry/serverless`, etc.). We
-no longer test against Node 8, 10, or 12 and cannot guarantee that the SDK will work as expected on these versions.
+## 1. Version Support Changes:
 
-**Browser**: Our browser SDKs (`@sentry/browser`, `@sentry/react`, `@sentry/vue`, etc.) now require ES2018+
-compatibility plus support for
-[`globalThis`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/globalThis). This means
-that we no longer support IE11 (end of an era). This also means that the Browser SDK requires the fetch API to be
-available in the environment.
+Version 11 of the Sentry SDK has new compatibility ranges for runtimes and frameworks.
 
-New minimum supported browsers:
+### General Runtime Support Changes
 
-- Chrome 71
-- Edge 79
-- Safari 12.1, iOS Safari 12.2
-- Firefox 65
-- Opera 58
-- Samsung Internet 10
+**Node.js:** The minimum supported Node.js version is now **20.19.0**. Node.js 18 is no longer supported.
 
-For IE11 support please transpile your code to ES5 using babel or similar and add required polyfills.
+**Deno:** The minimum supported Deno version is now **2.8.3**.
 
-**React**: The Next.js SDK now supports React 16+
+**Browsers:** Support for **Safari 14** was dropped. Sentry now requires Safari 15 or higher. For the rest of the browser support matrix, refer to the [Sentry docs](https://docs.sentry.io/platforms/javascript/#browser-support).
 
-**Next.js**: The Next.js SDK now supports Next.js 13.2.0+
+### TypeScript Version Policy
 
-**Express**: Complex router setups are only properly parametrized in Node 16+.
+The minimum required TypeScript version is increased to version `5.0.4`. We also no longer emit down-leveled types.
 
-## 2. Package removal
+Older TypeScript versions _may_ continue to be compatible, but no guarantees apply.
 
-We've removed the following packages:
+### Framework and Library Support Changes
 
-- [@sentry/hub](./MIGRATION.md#sentryhub)
-- [@sentry/tracing](./MIGRATION.md#sentrytracing)
-- [@sentry/integrations](./MIGRATION.md#sentryintegrations)
-- [@sentry/serverless](./MIGRATION.md#sentryserverless)
-- [@sentry/replay](./MIGRATION.md#sentryreplay)
+We raised the minimum supported versions of several frameworks and libraries:
 
-#### @sentry/hub
+- **Next.js:** dropped Next.js 13 (minimum is now 14).
+- **React:** dropped React 16 (minimum is now 17).
+- **Astro:** dropped Astro 3 (minimum is now 4).
+- **React Router (framework mode):** minimum is now 7.15.
+- **Remix:** dropped `@remix-run/node` v1 (minimum is now v2).
+- **Fastify:** dropped Fastify 3.0 through 3.20 (minimum is now 3.21).
 
-`@sentry/hub` has been removed and will no longer be published. All of the `@sentry/hub` exports have moved to
-`@sentry/core`.
+### AWS Lambda Layer Changes
 
-#### @sentry/tracing
+A new AWS Lambda Layer for version 11 will be published as `SentryNodeServerlessSDKv11`.
+The ARN will be published in the [Sentry docs](https://docs.sentry.io/platforms/javascript/guides/aws-lambda/install/cjs-layer/) once available.
 
-`@sentry/tracing` has been removed and will no longer be published. See
-[below](./MIGRATION.md/#3-removal-of-deprecated-apis) for more details.
+The layer is compatible with the `nodejs20.x`, `nodejs22.x` and `nodejs24.x` runtimes. Functions still on `nodejs18.x` need to move to a newer runtime before upgrading.
 
-For Browser SDKs you can import `browserTracingIntegration` from the SDK directly:
+Updates and fixes for version 10 will be published as `SentryNodeServerlessSDKv10`.
 
-```js
-// v7
-import * as Sentry from '@sentry/browser';
-import { BrowserTracing } from '@sentry/tracing';
+## 2. Behaviour Changes
 
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-  integrations: [new BrowserTracing()],
-});
-```
+### Better OpenTelemetry interoperability
 
-```js
-// v8
-import * as Sentry from '@sentry/browser';
+Affected SDKs: Server-side SDKs (`@sentry/node` and all dependents).
 
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-  integrations: [Sentry.browserTracingIntegration()],
-});
-```
+By default, v11 no longer sets up an OpenTelemetry tracer provider for **most** SDKs. SDKs now own the full span lifecycle, producing native Sentry spans.
 
-If you don't want to use `browserTracingIntegration` but still manually start spans, you can now use
-`Sentry.registerSpanErrorInstrumentation()` to setup handlers for span instrumentation.
-`registerSpanErrorInstrumentation` replaces the `addExtensionMethods` method from `@sentry/tracing`.
+A new optional OpenTelemetry integration lets you connect Sentry events such as Errors, Logs, Crons and Metrics to your OpenTelemetry traces, if you need to. See [Connecting Sentry to your OpenTelemetry traces](#connecting-sentry-to-your-opentelemetry-traces).
+
+Only `@sentry/nextjs` and `@sentry/sveltekit` still set up an OpenTelemetry compatible light tracer provider to capture spans the underlying frameworks emit.
+
+This means you can run your own OpenTelemetry setup cleanly alongside Sentry without having Sentry spans leak into your pipeline anymore. Your OpenTelemetry setup will no longer be required to use Sentry components for exporting, context management and trace propagation.
+
+With this, we also heavily reduced our OpenTelemetry dependencies, with `@opentelemetry/api` being the only one remaining. These changes also mean `@sentry/node-core` no longer serves any purpose and was [merged back into `@sentry/node`](#sentrynode-core-was-merged-back-into-sentrynode).
+
+If you only use the Sentry SDK, day-to-day tracing remains **unchanged**.
+
+#### Choosing an OpenTelemetry setup
+
+There are three ways to run the Sentry and OpenTelemetry SDKs together, and which one you want depends on who should own spans. This is controlled by the new `enableOpenTelemetrySetup` option, which replaces v10's `skipOpenTelemetrySetup` with inverted meaning (`skipOpenTelemetrySetup: true` becomes `enableOpenTelemetrySetup: false`). It defaults to `false` for most server SDKs (including `@sentry/node`, `@sentry/bun`, the serverless SDKs and `@sentry/cloudflare`) and `true` for `@sentry/nextjs` and `@sentry/sveltekit`.
+
+##### 1. Sentry only
+
+The default, and what you most likely want. Tracing works out of the box:
 
 ```js
-// v7
-import * as Sentry from '@sentry/browser';
-import '@sentry/tracing';
-
 Sentry.init({
   dsn: '__DSN__',
   tracesSampleRate: 1.0,
 });
 ```
 
+If a library you depend on emits its own OpenTelemetry spans and you want those in Sentry too, use setup 2.
+
+##### 2. OpenTelemetry-compatible mode, everything goes to Sentry
+
+Set `enableOpenTelemetrySetup: true`:
+
 ```js
-// v8
-import * as Sentry from '@sentry/browser';
-
-Sentry.registerSpanErrorInstrumentation();
-
 Sentry.init({
   dsn: '__DSN__',
   tracesSampleRate: 1.0,
+  enableOpenTelemetrySetup: true,
 });
 ```
 
-For Node SDKs you no longer need the side effect import, you can remove all references to `@sentry/tracing`.
+Sentry registers a minimal OpenTelemetry-compatible tracer provider, context manager and propagator. Just enough OpenTelemetry to pick up spans created through `@opentelemetry/api`, which become native Sentry spans.
+
+Spans go to Sentry. This is not a general OpenTelemetry pipeline: there is no exporter and no OTLP output. Sentry also refuses to register its provider if you already registered one of your own, logging a warning instead. If you want a real OpenTelemetry pipeline, use setup 3.
+
+##### 3. Your own OpenTelemetry, Sentry linked to it
+
+Leave `enableOpenTelemetrySetup` unset or set it to `false`, turn Sentry tracing off, use your own OpenTelemetry setup, and add the Sentry `otlpIntegration()`:
 
 ```js
-// v7
-const Sentry = require('@sentry/node');
-require('@sentry/tracing');
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-```
-
-```js
-// v8
-const Sentry = require('@sentry/node');
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-```
-
-#### @sentry/integrations
-
-`@sentry/integrations` has been removed and will no longer be published. We moved pluggable integrations from their own
-package (`@sentry/integrations`) to `@sentry/browser` and `@sentry/node`. in addition they are now functions instead of
-classes.
-
-```js
-// v7
-import { RewriteFrames } from '@sentry/integrations';
-```
-
-```js
-// v8
-import { rewriteFramesIntegration } from '@sentry/browser';
-```
-
-Integrations that are now exported from `@sentry/browser` (or framework-specific packages like `@sentry/react`):
-
-- `httpClientIntegration` (`HTTPClient`)
-- `contextLinesIntegration` (`ContextLines`)
-- `reportingObserverIntegration` (`ReportingObserver`)
-
-Integrations that are now exported from `@sentry/node` and `@sentry/browser` (or framework-specific packages like
-`@sentry/react`):
-
-- `captureConsoleIntegration` (`CaptureConsole`)
-- `debugIntegration` (`Debug`)
-- `extraErrorDataIntegration` (`ExtraErrorData`)
-- `rewriteFramesIntegration` (`RewriteFrames`)
-- `sessionTimingIntegration` (`SessionTiming`)
-- `dedupeIntegration` (`Dedupe`) - _Note: enabled by default, not pluggable_
-
-The `Transaction` integration has been removed from `@sentry/integrations`. There is no replacement API.
-
-#### @sentry/serverless
-
-`@sentry/serverless` has been removed and will no longer be published. The serverless package has been split into two
-different packages, `@sentry/aws-serverless` and `@sentry/google-cloud-serverless`.
-
-The `@sentry/google-cloud-serverless` package has also been changed to only emit CJS builds because it can only
-instrument CJS. ESM support will be re-added at a later date.
-
-In `@sentry/serverless` you had to use a namespace import to initialize the SDK. This has been removed so that you can
-directly import from the SDK instead.
-
-```js
-// v7
-const Sentry = require('@sentry/serverless');
-
-Sentry.AWSLambda.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-
-// v8
-const Sentry = require('@sentry/aws-serverless');
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-```
-
-```js
-// v7
-const Sentry = require('@sentry/serverless');
-
-Sentry.GCPFunction.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-
-// v8
-const Sentry = require('@sentry/google-cloud-serverless');
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-```
-
-#### @sentry/replay
-
-`@sentry/replay` has been removed and will no longer be published. You can import replay functionality and the replay
-integration directly from the Browser SDK or browser framework-specific packages like `@sentry/react`.
-
-```js
-// v7
-import { Replay } from '@sentry/replay';
-```
-
-```js
-import { replayIntegration } from '@sentry/browser';
-```
-
-## 3. Performance Monitoring Changes
-
-- [Initializing the SDK in v8](./MIGRATION.md/#initializing-the-node-sdk)
-- [Performance Monitoring API](./MIGRATION.md#performance-monitoring-api)
-- [Performance Monitoring Integrations](./MIGRATION.md#performance-monitoring-integrations)
-
-### Initializing the Node SDK
-
-If you are using `@sentry/node` or `@sentry/bun`, or a package that depends on it (`@sentry/nextjs`, `@sentry/remix`,
-`@sentry/sveltekit`, `@sentry/`), you will need to initialize the SDK differently. The primary change is to ensure that
-the SDK is initialized as early as possible. See [Initializing the SDK in v8](./docs/v8-initializing.md) on what steps
-to follow.
-
-For example with the Remix SDK, you should initialize the SDK at the top of your `entry.server.tsx` server entrypoint
-before you do anything else.
-
-```js
-// first import Sentry and initialize Sentry
-import * as Sentry from '@sentry/remix';
-
-Sentry.init({
-  dsn: 'https://public@dsn.ingest.sentry.io/1337',
-  tracesSampleRate: 1,
-  tracePropagationTargets: ['example.org'],
-  // Disabling to test series of envelopes deterministically.
-  autoSessionTracking: false,
-});
-
-// then handle everything else
-import type { EntryContext } from '@remix-run/node';
-import { RemixServer } from '@remix-run/react';
-import { renderToString } from 'react-dom/server';
-
-export const handleError = Sentry.wrapRemixHandleError;
-```
-
-### Performance Monitoring API
-
-The APIs for Performance Monitoring in the SDK have been revamped to align with OpenTelemetry, an open standard for
-tracing and metrics. This allows us to provide a more consistent and powerful API for performance monitoring, and adds
-support for a variety of new integrations out of the box for our Node SDK.
-
-Instead of using `startTransaction` and `span.startChild`, you rely on new helper methods to create spans top level
-helpers to create spans.
-
-```js
-// Measure how long a callback takes, `startSpan` returns the value of the callback.
-// The span will become the "active span" for the duration of the callback.
-const value = Sentry.startSpan({ name: 'mySpan' }, span => {
-  span.setAttribute('key', 'value');
-  return expensiveFunction();
-});
-
-// `startSpan` works with async callbacks as well - just make sure to return a promise!
-const value = await Sentry.startSpan({ name: 'mySpan' }, async span => {
-  span.setAttribute('key', 'value');
-  return await expensiveFunction();
-});
-
-// You can nest spans via more `startSpan` calls.
-const value = Sentry.startSpan({ name: 'mySpan' }, span => {
-  span.setAttribute('key1', 'value1');
-
-  // `nestedSpan` becomes the child of `mySpan`.
-  return Sentry.startSpan({ name: 'nestedSpan' }, nestedSpan => {
-    nestedSpan.setAttribute('key2', 'value2');
-    return expensiveFunction();
-  });
-});
-
-// You can also create an inactive span that does not take a callback.
-// Useful when you need to pass a span reference into another closure (like measuring duration between hooks).
-const span = Sentry.startInactiveSpan({ name: 'mySpan' });
-
-// Use `startSpanManual` if you want to manually control when to end the span
-// Useful when you need to hook into event emitters or similar.
-function middleware(res, req, next) {
-  return Sentry.startSpanManual({ name: 'mySpan' }, span => {
-    res.on('finish', () => {
-      span.end();
-    });
-    return next();
-  });
-}
-```
-
-You can [read more about the new performance APIs here](./docs/v8-new-performance-apis.md).
-
-To accommodate these changes, we're removed the following APIs:
-
-- [`startTransaction` and `span.startChild`](./MIGRATION.md#deprecate-starttransaction--spanstartchild)
-- [Certain arguments in `startSpan` and `startTransaction`](./MIGRATION.md#deprecate-arguments-for-startspan-apis)
-- [`scope.getSpan` and `scope.setSpan`](./MIGRATION.md#deprecate-scopegetspan-and-scopesetspan)
-- [Variations of `continueTrace`](./MIGRATION.md#deprecate-variations-of-sentrycontinuetrace)
-
-We've also removed a variety of [top level fields](./MIGRATION.md#deprecated-fields-on-span-and-transaction) on the
-`span` class.
-
-### Performance Monitoring Integrations
-
-As we added support for OpenTelemetry, we have expanded the automatic instrumentation for our Node.js SDK. We are adding
-support for frameworks like Fastify, Nest.js, and Hapi, and expanding support for databases like Prisma and MongoDB via
-Mongoose.
-
-We now support the following integrations out of the box without extra configuration:
-
-- `httpIntegration`: Automatically instruments Node `http` and `https` standard libraries
-- `nativeNodeFetchIntegration`: Automatically instruments top level fetch and undici
-- `expressIntegration`: Automatically instruments Express.js
-- `fastifyIntegration`: Automatically instruments Fastify
-- `hapiIntegration`: Automatically instruments Hapi
-- `graphqlIntegration`: Automatically instruments GraphQL
-- `mongoIntegration`: Automatically instruments MongoDB
-- `mongooseIntegration`: Automatically instruments Mongoose
-- `mysqlIntegration`: Automatically instruments MySQL
-- `mysql2Integration`: Automatically instruments MySQL2
-- `redisIntegration`: Automatically instruments Redis (supported clients: ioredis)
-- `nestIntegration`: Automatically instruments Nest.js
-- `postgresIntegration`: Automatically instruments PostgreSQL
-- `prismaIntegration`: Automatically instruments Prisma
-
-To make sure these integrations work properly you'll have to change how you
-[initialize the SDK](./docs/v8-initializing.md)
-
-## 4. Removal of deprecated APIs
-
-- [General](./MIGRATION.md#general)
-- [Browser SDK](./MIGRATION.md#browser-sdk-browser-react-vue-angular-ember-etc)
-- [Server-side SDKs (Node, Deno, Bun)](./MIGRATION.md#server-side-sdks-node-deno-bun-etc)
-- [Next.js SDK](./MIGRATION.md#nextjs-sdk)
-- [SvelteKit SDK](./MIGRATION.md#sveltekit-sdk)
-- [Astro SDK](./MIGRATION.md#astro-sdk)
-- [AWS Serverless SDK](./MIGRATION.md#aws-serverless-sdk)
-- [Ember SDK](./MIGRATION.md#ember-sdk)
-- [Svelte SDK](./MIGRATION.md#svelte-sdk)
-- [React SDK](./MIGRATION.md#react-sdk)
-
-### General
-
-Removed top-level exports: `tracingOrigins`, `MetricsAggregator`, `metricsAggregatorIntegration`, `Severity`,
-`Sentry.configureScope`, `Span`, `spanStatusfromHttpCode`, `makeMain`, `pushScope`, `popScope`,
-`addGlobalEventProcessor`, `timestampWithMs`, `addExtensionMethods`, `addGlobalEventProcessor`, `getActiveTransaction`
-
-Removed `@sentry/utils` exports: `timestampWithMs`, `addOrUpdateIntegration`, `tracingContextFromHeaders`, `walk`
-
-- [Deprecation of `Hub` and `getCurrentHub()`](./MIGRATION.md#deprecate-hub)
-- [Removal of class-based integrations](./MIGRATION.md#removal-of-class-based-integrations)
-- [`tracingOrigins` option replaced with `tracePropagationTargets`](./MIGRATION.md#tracingorigins-has-been-replaced-by-tracepropagationtargets)
-- [Removal of `MetricsAggregator` and `metricsAggregatorIntegration`](./MIGRATION.md#removal-of-the-metricsaggregator-integration-class-and-metricsaggregatorintegration)
-- [Removal of `Severity` Enum](./MIGRATION.md#removal-of-severity-enum)
-- [Removal of `Sentry.configureScope` method](./MIGRATION.md#removal-of-sentryconfigurescope-method)
-- [Removal of `Span` class export from SDK packages](./MIGRATION.md#removal-of-span-class-export-from-sdk-packages)
-- [Removal of `spanStatusfromHttpCode` in favour of `getSpanStatusFromHttpCode`](./MIGRATION.md#removal-of-spanstatusfromhttpcode-in-favour-of-getspanstatusfromhttpcode)
-- [Removal of `addGlobalEventProcessor` in favour of `addEventProcessor`](./MIGRATION.md#removal-of-addglobaleventprocessor-in-favour-of-addeventprocessor)
-- [Remove `void` from transport return types](./MIGRATION.md#remove-void-from-transport-return-types)
-- [Remove `addGlobalEventProcessor` in favor of `addEventProcessor`](./MIGRATION.md#remove-addglobaleventprocessor-in-favor-of-addeventprocessor)
-
-#### Deprecation of `Hub` and `getCurrentHub()`
-
-The `Hub` has been a very important part of the Sentry SDK API up until now. Hubs were the SDK's "unit of concurrency"
-to keep track of data across threads and to scope data to certain parts of your code. Because it is overly complicated
-and confusing to power users, it is going to be replaced by a set of new APIs: the "new Scope API". For now `Hub` and
-`getCurrentHub` are still available, but it will be removed in the next major version.
-
-See [Deprecate Hub](./MIGRATION.md#deprecate-hub) for details on how to replace existing usage of the Hub APIs.
-
-The `hub.bindClient` and `makeMain` methods have been removed entirely, see
-[initializing the SDK in v8](./docs/v8-initializing.md) for details how to work around this.
-
-#### Removal of class-based integrations
-
-In v7, integrations are classes and can be added as e.g. `integrations: [new Sentry.Replay()]`. In v8, integrations will
-not be classes anymore, but instead functions. Both the use as a class, as well as accessing integrations from the
-`Integrations.XXX` hash, is deprecated in favor of using the new functional integrations. For example,
-`new Integrations.LinkedErrors()` becomes `linkedErrorsIntegration()`.
-
-For docs on the new integration interface, see [below](./MIGRATION.md#changed-integration-interface).
-
-For a list of integrations and their replacements, see
-[below](./MIGRATION.md#list-of-integrations-and-their-replacements).
-
-The `getIntegration()` and `getIntegrationById()` have been removed entirely, see
-[below](./MIGRATION.md#deprecate-getintegration-and-getintegrationbyid).
-
-```js
-// v7
-const replay = Sentry.getIntegration(Replay);
-```
-
-```js
-// v8
-const replay = getClient().getIntegrationByName('Replay');
-```
-
-#### `framesToPop` applies to parsed frames
-
-Error with `framesToPop` property will have the specified number of frames removed from the top of the stack. This
-changes compared to the v7 where the property `framesToPop` was used to remove top n lines from the stack string.
-
-#### `tracingOrigins` has been replaced by `tracePropagationTargets`
-
-`tracingOrigins` is now removed in favor of the `tracePropagationTargets` option. The `tracePropagationTargets` option
-should be set in the `Sentry.init()` options, or in your custom `Client`s option if you create them. We've also updated
-the behavior of the `tracePropagationTargets` option for Browser SDKs, see
-[below](./MIGRATION.md/#updated-behaviour-of-tracepropagationtargets-in-the-browser-http-tracing-headers--cors) for more
-details.
-
-For example for the Browser SDKs:
-
-```ts
-// v7
-Sentry.init({
-  dsn: '__DSN__',
-  integrations: [new Sentry.BrowserTracing({ tracingOrigins: ['localhost', 'example.com'] })],
-});
-```
-
-```ts
-// v8
-Sentry.init({
-  dsn: '__DSN__',
-  integrations: [Sentry.browserTracingIntegration()],
-  tracePropagationTargets: ['localhost', 'example.com'],
-});
-```
-
-#### Removal of the `MetricsAggregator` integration class and `metricsAggregatorIntegration`
-
-The SDKs now support metrics features without any additional configuration.
-
-```ts
-// v7 - Server (Node/Deno/Bun)
-Sentry.init({
-  dsn: '__DSN__',
-  _experiments: {
-    metricsAggregator: true,
-  },
-});
-
-// v7 - Browser
-Sentry.init({
-  dsn: '__DSN__',
-  integrations: [Sentry.metricsAggregatorIntegration()],
-});
-```
-
-```ts
-// v8
-Sentry.init({
-  dsn: '__DSN__',
-});
-```
-
-#### Removal of Severity Enum
-
-In v7 we deprecated the `Severity` enum in favor of using the `SeverityLevel` type as this helps save bundle size, and
-this has been removed in v8. You should now use the `SeverityLevel` type directly.
-
-```js
-// v7
-import { Severity, SeverityLevel } from '@sentry/types';
-
-const levelA = Severity.error;
-
-const levelB: SeverityLevel = "error"
-```
-
-```js
-// v8
-import { SeverityLevel } from '@sentry/types';
-
-const levelA = "error" as SeverityLevel;
-
-const levelB: SeverityLevel = "error"
-```
-
-#### Removal of `Sentry.configureScope` method
-
-The top level `Sentry.configureScope` function has been removed. Instead, you should use the `Sentry.getCurrentScope()`
-to access and mutate the current scope.
-
-```js
-// v7
-Sentry.configureScope(scope => {
-  scope.setTag('key', 'value');
-});
-```
-
-```js
-// v8
-Sentry.getCurrentScope().setTag('key', 'value');
-```
-
-#### Removal of `Span` class export from SDK packages
-
-In v8, we are no longer exporting the `Span` class from SDK packages (e.g. `@sentry/browser` or `@sentry/node`).
-Internally, this class is now called `SentrySpan`, and it is no longer meant to be used by users directly.
-
-#### Removal of `spanStatusfromHttpCode` in favour of `getSpanStatusFromHttpCode`
-
-In v8, we are removing the `spanStatusfromHttpCode` function in favor of `getSpanStatusFromHttpCode`.
-
-```js
-// v7
-const spanStatus = spanStatusfromHttpCode(200);
-```
-
-```js
-// v8
-const spanStatus = getSpanStatusFromHttpCode(200);
-```
-
-#### Removal of `addGlobalEventProcessor` in favour of `addEventProcessor`
-
-In v8, we are removing the `addGlobalEventProcessor` function in favor of `addEventProcessor`.
-
-```js
-// v7
-addGlobalEventProcessor(event => {
-  delete event.extra;
-  return event;
-});
-```
-
-```js
-// v8
-Sentry.getGlobalScope().addEventProcessor(event => {
-  delete event.extra;
-  return event;
-});
-```
-
-#### Removal of `void` from transport return types
-
-The `send` method on the `Transport` interface now always requires a `TransportMakeRequestResponse` to be returned in
-the promise. This means that the `void` return type is no longer allowed.
-
-```ts
-// v7
-interface Transport {
-  send(event: Event): Promise<void | TransportMakeRequestResponse>;
-}
-```
-
-```ts
-// v8
-interface Transport {
-  send(event: Event): Promise<TransportMakeRequestResponse>;
-}
-```
-
-#### Removal of `addGlobalEventProcessor` in favor of `addEventProcessor`
-
-In v8, we are removing the `addGlobalEventProcessor` function in favor of `addEventProcessor`.
-
-```js
-// v7
-addGlobalEventProcessor(event => {
-  delete event.extra;
-  return event;
-});
-```
-
-```js
-// v8
-addEventProcessor(event => {
-  delete event.extra;
-  return event;
-});
-```
-
-#### Removal of `Sentry.Handlers.trpcMiddleware()` in favor of `Sentry.trpcMiddleware()`
-
-The Sentry tRPC middleware got moved from `Sentry.Handlers.trpcMiddleware()` to `Sentry.trpcMiddleware()`. Functionally
-they are the same:
-
-#### Removal of `Sentry.Handlers.requestHandler()`, `Sentry.Handlers.tracingHandler()` and `Sentry.Handlers.errorHandler()`
-
-For Express and Connect you previously had to use `Sentry.Handlers.requestHandler()`,
-`Sentry.Handlers.tracingHandler()`, and `Sentry.Handlers.errorHandler()` to add Sentry instrumentation to your app. In
-8.x, you only need to use the framework specific error handler (e.g `Sentry.setupExpressErrorHandler(app)`), you can
-remove all other handlers.
-
-```js
-// v7
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import * as Sentry from '@sentry/node';
-Sentry.Handlers.trpcMiddleware();
+
+const provider = new NodeTracerProvider({
+  spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter(Sentry.getOtlpTracesEndpoint('__DSN__')))],
+});
+
+provider.register();
+
+Sentry.init({
+  dsn: '__DSN__',
+  // no tracesSampleRate: OpenTelemetry owns spans, Sentry owns errors and logs
+  integrations: [Sentry.otlpIntegration()],
+});
 ```
+
+`enableOpenTelemetrySetup` already defaults to `false` on most server SDKs, so there is nothing to set. On `@sentry/nextjs` and `@sentry/sveltekit` it defaults to `true`, so you have to set it to `false` explicitly. Otherwise Sentry registers its own tracer provider and you end up in setup 2 rather than this one.
+
+OpenTelemetry owns spans end to end. Sentry captures errors and logs, and the Sentry `otlpIntegration()` attaches them to the active OpenTelemetry span so all your telemetry is connected in one trace. `getOtlpTracesEndpoint()` turns your DSN into the URL and auth headers for Sentry's OTLP endpoint, so you can point your own exporter at Sentry, at your own collector, or at both.
+
+Sentry does not touch your pipeline: no exporter, no span processor, no tracer provider, and outgoing trace propagation is left to your propagator. See [Connecting Sentry to your OpenTelemetry traces](#connecting-sentry-to-your-opentelemetry-traces) for the details, including what changed if you used the v10 integration.
+
+##### Avoiding duplicate spans
+
+Sentry instruments many of the same libraries OpenTelemetry does (Express, Postgres, Redis, Prisma, Kafka and so on), so enabling Sentry tracing on top of your own instrumentation gives you two spans for every operation. Leave `tracesSampleRate` in your `Sentry.init` unset to avoid duplicate spans. With tracing off, Sentry's instrumentation stays installed and keeps isolating requests, but emits no spans.
+
+Note that this changed since v10, where setting `skipOpenTelemetrySetup: true` also turned Sentry's HTTP and fetch spans off by default. Sentry now emits those whenever tracing is enabled, regardless of `enableOpenTelemetrySetup`.
+
+If you do want Sentry spans alongside your own, keep `tracesSampleRate` set and drop the integrations that overlap. HTTP and fetch are the exception: turn off only their spans, because `httpIntegration` also provides request isolation, request data and session tracking:
 
 ```js
-// v8
-import * as Sentry from '@sentry/node';
-Sentry.trpcMiddleware();
-```
-
-### Browser SDK (Browser, React, Vue, Angular, Ember, etc.)
-
-Removed top-level exports: `Offline`, `makeXHRTransport`, `BrowserTracing`, `wrap`
-
-- [Removal of the `BrowserTracing` integration](./MIGRATION.md#removal-of-the-browsertracing-integration)
-- [Removal of Offline integration](./MIGRATION.md#removal-of-the-offline-integration)
-- [Removal of `makeXHRTransport` transport](./MIGRATION.md#removal-of-makexhrtransport-transport)
-- [Removal of `wrap` method](./MIGRATION.md#removal-of-wrap-method)
-- [Removal of `@sentry/angular-ivy` package](./MIGRATION.md#removal-of-sentryangular-ivy-package)
-- [Removal of `@sentry/replay` package](./MIGRATION.md#removal-of-sentryreplay-package)
-
-#### Removal of the `BrowserTracing` integration
-
-The `BrowserTracing` integration, together with the custom routing instrumentations passed to it, are deprecated in v8.
-Instead, you should use `Sentry.browserTracingIntegration()`. See examples
-[below](./MIGRATION.md#deprecated-browsertracing-integration)
-
-#### Removal of `interactionsSampleRate` in `browserTracingIntegration` options
-
-The `interactionsSampleRate` option that could be passed to `browserTracingIntegration` or `new BrowserTracing()` was
-removed in v8, due to the option being redundant and in favour of bundle size minimization.
-
-It's important to note that this sample rate only ever was applied when collecting INP (Interaction To Next Paint)
-values. You most likely don't need to replace this option. Furthermore, INP values are already sampled by the
-[`tracesSampleRate` SDK option](https://docs.sentry.io/platforms/javascript/configuration/options/#traces-sampler), like
-any regular span. At the time of writing, INP value collection does not deplete your span or transaction quota.
-
-If you used `interactionsSampleRate` before, and still want to reduce INP value collection, we recommend using the
-`tracesSampler` SDK option instead:
-
-```javascript
-// v7
 Sentry.init({
-  integrations: [new BrowserTracing({ interactionsSampleRate: 0.1 })],
+  dsn: '__DSN__',
+  tracesSampleRate: 1.0,
+  integrations: integrations => [
+    // your own OpenTelemetry instrumentation already covers these
+    ...integrations.filter(integration => integration.name !== 'Postgres'),
+    Sentry.httpIntegration({ spans: false }),
+    Sentry.nativeNodeFetchIntegration({ spans: false }),
+  ],
 });
 ```
 
-```javascript
-// v8 - please read the text above, you most likely don't need this :)
-Sentry.init({
-  tracesSampler: (ctx) => {
-    if (ctx.attributes?['sentry.op']?.startsWith('ui.interaction')) {
-      return 0.1;
-    }
-    return 0.5;
-  }
-})
-```
+##### Migrating custom OpenTelemetry setups
 
-#### Removal of the `Offline` integration
+In v10, running your own OpenTelemetry setup meant registering Sentry's own components into it: `SentryContextManager`, `SentrySampler` and `SentrySpanProcessor`. Those were removed, so there is no longer a way to route spans from your own provider into Sentry as Sentry spans. Export them over OTLP instead, as shown in setup 3.
 
-The `Offline` integration has been removed in favor of the
-[offline transport wrapper](http://docs.sentry.io/platforms/javascript/configuration/transports/#offline-caching).
+#### Connecting Sentry to your OpenTelemetry traces
 
-#### Removal of `makeXHRTransport` transport
+`Sentry.otlpIntegration()` attaches everything Sentry sends that carries trace information (errors, logs, metrics and crons) to the OpenTelemetry span that is active when it happens. It takes no options, and is available from every server-side SDK, so there is nothing extra to install or import. See [setup 3](#3-your-own-opentelemetry-sentry-linked-to-it) above for a complete example.
 
-The `makeXHRTransport` transport has been removed. Only `makeFetchTransport` is available now. This means that the
-Sentry SDK requires the fetch API to be available in the environment.
+It does not set up a span exporter, span processor, or tracer provider. You keep full ownership of your OpenTelemetry pipeline, and outgoing request propagation is left to your OpenTelemetry propagator. To send your spans to Sentry, point your own exporter at the URL and auth headers that `Sentry.getOtlpTracesEndpoint()` derives from your DSN.
 
-#### Removal of `wrap` method
+An active Sentry span still takes precedence, so this only changes what happens when Sentry has no span of its own, which is the usual setup when OpenTelemetry owns tracing.
 
-The `wrap` method has been removed. There is no replacement API.
+If you used the v10 integration from `@sentry/node-core/light/otlp`, three things changed: it moved to the main export of every server SDK, it [no longer sets up an exporter for you and lost its options](#3-removed-apis), and it [reports itself as `Otlp` rather than `OtlpIntegration`](#otlpintegration-integration-renamed-to-otlp). Configure your own exporter as shown in setup 3, pointing it at your collector's URL if you route through one.
 
-#### Removal of `@sentry/angular-ivy` package
+### `sendDefaultPii` is replaced by `dataCollection`
 
-The `@sentry/angular-ivy` package has been removed. The `@sentry/angular` package now supports Ivy by default and
-requires at least Angular 14. If you are using Angular 13 or lower, we suggest upgrading your Angular version before
-migrating to v8. If you can't upgrade your Angular version to at least Angular 14, you can also continue using the
-`@sentry/angular-ivy@7` SDK. However, v7 of the SDKs will no longer be fully supported going forward.
+Affected SDKs: All SDKs.
 
-#### Removal of `@sentry/replay` package
+> **Heads up — this is a behavior change, not just a renamed option.**
+> In v10, leaving `sendDefaultPii` unset behaved like `sendDefaultPii: false` (restrictive).
+> In v11, leaving `dataCollection` unset collects the categories below **by default**.
+> Review this before upgrading if you'd rather not collect HTTP request data, database queries, or GenAI inputs/outputs.
 
-You can import from `@sentry/browser` (or from a respective SDK package like `@sentry/react` or `@sentry/vue`).
+We've replaced `sendDefaultPii` with `dataCollection`, which controls each category of collected data individually. The default is now more permissive than in v10.
 
-### Server-side SDKs (Node, Deno, Bun, etc.)
+| Category              | v10 default (`sendDefaultPii` off) | v11 default          |
+| --------------------- | ---------------------------------- | -------------------- |
+| `userInfo`            | `false`                            | `true`               |
+| `cookies`             | not collected                      | `true`               |
+| `httpHeaders`         | request + response, PII scrubbed   | request + response   |
+| `httpBodies`          | not collected (size only)          | all request/response |
+| `urlQueryParams`      | `true`                             | `true`               |
+| `genAI`               | inputs + outputs not collected     | inputs + outputs     |
+| `databaseQueryData`   | `false`                            | `true`               |
+| `stackFrameVariables` | `true`                             | `true`               |
+| `frameContextLines`   | `7`                                | `5`                  |
 
-Removed top-level exports: `enableAnrDetection`, `Anr`, `deepReadDirSync`, `runWithAsyncContext`
+> Sentry's built-in sensitive-data filtering still applies. Review your data-scrubbing config for categories that may contain sensitive values — especially request/response bodies.
 
-- [Removal of `enableAnrDetection` and `Anr` class](./MIGRATION.md#removal-of-enableanrdetection-and-anr-class)
-- [Removal of `deepReadDirSync` method](./MIGRATION.md#removal-of-deepreaddirsync-method)
-- [Removal of `runWithAsyncContext` method](./MIGRATION.md#removal-of-runwithasynccontext-method)
-- [Removal of `Apollo` integration](./MIGRATION.md#removal-of-apollo-integration)
+#### If you previously set `sendDefaultPii: true`
 
-#### Removal of `enableAnrDetection` and `Anr` class
-
-The `enableAnrDetection` and `Anr` class have been removed. See the
-[docs](https://docs.sentry.io/platforms/node/configuration/application-not-responding/) for more details. PR:
-
-#### Removal of `deepReadDirSync` method
-
-The `deepReadDirSync` method has been removed. There is no replacement API.
-
-#### Removal of `runWithAsyncContext` method
-
-The `runWithAsyncContext` method has been removed in favour of `Sentry.withIsolationScope`.
+The v11 default matches this, so just remove the option:
 
 ```js
-// before (v7)
-Sentry.runWithAsyncContext(() => {
-  // Your code here...
-});
+// v10
+Sentry.init({ sendDefaultPii: true });
 
-// after (v8)
-Sentry.withIsolationScope(() => {
-  // Your code here...
-});
-```
-
-#### Removal of Apollo integration
-
-The Apollo integration has been removed in `8.x` as `8.x` automatically adds GraphQL support via `graphqlIntegration`
-which is automatically enabled.
-
-```js
-// before (v7)
-Sentry.init({
-  integrations: [Sentry.integrations.Apollo()],
-});
-
-// after (v8)
+// v11 — same behavior is now the default
 Sentry.init({});
 ```
 
-### Next.js SDK
+#### If you want to keep the v10 default behavior
 
-Removed top-level exports: `withSentryApi`, `withSentryAPI`, `withSentryGetServerSideProps`, `withSentryGetStaticProps`,
-`withSentryServerSideGetInitialProps`, `withSentryServerSideAppGetInitialProps`,
-`withSentryServerSideDocumentGetInitialProps`, `withSentryServerSideErrorGetInitialProps`, `nextRouterInstrumentation`,
-`IS_BUILD`, `isBuild`
-
-- [Removal of deprecated API in `@sentry/nextjs`](./MIGRATION.md#removal-of-deprecated-api-in-sentrynextjs)
-- [Updated minimum compatible Next.js version to `13.2.0`](./MIGRATION.md#updated-minimum-compatible-nextjs-version-to-1320)
-- [Merging of the Sentry Webpack Plugin options and SDK Build options](./MIGRATION.md#merging-of-the-sentry-webpack-plugin-options-and-sdk-build-options)
-- [Removal of the `sentry` property in your Next.js options (next.config.js)](./MIGRATION.md#removal-of-the-sentry-property-in-your-nextjs-options-nextconfigjs)
-- [Updated the `@sentry/webpack-plugin` dependency to version 2](./MIGRATION.md#updated-the-sentry-webpack-plugin-dependency-to-version-2)
-
-#### Removal of deprecated API in `@sentry/nextjs`
-
-The following previously deprecated API has been removed from the `@sentry/nextjs` package:
-
-- `withSentryApi` (Replacement: `wrapApiHandlerWithSentry`)
-- `withSentryAPI` (Replacement: `wrapApiHandlerWithSentry`)
-- `withSentryGetServerSideProps` (Replacement: `wrapGetServerSidePropsWithSentry`)
-- `withSentryGetStaticProps` (Replacement: `wrapGetStaticPropsWithSentry`)
-- `withSentryServerSideGetInitialProps` (Replacement: `wrapGetInitialPropsWithSentry`)
-- `withSentryServerSideAppGetInitialProps` (Replacement: `wrapAppGetInitialPropsWithSentry`)
-- `withSentryServerSideDocumentGetInitialProps` (Replacement: `wrapDocumentGetInitialPropsWithSentry`)
-- `withSentryServerSideErrorGetInitialProps` was renamed to `wrapErrorGetInitialPropsWithSentry`
-- `nextRouterInstrumentation` (Replaced by using `browserTracingIntegration`)
-- `IS_BUILD`
-- `isBuild`
-
-#### Updated minimum compatible Next.js version to `13.2.0`
-
-The minimum version of Next.js compatible with the Sentry Next.js SDK has been raised to `13.2.0`. Older versions may
-exhibit bugs or unexpected behaviour.
-
-#### Merging of the Sentry Webpack Plugin options and SDK Build options
-
-With version 8 of the Sentry Next.js SDK, `withSentryConfig` will no longer accept 3 arguments. The second argument
-(holding options for the Sentry Webpack plugin) and the third argument (holding options for SDK build-time
-configuration) should now be passed as one:
-
-```ts
-// OLD
-const nextConfig = {
-  // Your Next.js options...
-};
-
-module.exports = withSentryConfig(
-  nextConfig,
-  {
-    // Your Sentry Webpack Plugin Options...
-  },
-  {
-    // Your Sentry SDK options...
-  },
-);
-
-// NEW
-const nextConfig = {
-  // Your Next.js options...
-};
-
-module.exports = withSentryConfig(nextConfig, {
-  // Your Sentry Webpack Plugin Options...
-  // AND your Sentry SDK options...
-});
-```
-
-#### Removal of the `sentry` property in your Next.js options (next.config.js)
-
-With version 8 of the Sentry Next.js SDK, the SDK will no longer support passing Next.js options with a `sentry`
-property to `withSentryConfig`. Please use the second argument of `withSentryConfig` to configure the SDK instead:
-
-```ts
-// v7
-const nextConfig = {
-  // Your Next.js options...
-
-  sentry: {
-    // Your Sentry SDK options...
-  },
-};
-
-module.exports = withSentryConfig(nextConfig, {
-  // Your Sentry Webpack Plugin Options...
-});
-```
-
-```ts
-// v8
-const nextConfig = {
-  // Your Next.js options...
-};
-
-module.exports = withSentryConfig(nextConfig, {
-  // Your Sentry Webpack Plugin Options...
-  // AND your Sentry SDK options...
-});
-```
-
-The reason for this change is to have one consistent way of defining the SDK options. We hope that this change will
-reduce confusion when setting up the SDK, with the upside that the explicit option is properly typed and will therefore
-have code completion.
-
-#### Updated the `@sentry/webpack-plugin` dependency to version 2
-
-We bumped the internal usage of `@sentry/webpack-plugin` to a new major version. This comes with multiple upsides like a
-simpler configuration interface and the use of new state of the art Debug ID technology. Debug IDs will simplify the
-setup for source maps in Sentry and will not require you to match stack frame paths to uploaded artifacts anymore.
-
-To see the new options, check out the docs at https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/,
-or look at the TypeScript type definitions of `withSentryConfig`.
-
-#### Updated the recommended way of calling `Sentry.init()`
-
-With version 8 of the SDK we will no longer support the use of `sentry.server.config.ts` and `sentry.edge.config.ts`
-files. Instead, please initialize the Sentry Next.js SDK for the serverside in a
-[Next.js instrumentation hook](https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation).
-**`sentry.client.config.ts|js` is still supported and encouraged for initializing the clientside SDK.**
-
-The following is an example of how to initialize the serverside SDK in a Next.js instrumentation hook:
-
-1. First, enable the Next.js instrumentation hook by setting the `experimental.instrumentationHook` to `true` in your
-   `next.config.js`.
-2. Next, create a `instrumentation.ts|js` file in the root directory of your project (or in the `src` folder if you have
-   have one).
-3. Now, export a `register` function from the `instrumentation.ts|js` file and call `Sentry.init()` inside of it:
-
-   ```ts
-   import * as Sentry from '@sentry/nextjs';
-
-   export function register() {
-     if (process.env.NEXT_RUNTIME === 'nodejs') {
-       Sentry.init({
-         dsn: 'YOUR_DSN',
-         // Your Node.js Sentry configuration...
-       });
-     }
-
-     if (process.env.NEXT_RUNTIME === 'edge') {
-       Sentry.init({
-         dsn: 'YOUR_DSN',
-         // Your Edge Runtime Sentry configuration...
-       });
-     }
-   }
-   ```
-
-   If you need to import a Node.js specific integration (like for example `@sentry/profiling-node`), you will have to
-   import the package using a dynamic import to prevent Next.js from bundling Node.js APIs into bundles for other
-   runtime environments (like the Browser or the Edge runtime). You can do so as follows:
-
-   ```ts
-   import * as Sentry from '@sentry/nextjs';
-
-   export async function register() {
-     if (process.env.NEXT_RUNTIME === 'nodejs') {
-       const { nodeProfilingIntegration } = await import('@sentry/profiling-node');
-       Sentry.init({
-         dsn: 'YOUR_DSN',
-         integrations: [nodeProfilingIntegration()],
-       });
-     }
-   }
-   ```
-
-   Note that you can initialize the SDK differently depending on which server runtime is being used.
-
-If you are using a
-[Next.js custom server](https://nextjs.org/docs/pages/building-your-application/configuring/custom-server), the
-`instrumentation.ts` hook is not called by Next.js so you need to manually call it yourself from within your server
-code. It is recommended to do so as early as possible in your application lifecycle.
-
-**Why are we making this change?** The very simple reason is that Next.js requires us to set up OpenTelemetry
-instrumentation inside the `register` function of the instrumentation hook. Looking a little bit further into the
-future, we also would like the Sentry SDK to be compatible with [Turbopack](https://turbo.build/pack), which is gonna be
-the bundler that Next.js will be using instead of Webpack. The SDK in its previous version depended heavily on Webpack
-in order to inject the `sentry.(server|edge).config.ts` files into the server-side code. Because this will not be
-possible in the future, we are doing ourselves a favor and doing things the way Next.js intends us to do them -
-hopefully reducing bugs and jank.
-
-#### Removal of `transpileClientSDK`
-
-Since we are dropping support for Internet Explorer 11 and other other older browser versions, we are also removing the
-`transpileClientSDK` option from the Next.js SDK. If you need to support these browser versions, please configure
-Webpack and Next.js to down-compile the SDK.
-
-### Astro SDK
-
-- [Removal of `trackHeaders` option for Astro middleware](./MIGRATION.md#removal-of-trackheaders-option-for-astro-middleware)
-
-#### Removal of `trackHeaders` option for Astro middleware
-
-Instead of opting-in via the middleware config, you can configure if headers should be captured via
-`requestDataIntegration` options, which defaults to `true` but can be disabled like this:
+Set the baseline explicitly. **Don't leave `dataCollection` unset** — that now enables broader collection.
 
 ```js
+// v11 — preserves the v10 default
 Sentry.init({
-  integrations: [
-    Sentry.requestDataIntegration({
-      include: {
-        headers: false,
-      },
-    }),
-  ],
-});
-```
-
-### SvelteKit SDK
-
-- [Breaking `sentrySvelteKit()` changes](./MIGRATION.md#breaking-sentrysveltekit-changes)
-
-#### Breaking `sentrySvelteKit()` changes
-
-We upgraded the `@sentry/vite-plugin` from version 0.x to 2.x. This package is internally used by the
-`@sentry/sveltekit` SDK. With this change, resolving uploaded source maps should work out of the box much more often
-than before
-([more information](https://docs.sentry.io/platforms/javascript/sourcemaps/troubleshooting_js/artifact-bundles/)).
-
-To allow future upgrades of the Vite plugin without breaking stable and public APIs in `sentrySvelteKit`, we modified
-the `sourceMapsUploadOptions` to remove the hard dependency on the API of the plugin. While you previously could specify
-all [version 0.x Vite plugin options](https://www.npmjs.com/package/@sentry/vite-plugin/v/0.6.1), we now reduced them to
-a subset of [2.x options](https://www.npmjs.com/package/@sentry/vite-plugin/v/2.14.2#options). All of these options are
-optional just like before but here's an example of using the new options.
-
-```js
-// v7
-sentrySvelteKit({
-  sourceMapsUploadOptions: {
-    org: process.env.SENTRY_ORG,
-    project: process.env.SENTRY_PROJECT,
-    authToken: process.env.SENTRY_AUTH_TOKEN,
-    release: '1.0.1',
-    injectRelease: true,
-    include: ['./build/*/**/*'],
-    ignore: ['**/build/client/**/*']
+  dataCollection: {
+    userInfo: false,
+    cookies: false,
+    httpHeaders: {
+      request: { deny: ['forwarded', '-ip', 'remote-', 'via', '-user'] },
+      response: { deny: ['forwarded', '-ip', 'remote-', 'via', '-user'] },
+    },
+    httpBodies: [],
+    urlQueryParams: { deny: ['forwarded', '-ip', 'remote-', 'via', '-user'] },
+    genAI: { inputs: false, outputs: false },
+    databaseQueryData: false,
+    graphQL: { document: false, variables: false },
   },
-}),
-```
-
-```js
-// v8
-sentrySvelteKit({
-  sourceMapsUploadOptions: {
-    org: process.env.SENTRY_ORG,
-    project: process.env.SENTRY_PROJECT,
-    authToken: process.env.SENTRY_AUTH_TOKEN,
-    release: {
-	    name: '1.0.1',
-	    inject: true
-    },
-    sourcemaps: {
-	    assets: ['./build/*/**/*'],
-	    ignore: ['**/build/client/**/*'],
-	    filesToDeleteAfterUpload: ['./build/**/*.map']
-    },
-  },
-}),
-```
-
-In the future, we might add additional [options](https://www.npmjs.com/package/@sentry/vite-plugin/v/2.14.2#options)
-from the Vite plugin but if you would like to specify some of them directly, you can do this by passing in an
-`unstable_sentryVitePluginOptions` object:
-
-```js
-sentrySvelteKit({
-  sourceMapsUploadOptions: {
-    // ...
-    release: {
-	    name: '1.0.1',
-    },
-    unstable_sentryVitePluginOptions: {
-      release: {
-        setCommits: {
-          auto: true
-        }
-      }
-    }
-  },
-}),
-```
-
-Important: we DO NOT guarantee stability of `unstable_sentryVitePluginOptions`. They can be removed or updated at any
-time, including breaking changes within the same major version of the SDK.
-
-### AWS Serverless SDK
-
-- [Removal of `rethrowAfterCapture` option](./MIGRATION.md#removal-of-rethrowaftercapture-option)
-
-#### Removal of `rethrowAfterCapture` option
-
-In `v6.17.2` the `rethrowAfterCapture` option to `wrapHandler` was deprecated. In `v8` it has been removed. There is no
-replacement API.
-
-### Ember SDK
-
-Removed top-level exports: `InitSentryForEmber`, `StartTransactionFunction`
-
-- [Removal of `InitSentryForEmber` export](./MIGRATION.md#removal-of-initsentryforember-export)
-- [Updated Ember Dependencies](./MIGRATION.md#updated-ember-dependencies)
-
-#### Removal of `InitSentryForEmber` export
-
-The `InitSentryForEmber` export has been removed. Instead, you should use the `Sentry.init` method to initialize the
-SDK.
-
-#### Updated Ember Dependencies
-
-The following dependencies that the SDK uses have been bumped to a more recent version:
-
-- `ember-auto-import` is bumped to `^2.4.3`
-- `ember-cli-babel` is bumped to `^8.2.0`
-- `ember-cli-typescript` is bumped to `^5.3.0`
-
-### Svelte SDK
-
-Removed top-level exports: `componentTrackingPreprocessor`
-
-#### Removal of `componentTrackingPreprocessor` export
-
-The `componentTrackingPreprocessor` export has been removed. You should instead use `withSentryConfig` to configure
-component tracking.
-
-```js
-// v7 - svelte.config.js
-import { componentTrackingPreprocessor } from '@sentry/svelte';
-
-const config = {
-  preprocess: [
-    componentTrackingPreprocessor(),
-    // ...
-  ],
-  // ...
-};
-
-export default config;
-```
-
-```js
-// v8 - svelte.config.js
-import { withSentryConfig } from "@sentry/svelte";
-
-const config = {
-  // Your svelte config
-  compilerOptions: {...},
-};
-
-export default withSentryConfig(config);
-```
-
-### React SDK
-
-#### Updated error types to be `unknown` instead of `Error`.
-
-In v8, we are changing the `ErrorBoundary` error types returned from `onError`, `onReset`, `onUnmount`, and
-`beforeCapture`. to be `unknown` instead of `Error`. This more accurately matches behaviour of `componentDidCatch`, the
-lifecycle method the Sentry `ErrorBoundary` component uses.
-
-As per the [React docs on error boundaries](https://react.dev/reference/react/Component#componentdidcatch):
-
-> error: The `error` that was thrown. In practice, it will usually be an instance of `Error` but this is not guaranteed
-> because JavaScript allows to throw any value, including strings or even `null`.
-
-This means you will have to use `instanceof Error` or similar to explicitly make sure that the error thrown was an
-instance of `Error`.
-
-The Sentry SDK maintainers also went ahead and made a PR to update the
-[TypeScript definitions of `componentDidCatch`](https://github.com/DefinitelyTyped/DefinitelyTyped/pull/69434) for the
-React package - this will be released with React 20.
-
-### Gatsby SDK
-
-#### Removal of Gatsby Initialization via plugin options
-
-In v8, we are removing the ability to initialize the Gatsby SDK via plugin options. Instead, you should create a
-`sentry.config.js` file in the root of your project and initialize the SDK there.
-
-```js
-// v7 - gatsby-config.js
-module.exports = {
-  // ...
-  plugins: [
-    {
-      resolve: '@sentry/gatsby',
-      options: {
-        dsn: process.env.SENTRY_DSN,
-      },
-    },
-    // ...
-  ],
-};
-```
-
-```js
-// v8 - gatsby-config.js
-module.exports = {
-  // ...
-  plugins: [
-    {
-      resolve: '@sentry/gatsby',
-    },
-    // ...
-  ],
-};
-
-// v8 - sentry.config.js
-import * as Sentry from '@sentry/gatsby';
-
-Sentry.init({
-  dsn: '__PUBLIC_DSN__',
 });
 ```
 
-We've also added `enableClientWebpackPlugin` which allows you to enable or disable the `@sentry/webpack-plugin` in the
-client-side build. By default, it is enabled.
+Each key-value field (`cookies`, `urlQueryParams`, `httpHeaders.request`, `httpHeaders.response`) accepts
+`true`, `false`, `{ allow: string[] }`, or `{ deny: string[] }` for fine-grained control.
+
+See the [`dataCollection` docs](https://docs.sentry.io/platforms/javascript/configuration/options/#dataCollection) for the full option list.
+
+#### RequestData
+
+The `requestDataIntegration`'s `include` options remain an integration-level override. An explicit `false`
+prevents that category from being attached, while an explicit `true` enables it even when the corresponding
+`dataCollection` category is disabled. For cookies, headers, and query parameters, any configured `allow` or
+`deny` filtering continues to apply: When `include` enables a category which `dataCollection` disabled, the
+default sensitive-value denylist is applied.
+
+User IP address inference, which was previously gated on `sendDefaultPii`, is now controlled by
+`dataCollection.userInfo`. An explicit `requestDataIntegration({ include: { ip: true } })` overrides
+`dataCollection.userInfo: false` for data collected by that integration.
+
+#### Remix action form data
+
+`captureActionFormDataKeys` is an integration-level override, so it no longer requires
+`dataCollection.httpBodies` to also include `'incomingRequest'`:
 
 ```js
-// v8 - gatsby-config.js
-module.exports = {
-  // ...
-  plugins: [
-    {
-      resolve: '@sentry/gatsby',
-      options: {
-        enableClientWebpackPlugin: false,
-      },
-    },
-    // ...
-  ],
-};
-```
-
-#### Automatic adding of `browserTracingIntegration` for Gatsby
-
-The Gatsby SDK no longer adds the `browserTracingIntegration` automatically. If you want to enable tracing in the
-browser, you need to add it manually. Make sure to also configured a `tracePropagationTargets` value.
-
-```js
-// v7 - gatsby-config.js
-module.exports = {
-  // ...
-  plugins: [
-    {
-      resolve: '@sentry/gatsby',
-      options: {
-        tracesSampleRate: 1.0,
-      },
-    },
-    // ...
-  ],
-};
-```
-
-```js
-// v8 - gatsby-config.js
-module.exports = {
-  // ...
-  plugins: [
-    {
-      resolve: '@sentry/gatsby',
-    },
-    // ...
-  ],
-};
-
-// v8 - sentry.config.js
-import * as Sentry from '@sentry/gatsby';
-
+// v10 — both were required
 Sentry.init({
-  dsn: '__PUBLIC_DSN__',
-  integrations: [Sentry.browserTracingIntegration()],
+  captureActionFormDataKeys: { username: true },
+  dataCollection: { httpBodies: ['incomingRequest'] },
+});
 
-  // Set tracesSampleRate to 1.0 to capture 100%
-  // of transactions for performance monitoring.
-  // We recommend adjusting this value in production
-  tracesSampleRate: 1.0,
-
-  // Set `tracePropagationTargets` to control for which URLs distributed tracing should be enabled
-  tracePropagationTargets: ['localhost', /^https:\/\/yourserver\.io\/api/],
+// v11 — the option opts in on its own
+Sentry.init({
+  captureActionFormDataKeys: { username: true },
 });
 ```
 
-## 5. Behaviour Changes
+If `captureActionFormDataKeys` is not set, all form fields are captured when
+`dataCollection.httpBodies` includes `'incomingRequest'` (the v11 default). Values whose field name
+looks sensitive (`password`, `token`, …) are replaced with `[Filtered]`, including explicitly
+allowlisted ones.
 
-- [Updated behaviour of `tracePropagationTargets` in the browser](./MIGRATION.md#updated-behaviour-of-tracepropagationtargets-in-the-browser-http-tracing-headers--cors)
-- [Updated behaviour of `extraErrorDataIntegration`](./MIGRATION.md#extraerrordataintegration-changes)
-- [Updated behaviour of `transactionContext` passed to `tracesSampler`](./MIGRATION.md#transactioncontext-no-longer-passed-to-tracessampler)
-- [Updated behaviour of `getClient()`](./MIGRATION.md#getclient-always-returns-a-client)
-- [Updated behaviour of the SDK in combination with `onUncaughtException` handlers in Node.js](./MIGRATION.md#behaviour-in-combination-with-onuncaughtexception-handlers-in-node.js)
-- [Updated expected return value for `captureException()`, `captureMessage()` and `captureEvent` methods on Clients](./MIGRATION.md#updated-expected-return-value-for-captureexception-capturemessage-and-captureevent-methods-on-clients)
-- [Removal of Client-Side health check transaction filters](./MIGRATION.md#removal-of-client-side-health-check-transaction-filters)
-- [Change of Replay default options (`unblock` and `unmask`)](./MIGRATION.md#change-of-replay-default-options-unblock-and-unmask)
-- [Angular Tracing Decorator renaming](./MIGRATION.md#angular-tracing-decorator-renaming)
+### Channel-based instrumentation is the default
 
-#### Updated behaviour of `tracePropagationTargets` in the browser (HTTP tracing headers & CORS)
+Affected SDKs: `@sentry/node` and all dependents.
 
-We updated the behaviour of the SDKs when no `tracePropagationTargets` option was defined. As a reminder, you can
-provide a list of strings or RegExes that will be matched against URLs to tell the SDK, to which outgoing requests
-tracing HTTP headers should be attached to. These tracing headers are used for distributed tracing.
+The new channel-based instrumentations (using `orchestrion` instead of `import-in-the-middle`) are now the default. They were available opt-in in v10. This unlocks instrumenting at run and build time, which enables instrumentation at deployment targets like Vercel and Netlify, as well as using instrumentations on non-Node runtimes like Cloudflare, Bun and Deno. For most users this requires no changes.
 
-Previously, on the browser, when `tracePropagationTargets` were not defined, they defaulted to the following:
-`['localhost', /^\/(?!\/)/]`. This meant that all request targets to that had "localhost" in the URL, or started with a
-`/` were equipped with tracing headers. This default was chosen to prevent CORS errors in your browser applications.
-However, this default had a few flaws.
+### Initializing via `--require` is no longer supported
 
-Going forward, when the `tracePropagationTargets` option is not set, tracing headers will be attached to all outgoing
-requests on the same origin. For example, if you're on `https://example.com/` and you send a request to
-`https://example.com/api`, the request will be traced (ie. will have trace headers attached). Requests to
-`https://api.example.com/` will not, because it is on a different origin. The same goes for all applications running on
-`localhost`.
+Affected SDKs: `@sentry/node` and all dependents.
 
-When you provide a `tracePropagationTargets` option, all of the entries you defined will now be matched be matched
-against the full URL of the outgoing request. Previously, it was only matched against what you called request APIs with.
-For example, if you made a request like `fetch("/api/posts")`, the provided `tracePropagationTargets` were only compared
-against `"/api/posts"`. Going forward they will be matched against the entire URL, for example, if you were on the page
-`https://example.com/` and you made the same request, it would be matched against `"https://example.com/api/posts"`.
+Node re-runs `--require` preloads on the internal module loader thread it spawns for `Module.register()` — which the SDK triggers itself when it installs its instrumentation hooks. A `--require`d instrument file therefore ran `Sentry.init()` a second time, on a thread that never executes any of your code. The SDK now skips initialization on that thread and warns when it detects that it was loaded through `--require`.
 
-But that is not all. Because it would be annoying having to create matchers for the entire URL, if the request is a
-same-origin request, we also match the `tracePropagationTargets` against the resolved `pathname` of the request.
-Meaning, a matcher like `/^\/api/` would match a request call like `fetch('/api/posts')`, or
-`fetch('https://same-origin.com/api/posts')` but not `fetch('https://different-origin.com/api/posts')`.
-
-#### `extraErrorDataIntegration` changes
-
-The `extraErrorDataIntegration` integration now looks at
-[`error.cause`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error/cause) by
-default.
-
-#### `transactionContext` no longer passed to `tracesSampler`
-
-Instead of an `transactionContext` being passed to the `tracesSampler` callback, the callback will directly receive
-`name` and `attributes` going forward. Note that the `attributes` are only the attributes at span creation time, and
-some attributes may only be set later during the span lifecycle (and thus not be available during sampling).
-
-#### `getClient()` always returns a client
-
-`getClient()` now always returns a client if `Sentry.init()` was called. For cases where this may be used to check if
-Sentry was actually initialized, using `getClient()` will thus not work anymore. Instead, you should use the new
-`Sentry.isInitialized()` utility to check this.
-
-#### Behaviour in combination with `onUncaughtException` handlers in Node.js
-
-Previously the SDK exited the process by default, even though additional `onUncaughtException` may have been registered,
-that would have prevented the process from exiting. You could opt out of this behaviour by setting the
-`exitEvenIfOtherHandlersAreRegistered: false` in the `onUncaughtExceptionIntegration` options. Up until now the value
-for this option defaulted to `true`.
-
-Going forward, the default value for `exitEvenIfOtherHandlersAreRegistered` will be `false`, meaning that the SDK will
-not exit your process when you have registered other `onUncaughtException` handlers.
-
-#### Updated expected return value for `captureException()`, `captureMessage()` and `captureEvent` methods on Clients
-
-The `Client` interface now expects implementations to always return a string representing the generated event ID for the
-`captureException()`, `captureMessage()`, `captureEvent()` methods. Previously `undefined` was a valid return value.
-
-#### Removal of Client-Side health check transaction filters
-
-The SDK no longer filters out health check transactions by default. Instead, they are sent to Sentry but still dropped
-by the Sentry backend by default. You can disable dropping them in your Sentry project settings. If you still want to
-drop specific transactions within the SDK you can either use the `ignoreTransactions` SDK option.
-
-#### Change of Replay default options (`unblock` and `unmask`)
-
-The Replay options `unblock` and `unmask` now have `[]` as default value. This means that if you want to use these
-options, you have to explicitly set them like this:
-
-```js
-Sentry.init({
-  integrations: [
-    Sentry.replayIntegration({
-      unblock: ['.sentry-unblock, [data-sentry-unblock]'],
-      unmask: ['.sentry-unmask, [data-sentry-unmask]'],
-    }),
-  ],
-});
-```
-
-#### Angular Tracing Decorator renaming
-
-The usage of `TraceClassDecorator` and the `TraceMethodDecorator` already implies that those are decorators. The word
-`Decorator` is now removed from the names to avoid multiple mentioning.
-
-Additionally, the `TraceClass` and `TraceMethod` decorators accept an optional `name` parameter to set the transaction
-name. This was added because Angular minifies class and method names, and you might want to set a more descriptive name.
-If nothing provided, the name defaults to `'unnamed'`.
-
-```js
-// v7
-@Sentry.TraceClassDecorator()
-export class HeaderComponent {
-  @Sentry.TraceMethodDecorator()
-  ngOnChanges(changes: SimpleChanges) {}
-}
-```
-
-```js
-// v8
-@Sentry.TraceClass({ name: 'HeaderComponent' })
-export class HeaderComponent {
-  @Sentry.TraceMethod({ name: 'ngOnChanges' })
-  ngOnChanges(changes: SimpleChanges) {}
-}
-```
-
-## 6. Build Changes
-
-We now provide a proper ESM output of the SDK. There have also been some other build changes under the hood. One side
-effect of this is that importing Sentry as a default import does not work anymore. Note that this was never supported
-(even on v7) and this was never intended to work (and also not documented anywhere). However, it seems that for some
-configuration combinations, it was still possible to do `import Sentry from '@sentry/browser'`. This is not possible
-anymore in v8. Please use `import * as Sentry from '@sentry/browser'` instead.
-
-# Upgrading Sentry Feedback (beta, 7.x to 8.0)
-
-For details on upgrading Feedback from the beta 7.x to the release 8.x version, please view the
-[dedicated Feedback MIGRATION docs](./docs/migration/feedback.md).
-
----
-
-# Deprecations in 7.x
-
-You can use the **Experimental** [@sentry/migr8](https://www.npmjs.com/package/@sentry/migr8) to automatically update
-your SDK usage and fix most deprecations. This requires Node 18+.
+Use [`--import`](https://nodejs.org/api/cli.html#--importmodule) instead. It is not re-run on the loader thread, and it works for CommonJS apps too — the instrument file's extension (`.cjs`, or `.js` in a package without `"type": "module"`) is what decides that it loads as CommonJS:
 
 ```bash
-npx @sentry/migr8@latest
+# Before
+node --require ./instrument.js app.js
+
+# After
+node --import ./instrument.js app.js
 ```
 
-This will let you select which updates to run, and automatically update your code. Make sure to still review all code
-changes!
+### Span streaming is now the default
 
-## Deprecated `BrowserTracing` integration
+Affected SDKs: All SDKs.
 
-The `BrowserTracing` integration, together with the custom routing instrumentations passed to it, are deprecated in v8.
-Instead, you should use `Sentry.browserTracingIntegration()`.
+Spans are now sent to Sentry in small batches instead of being buffered until the root span completes.
+This means spans are no longer bound by the 1000-span per transaction limit and their individual payload-size limits have been increased.
 
-Package-specific browser tracing integrations are available directly. In most cases, there is a single integration
-provided for each package, which will make sure to set up performance tracing correctly for the given SDK. For react, we
-provide multiple integrations to cover different router integrations:
+The new model comes with some changes to Sentry hooks such as `beforeSendSpan` or options like `ignoreSpans` and requires manual migration.
+The `beforeSendTransaction` and `ignoreTransactions` options will **no-op**.
+If you cannot migrate to span streaming yet, you can opt into the previous transaction-based static model.
 
-### `@sentry/browser`, `@sentry/svelte`, `@sentry/gatsby`
+#### `beforeSendSpan` receives the streamed span format
+
+Your `beforeSendSpan` callback now receives a `StreamedSpanJSON` object and is invoked as each span finishes, rather than for all spans of a transaction right before that transaction is sent. As in v10, it is invoked for the root span as well as for child spans.
+
+The payload fields were renamed:
+
+| Before (`SpanJSON`) | After (`StreamedSpanJSON`)     |
+| ------------------- | ------------------------------ |
+| `description`       | `name`                         |
+| `data`              | `attributes`                   |
+| `op`                | `attributes['sentry.op']`      |
+| `timestamp`         | `end_timestamp`                |
+| `status` (`string`) | `status` (`'ok'` or `'error'`) |
+
+The `status` field, now only contains two statuses: `'ok'` and `'error'`.
+Streamed spans always have a status (while status was optional on transaction-based spans).
+Previously more fine-grained error statuses are now mapped to `'error'`.
+Additional error information may be set via span attributes (e.g. `sentry.status.message`).
 
 ```js
-import * as Sentry from '@sentry/browser';
-
+// Before
 Sentry.init({
-  integrations: [Sentry.browserTracingIntegration()],
+  beforeSendSpan: span => {
+    if (span.op === 'db.query') {
+      span.description = scrub(span.description);
+      span.data['db.statement'] = scrub(span.data['db.statement']);
+    }
+    return span;
+  },
+});
+
+// After
+Sentry.init({
+  beforeSendSpan: span => {
+    if (span.attributes['sentry.op'] === 'db.query') {
+      span.name = scrub(span.name);
+      span.attributes['db.statement'] = scrub(span.attributes['db.statement']);
+    }
+    return span;
+  },
 });
 ```
 
-### `@sentry/react`
+Returning `null` to drop a span was already disallowed in v9 and remains a no-op. Use `ignoreSpans` to filter spans.
+
+If you cannot migrate the callback yet, opt out of span streaming and wrap `beforeSendSpan` with `Sentry.withStaticSpan()`:
 
 ```js
-import * as Sentry from '@sentry/react';
-
 Sentry.init({
-  integrations: [
-    // No react router
-    Sentry.browserTracingIntegration(),
-    // OR, if you are using react router, instead use one of the following:
-    Sentry.reactRouterV6BrowserTracingIntegration({
-      useEffect,
-      useLocation,
-      useNavigationType,
-      createRoutesFromChildren,
-      matchRoutes,
-      stripBasename,
-    }),
-    Sentry.reactRouterV5BrowserTracingIntegration({
-      history,
-    }),
-    Sentry.reactRouterV4BrowserTracingIntegration({
-      history,
-    }),
-    Sentry.reactRouterV3BrowserTracingIntegration({
-      history,
-      routes,
-      match,
-    }),
-  ],
+  traceLifecycle: 'static',
+  beforeSendSpan: Sentry.withStaticSpan(span => {
+    span.description = scrub(span.description);
+    return span;
+  }),
 });
 ```
 
-### `@sentry/vue`
+A `beforeSendSpan` callback that does not match the configured `traceLifecycle` is **never invoked** — an unwrapped callback is ignored in `'static'` mode, and a `withStaticSpan`-wrapped callback is ignored in `'stream'` mode. Enable debug logging to surface a warning about the mismatch. Previously, an incompatible callback silently downgraded the SDK to the static lifecycle instead.
+
+The `withStreamedSpan()` helper is now a no-op, since streamed payloads are the default. It is deprecated and will be removed in v12. You can remove the wrapper:
 
 ```js
-import * as Sentry from '@sentry/vue';
+// Before
+beforeSendSpan: Sentry.withStreamedSpan(span => span);
 
+// After
+beforeSendSpan: span => span;
+```
+
+The internal `isStreamedBeforeSendSpanCallback()` function from `@sentry/core` was removed.
+
+#### Replacing `beforeSendTransaction`
+
+`beforeSendTransaction` no-ops because no transaction events are produced.
+For **scrubbing and data modification**, move the logic to `beforeSendSpan` and guard on `is_segment` to target what used to be the transaction
+For **dropping** a transaction or child spans, use `ignoreSpans` (see below). The `beforeSendSpan` callback cannot drop spans.
+
+```js
+// Before
 Sentry.init({
-  integrations: [
-    Sentry.browserTracingIntegration({
-      // pass router in, if applicable
-      router,
-    }),
-  ],
+  beforeSendTransaction: event => {
+    if (event.transaction === 'GET /health') {
+      return null;
+    }
+    event.transaction = scrubIds(event.transaction);
+    return event;
+  },
+});
+
+// After
+Sentry.init({
+  ignoreSpans: ['GET /health'],
+  beforeSendSpan: span => {
+    if (span.is_segment) {
+      span.name = scrubIds(span.name);
+    }
+    return span;
+  },
 });
 ```
 
-### `@sentry/angular` & `@sentry/angular-ivy`
+Note that scope `tags` and `extra` are not carried over to streamed spans, since spans only have attributes. Use `Sentry.setAttribute()` / `Sentry.setAttributes()` instead.
+
+#### Replacing `ignoreTransactions` with `ignoreSpans`
+
+`ignoreTransactions` no-ops. Use `ignoreSpans` to match the segment span instead: when a segment span is ignored, all of its child spans are dropped with it, which is equivalent to dropping the whole transaction.
 
 ```js
-import * as Sentry from '@sentry/angular';
-
+// Before
 Sentry.init({
-  integrations: [Sentry.browserTracingIntegration()],
+  ignoreTransactions: ['GET /health'],
 });
 
-// You still need to add the TraceService like before!
-```
-
-### `@sentry/remix`
-
-```js
-import * as Sentry from '@sentry/remix';
-
+// After
 Sentry.init({
-  integrations: [
-    Sentry.browserTracingIntegration({
-      useEffect,
-      useLocation,
-      useMatches,
-    }),
-  ],
+  ignoreSpans: ['GET /health'],
 });
 ```
 
-### `@sentry/nextjs`, `@sentry/astro`, `@sentry/sveltekit`
-
-Browser tracing is automatically set up for you in these packages. If you need to customize the options, you can do it
-like this:
+`ignoreSpans` matches on the span `name` (formerly `description`). Because it applies to every span rather than just to root spans, consider narrowing the filter with the object form so that child spans sharing a name are not dropped as collateral:
 
 ```js
-import * as Sentry from '@sentry/nextjs';
-
 Sentry.init({
-  integrations: [
-    Sentry.browserTracingIntegration({
-      // add custom options here
-    }),
-  ],
+  ignoreSpans: [{ name: 'GET /health', attributes: { 'sentry.op': 'http.server' } }],
 });
 ```
 
-### `@sentry/ember`
+`ignoreSpans` itself is unchanged in shape, but it now takes effect when a span **starts** rather than when the transaction is sent. Matched spans are never recorded at all, which means a matched non-segment span's children are re-parented to its parent instead of being dropped.
 
-Browser tracing is automatically set up for you. You can configure it as before through configuration.
+#### Opting out of span streaming
 
-## Deprecated `transactionContext` passed to `tracesSampler`
+To keep the previous transaction-based model, set `traceLifecycle: 'static'`:
 
-Instead of an `transactionContext` being passed to the `tracesSampler` callback, the callback will directly receive
-`name` and `attributes` going forward. You can use these to make your sampling decisions, while `transactionContext`
-will be removed in v8. Note that the `attributes` are only the attributes at span creation time, and some attributes may
-only be set later during the span lifecycle (and thus not be available during sampling).
+```js
+Sentry.init({
+  traceLifecycle: 'static',
 
-## Deprecate `wrapRemixHandleError` in Remix SDK (since v7.100.0)
+  // `beforeSendSpan` MUST be wrapped with Sentry.withStaticSpan:
+  beforeSendSpan: Sentry.withStaticSpan(span => {
+    span.description = scrub(span.description);
+    return span;
+  }),
+});
+```
 
-This release deprecates `wrapRemixHandleError` in favor of using `sentryHandleError` from `@sentry/remix`. It can be
-used as below:
+In Node, Bun, Vercel Edge and Cloudflare you can also set the `SENTRY_TRACE_LIFECYCLE=static` environment variable instead. The static lifecycle only exists for backwards compatibility and is planned for removal in a future major version, so treat this as a temporary measure.
+
+#### `Sentry.spanToJSON` returns streamed span format
+
+The `spanToJSON` helper previously returned a `SpanJSON` object. In v11, the return type was changed to `StreamedSpanJSON`, meaning the object shape is now the [same as in `beforeSendSpan`](#beforeSendSpan-receives-the-streamed-span-format).
+
+If you're [opting out of span streaming](#opting-out-of-span-streaming), you can replace your `spanToJSON` calls with `spanToStaticSpanJSON`, which still returns the static `SpanJSON` object format.
+
+The `spanToStreamedSpanJSON` helper, which returned this format in v10, was removed in favor of `spanToJSON`. Since the two are now equivalent, replace any calls to it:
+
+```js
+// Before (v10)
+const spanJson = Sentry.spanToStreamedSpanJSON(span);
+
+// After (v11)
+const spanJson = Sentry.spanToJSON(span);
+```
+
+### Logs are enabled by default
+
+Affected SDKs: All SDKs.
+
+Logging follows an opt-in-by-usage model similar to metrics: you are opted in when you call `Sentry.logger.*` or explicitly enable a logging integration. The default value of `enableLogs` is now `true`, and logging integrations do not emit logs unless explicitly enabled.
+
+To opt out of logging entirely, set `enableLogs` to `false`:
+
+```js
+Sentry.init({
+  enableLogs: false,
+});
+```
+
+### Browser sessions use `unhandled` instead of `crashed`
+
+Affected SDKs: All SDKs running in the browser.
+
+Browser sessions affected by an uncaught error are now recorded as `unhandled` rather than `crashed`. If you track crash-free session rates in Release Health or have alerts built on them, expect the crash-free rate to shift after upgrading.
+
+### `page` is the default browser session lifecycle mode
+
+Affected SDKs: All SDKs running in the browser.
+
+The default `lifecycle` mode of `browserSessionIntegration` changed from `'route'` to `'page'`. In `'page'` mode a session is created once when the page loads and is **not** renewed on navigation. To restore the previous behaviour (a new session on load and on every navigation):
+
+```js
+Sentry.init({
+  integrations: [Sentry.browserSessionIntegration({ lifecycle: 'route' })],
+});
+```
+
+### `attachStacktrace` defaults to `true`
+
+Affected SDKs: All SDKs.
+
+`attachStacktrace` now defaults to `true`. Events captured with `Sentry.captureMessage`, and non-`Error` values passed to `Sentry.captureException`, now attach a synthetic stack trace pointing to the call site. Pass `attachStacktrace: false` in `Sentry.init` to restore the previous behavior.
+
+Two consequences to be aware of when upgrading:
+
+- **Issue grouping:** Grouping in Sentry differs for events with and without stack traces, so you may see new issue groups after upgrading.
+- **Release health:** Events with a stack trace are counted as errors, so a `captureMessage` call (including messages emitted by `captureConsoleIntegration`) now marks the current session as _errored_. This affects errored-session counts but does **not** mark sessions as crashed, so crash-free session rate is unaffected. If you use `captureMessage` for purely informational output, consider using Sentry Logs instead, which is better suited and does not affect release health.
+
+### Span attribute changes
+
+Affected SDKs: All SDKs.
+
+- The `http.query` and `http.fragment` span attributes were renamed to `url.query` and `url.fragment`.
+- The gen_ai cache token attributes `gen_ai.usage.cache_creation_input_tokens` and `gen_ai.usage.cache_read_input_tokens` were renamed to `gen_ai.usage.cache_creation.input_tokens` and `gen_ai.usage.cache_read.input_tokens`.
+- The `gen_ai.system` span attribute was renamed to `gen_ai.provider.name` across all AI integrations.
+- The `gen_ai.request.available_tools` span attribute was renamed to `gen_ai.tool.definitions` across all AI integrations.
+- The `gen_ai.tool.input` span attribute was renamed to `gen_ai.tool.call.arguments` across all AI integrations.
+- The `gen_ai.tool.output` span attribute was renamed to `gen_ai.tool.call.result` across all AI integrations.
+- The Vercel AI token attributes `gen_ai.usage.input_tokens.cached`, `gen_ai.usage.input_tokens.cache_write`, and `gen_ai.usage.output_tokens.reasoning` were renamed to `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, and `gen_ai.usage.reasoning.output_tokens`.
+- The deprecated `gen_ai.tool.type` span attribute is no longer set on tool spans.
+- Span attributes now use the shared `@sentry/conventions` package under the hood.
+
+If you reference these attributes in custom instrumentation, `beforeSendSpan`, dashboards, or alerts, update them to the new names.
+
+### Span operation (`op`) changes
+
+Affected SDKs: All SDKs.
+
+Span ops are now aligned to a smaller, framework-neutral, convention-backed set. The detail that used to live in the op (framework, library, method name, trigger, or lifecycle phase) is preserved in span attributes such as `code.function.name`, `sentry.origin`, `db.system.name`, `db.operation.name`, `faas.trigger`, and framework-specific attributes.
+
+These changes are not caught by TypeScript. If you filter, group, or alert on span ops — in dashboards, dynamic sampling rules, `ignoreSpans`, or `beforeSendSpan` — update them to the new ops below.
+
+**Backend HTTP, handlers, middleware & routers:**
+
+| Area                                                                 | Before                                                                                                                                                                                                                     | After         |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| Request handlers (Express, Koa, Connect, Fastify, Elysia, NestJS, …) | `request_handler.<library>`, `handler.nestjs`                                                                                                                                                                              | `handler`     |
+| Hono `app.request()` in-process dispatch                             | `hono.request`                                                                                                                                                                                                             | `http.server` |
+| Web-server middleware                                                | `middleware.express`, `middleware.koa`, `middleware.hono`, `middleware.elysia`, `middleware.nestjs`, `middleware.nuxt`, `middleware.nitro`, `middleware.tanstackstart`, `hook.fastify`, `http.server.middleware` (Next.js) | `middleware`  |
+| Backend router layers                                                | `router.express`, `router.koa`, `router.hapi`                                                                                                                                                                              | `router`      |
+| Hapi server extensions                                               | `server.ext.hapi`                                                                                                                                                                                                          | `middleware`  |
+| NestJS setup & lifecycle handlers                                    | `app_creation.nestjs`, `request_context.nestjs`, `event.nestjs`                                                                                                                                                            | `function`    |
+
+**Framework functions:**
+
+| Area                                                                                                      | Before                                                                                                                                                                                              | After      |
+| --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| Loaders, actions & server functions (Next.js, Remix, React Router, SvelteKit, SolidStart, TanStack Start) | `function.nextjs`, `function.sveltekit.load`, `function.react_router.loader`, `function.remix.document_request`, `loader.remix`, `action.remix`, `function.server_action`, `function.tanstackstart` | `function` |
+
+**Frontend & UI:**
+
+| Area                                     | Before                                                                                                                               | After                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| Frontend routing                         | `ui.angular.routing`, `ui.sveltekit.routing`, `ui.ember.transition`                                                                  | `router`                                                 |
+| React, Vue & Svelte component lifecycles | `ui.react.mount`/`render`/`update`, `ui.svelte.init`/`update`, Vue `render`/`update`/`mount`/`create`/`activate`/`unmount`/`destroy` | `ui.mount`, `ui.render`, `ui.update`, `ui.unmount`       |
+| Angular tracing decorators               | `ui.angular.init` (`TraceDirective`/`TraceClass`), `ui.angular.<method>` (`TraceMethod`)                                             | `ui.mount`, `function`                                   |
+| Ember route hooks, runloop & components  | `ui.ember.route.<hook>`, `ui.ember.runloop.<queue>`, `ui.ember.component.render`/`definition`/`init`                                 | `function`, `ui.task`, `ui.render`/`function`/`ui.mount` |
+| Browser paint entries                    | `paint`                                                                                                                              | `browser.paint`                                          |
+
+**Databases, cache & messaging:**
+
+| Area                                  | Before                                                                                                                                              | After                                             |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Redis commands / connect              | `db.redis`, `db.redis.connect`                                                                                                                      | `db.query`, `db`                                  |
+| Nuxt & Nitro storage (unstorage)      | `cache.has_item`, `cache.get_item`, `cache.get_items`, `cache.get_keys`, `cache.set_item`, `cache.set_items`, `cache.remove_item`, `cache.clear`, … | `cache.get`, `cache.put`, `cache.remove`          |
+| Kafka, AMQP & OTel-inferred messaging | `message`, `message.produce`, `message.consume`                                                                                                     | `queue.publish`, `queue.receive`, `queue.process` |
+
+**RPC & Gen AI:**
+
+| Area                                                     | Before                                      | After                                    |
+| -------------------------------------------------------- | ------------------------------------------- | ---------------------------------------- |
+| tRPC                                                     | `rpc.server`                                | `rpc`                                    |
+| GCP gRPC calls                                           | `grpc.<service>`                            | `grpc`                                   |
+| AWS Bedrock inference                                    | `rpc`                                       | `gen_ai.chat`, `gen_ai.generate_content` |
+| Gen AI fallbacks & model metadata (Vercel AI, LangGraph) | `gen_ai.unknown`, `ai.run`, `gen_ai.models` | `function`                               |
+
+**FaaS, serverless & HTTP clients:**
+
+| Area                                           | Before                                                                | After                                      |
+| ---------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------ |
+| AWS Lambda functions                           | `function.aws.lambda`                                                 | `function.aws`                             |
+| GCP functions                                  | `function.gcp.http`, `function.gcp.event`, `function.gcp.cloud_event` | `function.gcp`                             |
+| Firebase functions                             | `http.request`                                                        | `function.gcp`                             |
+| Cloudflare cron, email & workflow steps        | `faas.cron`, `faas.email`, `function.step.do`                         | `function`                                 |
+| OTel-inferred FaaS spans (from `faas.trigger`) | arbitrary trigger strings used verbatim                               | `http.server`, `queue.process`, `function` |
+| GCP HTTP client                                | `http.client.<service>`                                               | `http.client`                              |
+| Prefetch HTTP requests                         | `http.client.prefetch`, `http.server.prefetch`                        | `http.client`, `http.server`               |
+
+**Casing normalized to snake_case:** Some `browser.*` and `ui.*` ops used inconsistent casing and are now aligned to snake_case:
+
+| Before                          | After                              |
+| ------------------------------- | ---------------------------------- |
+| `ui.long-task`                  | `ui.long_task`                     |
+| `ui.long-animation-frame`       | `ui.long_animation_frame`          |
+| `browser.unloadEvent`           | `browser.unload_event`             |
+| `browser.domContentLoadedEvent` | `browser.dom_content_loaded_event` |
+| `browser.loadEvent`             | `browser.load_event`               |
+| `browser.TLS/SSL`               | `browser.tls_ssl`                  |
+| `browser.DNS`                   | `browser.dns`                      |
+
+### LangGraph no longer emits `create_agent` spans
+
+Affected SDKs: All server-side SDKs.
+
+The LangGraph instrumentation no longer emits `gen_ai.create_agent` spans when a graph is compiled. `gen_ai.invoke_agent` and `gen_ai.execute_tool` spans are unaffected. If you reference `create_agent` spans in dashboards or alerts, update them accordingly.
+
+### `@sentry/nextjs`
+
+**Tracing removed from generated templates:** Tracing was removed from the generated Pages Router API handler, Edge API handler, and Middleware wrapper templates. Route handlers and middleware are still instrumented automatically, so no action is required for most users.
+
+### Cloudflare: `nodejs_compat` compatibility flag is now required
+
+Affected SDKs: `@sentry/cloudflare`.
+
+The SDK now requires the `nodejs_compat` compatibility flag instead of `nodejs_als`. Update your `wrangler.toml` (or `wrangler.jsonc`):
+
+```diff
+- compatibility_flags = ["nodejs_als"]
++ compatibility_flags = ["nodejs_compat"]
+```
+
+### Cloudflare: `wrapRequestHandler` moved to `@sentry/cloudflare/request`
+
+Affected SDKs: `@sentry/cloudflare`.
+
+`wrapRequestHandler` is no longer available from the main `@sentry/cloudflare` entry point. Import it from the dedicated subpath instead:
+
+```diff
+- import { wrapRequestHandler } from '@sentry/cloudflare';
++ import { wrapRequestHandler } from '@sentry/cloudflare/request';
+```
+
+### Cloudflare: the Vite plugin auto-instruments your Worker by default
+
+Affected SDKs: `@sentry/cloudflare`.
+
+`sentryCloudflareVitePlugin()` now wraps your Worker entry — and any Durable Object, Workflow or WorkerEntrypoint class listed in your wrangler config — at build time. Entries you already wrapped yourself are left untouched, so no action is required for most users. Opt out with the new top-level `autoInstrumentation` option:
+
+```js
+sentryCloudflareVitePlugin({ autoInstrumentation: false });
+```
+
+The experimental opt-in this replaces was removed:
+
+```diff
+- sentryCloudflareVitePlugin({ _experimental: { autoInstrumentation: true } });
++ sentryCloudflareVitePlugin();
+```
+
+### `@sentry/ember` is now a v2 addon with manual setup
+
+Affected SDKs: `@sentry/ember`.
+
+`@sentry/ember` is now a [v2 (Embroider) addon](https://rfcs.emberjs.com/id/0507-embroider-v2-package-format/), so it builds cleanly under Embroider and Vite in addition to classic builds. Because v2 addons cannot auto-configure the host app, Sentry is no longer wired up from `config/environment.js` and no longer registers its own initializer. You now call `Sentry.init()` yourself and opt into performance instrumentation explicitly. A full walkthrough lives in [`packages/ember/UPGRADE.md`](./packages/ember/UPGRADE.md).
+
+**1. Initialize Sentry in `app/app.ts` instead of `config/environment.js`.** Remove the `'@sentry/ember'` block from `config/environment.js` and call `init()` before your `Application` class:
+
+```ts
+// config/environment.js
+ENV.sentryDsn = process.env.E2E_TEST_DSN;
+```
 
 ```typescript
-// entry.server.ts
+// app/app.ts
+import Application from '@ember/application';
+import Resolver from 'ember-resolver';
+import loadInitializers from 'ember-load-initializers';
+import config from 'my-app/config/environment';
+import * as Sentry from '@sentry/ember';
 
-export const handleError = Sentry.wrapHandleErrorWithSentry(() => {
-  // Custom handleError implementation
+Sentry.init({
+  dsn: config.sentryDsn,
+  tracesSampleRate: 1.0,
+  // all @sentry/browser options are supported
 });
+
+export default class App extends Application {
+  modulePrefix = config.modulePrefix;
+  podModulePrefix = config.podModulePrefix;
+  Resolver = Resolver;
+}
+
+loadInitializers(App, config.modulePrefix);
 ```
 
-## Deprecate using `getClient()` to check if the SDK was initialized
+The former `@sentry/ember` config keys map onto arguments you now pass directly: `sentry` options become `Sentry.init()` options, and the `disable*` performance flags move to `instrumentAppInstancePerformance()` (see below). `disablePerformance` no longer exists as a single switch — omit the instance-initializer entirely to disable performance instrumentation.
 
-In v8, `getClient()` will stop returning `undefined` if `Sentry.init()` was not called. For cases where this may be used
-to check if Sentry was actually initialized, using `getClient()` will thus not work anymore. Instead, you should use the
-new `Sentry.isInitialized()` utility to check this.
+**2. Opt into performance instrumentation with an instance-initializer.** Automatic performance instrumentation is gone; add it yourself:
 
-## Deprecate `getCurrentHub()`
+```typescript
+// app/instance-initializers/sentry-performance.ts
+import type ApplicationInstance from '@ember/application/instance';
+import { instrumentAppInstancePerformance } from '@sentry/ember';
 
-In v8, you will no longer have a Hub, only Scopes as a concept. This also means that `getCurrentHub()` will eventually
-be removed.
-
-Instead of `getCurrentHub()`, use the respective replacement API directly - see [Deprecate Hub](#deprecate-hub) for
-details.
-
-## Deprecate class-based integrations
-
-In v7, integrations are classes and can be added as e.g. `integrations: [new Sentry.Integrations.ContextLines()]`. In
-v8, integrations will not be classes anymore, but instead functions. Both the use as a class, as well as accessing
-integrations from the `Integrations.XXX` hash, is deprecated in favor of using the new functional integrations
-
-- for example, `new Integrations.LinkedErrors()` becomes `linkedErrorsIntegration()`.
-
-The following list shows how integrations should be migrated:
-
-### List of integrations and their replacements
-
-| Old                                 | New                                 | Packages                                                                                                |
-| ----------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `new BrowserTracing()`              | `browserTracingIntegration()`       | `@sentry/browser`                                                                                       |
-| `new InboundFilters()`              | `inboundFiltersIntegration()`       | `@sentry/core`, `@sentry/browser`, `@sentry/node`, `@sentry/deno`, `@sentry/bun`, `@sentry/vercel-edge` |
-| `new FunctionToString()`            | `functionToStringIntegration()`     | `@sentry/core`, `@sentry/browser`, `@sentry/node`, `@sentry/deno`, `@sentry/bun`, `@sentry/vercel-edge` |
-| `new LinkedErrors()`                | `linkedErrorsIntegration()`         | `@sentry/core`, `@sentry/browser`, `@sentry/node`, `@sentry/deno`, `@sentry/bun`, `@sentry/vercel-edge` |
-| `new ModuleMetadata()`              | `moduleMetadataIntegration()`       | `@sentry/core`, `@sentry/browser`                                                                       |
-| `new RequestData()`                 | `requestDataIntegration()`          | `@sentry/core`, `@sentry/node`, `@sentry/deno`, `@sentry/bun`, `@sentry/vercel-edge`                    |
-| `new Wasm() `                       | `wasmIntegration()`                 | `@sentry/wasm`                                                                                          |
-| `new Replay()`                      | `replayIntegration()`               | `@sentry/browser`                                                                                       |
-| `new ReplayCanvas()`                | `replayCanvasIntegration()`         | `@sentry/browser`                                                                                       |
-| `new Feedback()`                    | `feedbackIntegration()`             | `@sentry/browser`                                                                                       |
-| `new CaptureConsole()`              | `captureConsoleIntegration()`       | `@sentry/integrations`                                                                                  |
-| `new Debug()`                       | `debugIntegration()`                | `@sentry/integrations`                                                                                  |
-| `new Dedupe()`                      | `dedupeIntegration()`               | `@sentry/browser`, `@sentry/integrations`, `@sentry/deno`                                               |
-| `new ExtraErrorData()`              | `extraErrorDataIntegration()`       | `@sentry/integrations`                                                                                  |
-| `new ReportingObserver()`           | `reportingObserverIntegration()`    | `@sentry/integrations`                                                                                  |
-| `new RewriteFrames()`               | `rewriteFramesIntegration()`        | `@sentry/integrations`                                                                                  |
-| `new SessionTiming()`               | `sessionTimingIntegration()`        | `@sentry/integrations`                                                                                  |
-| `new HttpClient()`                  | `httpClientIntegration()`           | `@sentry/integrations`                                                                                  |
-| `new ContextLines()`                | `contextLinesIntegration()`         | `@sentry/integrations`, `@sentry/node`, `@sentry/deno`, `@sentry/bun`                                   |
-| `new Breadcrumbs()`                 | `breadcrumbsIntegration()`          | `@sentry/browser`, `@sentry/deno`                                                                       |
-| `new GlobalHandlers()`              | `globalHandlersIntegration()`       | `@sentry/browser` , `@sentry/deno`                                                                      |
-| `new HttpContext()`                 | `httpContextIntegration()`          | `@sentry/browser`                                                                                       |
-| `new TryCatch()`                    | `browserApiErrorsIntegration()`     | `@sentry/browser`, `@sentry/deno`                                                                       |
-| `new VueIntegration()`              | `vueIntegration()`                  | `@sentry/vue`                                                                                           |
-| `new DenoContext()`                 | `denoContextIntegration()`          | `@sentry/deno`                                                                                          |
-| `new DenoCron()`                    | `denoCronIntegration()`             | `@sentry/deno`                                                                                          |
-| `new NormalizePaths()`              | `normalizePathsIntegration()`       | `@sentry/deno`                                                                                          |
-| `new Console()`                     | `consoleIntegration()`              | `@sentry/node`                                                                                          |
-| `new Context()`                     | `nodeContextIntegration()`          | `@sentry/node`                                                                                          |
-| `new Modules()`                     | `modulesIntegration()`              | `@sentry/node`                                                                                          |
-| `new OnUncaughtException()`         | `onUncaughtExceptionIntegration()`  | `@sentry/node`                                                                                          |
-| `new OnUnhandledRejection()`        | `onUnhandledRejectionIntegration()` | `@sentry/node`                                                                                          |
-| `new LocalVariables()`              | `localVariablesIntegration()`       | `@sentry/node`                                                                                          |
-| `new Spotlight()`                   | `spotlightIntegration()`            | `@sentry/node`                                                                                          |
-| `new Anr()`                         | `anrIntegration()`                  | `@sentry/node`                                                                                          |
-| `new Hapi()`                        | `hapiIntegration()`                 | `@sentry/node`                                                                                          |
-| `new Undici()`                      | `nativeNodeFetchIntegration()`      | `@sentry/node`                                                                                          |
-| `new Http()`                        | `httpIntegration()`                 | `@sentry/node`                                                                                          |
-| `new ProfilingIntegration()`        | `nodeProfilingIntegration()`        | `@sentry/profiling-node`                                                                                |
-| `new BrowserProfilingIntegration()` | `browserProfilingIntegration()`     | `@sentry/browser`                                                                                       |
-
-## Deprecate `hub.bindClient()` and `makeMain()`
-
-Instead, either directly use `initAndBind()`, or the new APIs `setCurrentClient()` and `client.init()`. See
-[Initializing the SDK in v8](./docs/v8-initializing.md) for more details.
-
-## Deprecate `Transaction` integration
-
-This pluggable integration from `@sentry/integrations` will be removed in v8. It was already undocumented and is not
-necessary for the SDK to work as expected.
-
-## Changed integration interface
-
-In v8, integrations passed to a client will have an optional `setupOnce()` hook. Currently, this hook is always present,
-but in v8 you will not be able to rely on this always existing anymore - any integration _may_ have a `setup` and/or a
-`setupOnce` hook. Additionally, `setupOnce()` will not receive any arguments anymore.
-
-This should not affect most people, but in the case that you are manually calling `integration.setupOnce()` right now,
-make sure to guard it's existence properly.
-
-## Deprecate `getIntegration()` and `getIntegrationById()`
-
-This deprecates `getIntegration()` on both the hub & the client, as well as `getIntegrationById()` on the baseclient.
-Instead, use `getIntegrationByName()`. You can optionally pass an integration generic to make it easier to work with
-typescript:
-
-```ts
-const replay = getClient().getIntegrationByName<Replay>('Replay');
-```
-
-## Deprecate `Hub`
-
-The `Hub` has been a very important part of the Sentry SDK API up until now. Hubs were the SDK's "unit of concurrency"
-to keep track of data across threads and to scope data to certain parts of your code. Because it is overly complicated
-and confusing to power users, it is going to be replaced by a set of new APIs: the "new Scope API".
-
-`Scope`s have existed before in the SDK but we are now expanding on them because we have found them powerful enough to
-fully cover the `Hub` API.
-
-If you are using the `Hub` right now, see the following table on how to migrate to the new API:
-
-| Old `Hub` API          | New `Scope` API                                                                      |
-| ---------------------- | ------------------------------------------------------------------------------------ |
-| `new Hub()`            | `withScope()`, `withIsolationScope()` or `new Scope()`                               |
-| hub.isOlderThan()      | REMOVED - Was used to compare `Hub` instances, which are gonna be removed            |
-| hub.bindClient()       | A combination of `scope.setClient()` and `client.init()`                             |
-| hub.pushScope()        | `Sentry.withScope()`                                                                 |
-| hub.popScope()         | `Sentry.withScope()`                                                                 |
-| hub.withScope()        | `Sentry.withScope()`                                                                 |
-| getClient()            | `Sentry.getClient()`                                                                 |
-| getScope()             | `Sentry.getCurrentScope()` to get the currently active scope                         |
-| getIsolationScope()    | `Sentry.getIsolationScope()`                                                         |
-| getStack()             | REMOVED - The stack used to hold scopes. Scopes are used directly now                |
-| getStackTop()          | REMOVED - The stack used to hold scopes. Scopes are used directly now                |
-| captureException()     | `Sentry.captureException()`                                                          |
-| captureMessage()       | `Sentry.captureMessage()`                                                            |
-| captureEvent()         | `Sentry.captureEvent()`                                                              |
-| lastEventId()          | `Sentry.lastEventId()`                                                               |
-| addBreadcrumb()        | `Sentry.addBreadcrumb()`                                                             |
-| setUser()              | `Sentry.setUser()`                                                                   |
-| setTags()              | `Sentry.setTags()`                                                                   |
-| setExtras()            | `Sentry.setExtras()`                                                                 |
-| setTag()               | `Sentry.setTag()`                                                                    |
-| setExtra()             | `Sentry.setExtra()`                                                                  |
-| setContext()           | `Sentry.setContext()`                                                                |
-| configureScope()       | REMOVED - Scopes are now the unit of concurrency                                     |
-| run()                  | `Sentry.withScope()` or `Sentry.withIsolationScope()`                                |
-| getIntegration()       | `client.getIntegration()`                                                            |
-| startTransaction()     | `Sentry.startSpan()`, `Sentry.startInactiveSpan()` or `Sentry.startSpanManual()`     |
-| traceHeaders()         | REMOVED - The closest equivalent is now `spanToTraceHeader(getActiveSpan())`         |
-| captureSession()       | `Sentry.captureSession()`                                                            |
-| startSession()         | `Sentry.startSession()`                                                              |
-| endSession()           | `Sentry.endSession()`                                                                |
-| shouldSendDefaultPii() | REMOVED - The closest equivalent is `Sentry.getClient().getOptions().sendDefaultPii` |
-
-The `Hub` constructor is also deprecated and will be removed in the next major version. If you are creating Hubs for
-multi-client use like so:
-
-```ts
-// OLD
-const hub = new Hub();
-hub.bindClient(client);
-makeMain(hub);
-```
-
-instead initialize the client as follows:
-
-```ts
-// NEW
-Sentry.withIsolationScope(() => {
-  Sentry.setCurrentClient(client);
-  client.init();
-});
-```
-
-If you are using the Hub to capture events like so:
-
-```ts
-// OLD
-const client = new Client();
-const hub = new Hub(client);
-hub.captureException();
-```
-
-instead capture isolated events as follows:
-
-```ts
-// NEW
-const client = new Client();
-const scope = new Scope();
-scope.setClient(client);
-scope.captureException();
-```
-
-## Deprecate `client.setupIntegrations()`
-
-Instead, use the new `client.init()` method. You should probably not use this directly and instead use `Sentry.init()`,
-which calls this under the hood. But if you have a special use case that requires that, you can call `client.init()`
-instead now.
-
-## Deprecate `scope.getSpan()` and `scope.setSpan()`
-
-Instead, you can get the currently active span via `Sentry.getActiveSpan()`. Setting a span on the scope happens
-automatically when you use the new performance APIs `startSpan()` and `startSpanManual()`.
-
-## Deprecate `scope.getTransaction()` and `getActiveTransaction()`
-
-Instead, you should not rely on the active transaction, but just use `startSpan()` APIs, which handle this for you.
-
-## Deprecate arguments for `startSpan()` APIs
-
-In v8, the API to start a new span will be reduced from the currently available options. Going forward, only these
-argument will be passable to `startSpan()`, `startSpanManual()` and `startInactiveSpan()`:
-
-- `name`
-- `attributes`
-- `origin`
-- `op`
-- `startTime`
-- `scope`
-
-## Deprecate `startTransaction()` & `span.startChild()`
-
-In v8, the old performance API `startTransaction()` (and `hub.startTransaction()`), as well as `span.startChild()`, will
-be removed. Instead, use the new performance APIs:
-
-- `startSpan()`
-- `startSpanManual()`
-- `startInactiveSpan()`
-
-You can [read more about the new performance APIs here](./docs/v8-new-performance-apis.md).
-
-## Deprecate variations of `Sentry.continueTrace()`
-
-The version of `Sentry.continueTrace()` which does not take a callback argument will be removed in favor of the version
-that does. Additionally, the callback argument will not receive an argument with the next major version.
-
-Use `Sentry.continueTrace()` as follows:
-
-```ts
-app.get('/your-route', req => {
-  Sentry.withIsolationScope(isolationScope => {
-    Sentry.continueTrace(
-      {
-        sentryTrace: req.headers.get('sentry-trace'),
-        baggage: req.headers.get('baggage'),
-      },
-      () => {
-        // All events recorded in this callback will be associated with the incoming trace. For example:
-        Sentry.startSpan({ name: '/my-route' }, async () => {
-          await doExpensiveWork();
-        });
-      },
-    );
+export function initialize(appInstance: ApplicationInstance): void {
+  instrumentAppInstancePerformance(appInstance, {
+    // former config/environment flags live here now, e.g.:
+    // disableRunloopPerformance: false,
+    // disableInstrumentComponents: false,
   });
+}
+
+export default { initialize };
+```
+
+FastBoot is detected automatically, so client-side instrumentation is skipped during server rendering with no extra configuration.
+
+**3. `instrumentRoutePerformance` is unchanged.** Wrapping individual routes works exactly as before:
+
+```typescript
+// app/routes/posts.ts
+import Route from '@ember/routing/route';
+import { instrumentRoutePerformance } from '@sentry/ember';
+
+class PostsRoute extends Route {
+  async model() {
+    return this.store.findAll('post');
+  }
+}
+
+export default instrumentRoutePerformance(PostsRoute);
+```
+
+## 3. Removed APIs
+
+### `@sentry/core` / All SDKs
+
+- The `createSpanEnvelope` function and the `SpanEnvelope` / `SpanItem` types were removed. They existed only to send standalone (v1) spans as their own segment envelope, which the SDK no longer does. Standalone spans are gone; spans are sent either on their transaction or, with span streaming, as streamed spans (`StreamedSpanEnvelope`).
+- The `disableInstrumentationWarnings` option and the `MissingInstrumentationContext` type were removed. Now that instrumentation is channel-based, the SDK can no longer detect the "you imported a framework before `Sentry.init()`" case, so the warning it gated and the context it attached no longer exist.
+- The deprecated `sendDefaultPii` option was removed. Use [`dataCollection`](#senddefaultpii-is-replaced-by-datacollection) instead.
+- The `_experiments.enableLogs` option was removed. Logs are now enabled by default, so if you were opting in via `_experiments.enableLogs: true` you can simply omit the option. Use the top-level `enableLogs: false` to opt out.
+
+```js
+// before
+Sentry.init({
+  _experiments: {
+    enableLogs: true,
+  },
+});
+
+// after: logs are enabled by default, no option needed
+Sentry.init({});
+
+// or, to opt out
+Sentry.init({
+  enableLogs: false,
 });
 ```
 
-## Deprecated fields on `Span` and `Transaction`
+### `@sentry/browser`
 
-In v8, the Span class is heavily reworked. The following properties & methods are thus deprecated:
+- The experimental `_experiments.enableStandaloneClsSpans` and `_experiments.enableStandaloneLcpSpans` options were removed from both `browserTracingIntegration` and `webVitalsIntegration`. CLS and LCP are no longer configurable: they are recorded as measurements on the pageload span, unless span streaming is enabled (`traceLifecycle: 'stream'`), in which case they are sent as dedicated spans.
+- INP is now always sent as a web vital span (streamed when span streaming is enabled, standalone otherwise) that carries its value as a `browser.web_vital.inp.value` attribute. Previously, with span streaming disabled, INP was sent as a standalone span that carried its value as a span measurement.
 
-- `span.toContext()`: Access the fields directly instead.
-- `span.updateWithContext(newSpanContext)`: Update the fields directly instead.
-- `span.setName(newName)`: Use `span.updateName(newName)` instead.
-- `span.toTraceparent()`: use `spanToTraceHeader(span)` util instead.
-- `span.getTraceContext()`: Use `spanToTraceContext(span)` utility function instead.
-- `span.sampled`: Use `span.isRecording()` instead.
-- `span.spanId`: Use `span.spanContext().spanId` instead.
-- `span.parentSpanId`: Use `spanToJSON(span).parent_span_id` instead.
-- `span.traceId`: Use `span.spanContext().traceId` instead.
-- `span.name`: Use `spanToJSON(span).description` instead.
-- `span.description`: Use `spanToJSON(span).description` instead.
-- `span.getDynamicSamplingContext`: Use `spanToBaggageHeader(span)` utility function instead.
-- `span.tags`: Set tags on the surrounding scope instead, or use attributes.
-- `span.data`: Use `spanToJSON(span).data` instead.
-- `span.setTag()`: Use `span.setAttribute()` instead or set tags on the surrounding scope.
-- `span.setData()`: Use `span.setAttribute()` instead.
-- `span.instrumenter` This field was removed and will be replaced internally.
-- `span.transaction`: Use `getRootSpan` utility function instead.
-- `span.spanRecorder`: Span recording will be handled internally by the SDK.
-- `span.status`: Use `.setStatus` to set or update and `spanToJSON()` to read the span status.
-- `span.op`: Use `startSpan` functions to set, `setAttribute()` to update and `spanToJSON` to read the span operation.
-- `span.isSuccess`: Use `spanToJSON(span).status === 'ok'` instead.
-- `transaction.setMetadata()`: Use attributes instead, or set data on the scope.
-- `transaction.metadata`: Use attributes instead, or set data on the scope.
-- `transaction.setContext()`: Set context on the surrounding scope instead.
-- `transaction.setMeasurement()`: Use `Sentry.setMeasurement()` instead. In v8, setting measurements will be limited to
-  the currently active root span.
-- `transaction.setName()`: Set the name with `.updateName()` and the source with `.setAttribute()` instead.
-- `span.startTimestamp`: use `spanToJSON(span).start_timestamp` instead. You cannot update this anymore in v8.
-- `span.endTimestamp`: use `spanToJSON(span).timestamp` instead. You cannot update this anymore in v8. You can pass a
-  custom end timestamp to `span.end(endTimestamp)`.
-
-## Deprecate `pushScope` & `popScope` in favor of `withScope`
-
-Instead of manually pushing/popping a scope, you should use `Sentry.withScope(callback: (scope: Scope))` instead.
-
-## Deprecate `configureScope` in favor of using `getCurrentScope()`
-
-Instead of updating the scope in a callback via `configureScope()`, you should access it via `getCurrentScope()` and
-configure it directly:
+- `browserTracingIntegration` no longer captures spans created by `performance.mark()` and `performance.measure()` by default. Add `userTimingIntegration()` to continue capturing them. The `ignorePerformanceApiSpans` option moved to the new integration as `ignore`.
 
 ```js
-Sentry.getCurrentScope().setTag('xx', 'yy');
-```
-
-## Deprecate `addGlobalEventProcessor` in favor of `addEventProcessor`
-
-Instead of using `addGlobalEventProcessor`, you should use `addEventProcessor` which does not add the event processor
-globally, but to the current client.
-
-For the vast majority of cases, the behavior of these should be the same. Only in the case where you have multiple
-clients will this differ - but you'll likely want to add event processors per-client then anyhow, not globally.
-
-In v8, we will remove the global event processors overall, as that allows us to avoid keeping global state that is not
-necessary.
-
-## Deprecate `extractTraceParentData` export from `@sentry/core` & downstream packages
-
-Instead, import this directly from `@sentry/utils`.
-
-Generally, in most cases you should probably use `continueTrace` instead, which abstracts this away from you and handles
-scope propagation for you.
-
-## Deprecate `timestampWithMs` export - #7878
-
-The `timestampWithMs` util is deprecated in favor of using `timestampInSeconds`.
-
-## `addTracingExtensions` replaces `addExtensionMethods` (since 7.46.0)
-
-Since the deprecation of `@sentry/tracing`, tracing extensions are now added by calling `addTracingExtensions` which is
-exported from all framework SDKs.
-
-```js
-// Before
-import * as Sentry from '@sentry/browser';
-import { addExtensionMethods } from '@sentry/tracing';
-
+// before
 Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-
-addExtensionMethods();
-
-// After
-import * as Sentry from '@sentry/browser';
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-
-Sentry.addTracingExtensions();
-```
-
-## Remove requirement for `@sentry/tracing` package (since 7.46.0)
-
-With `7.46.0` you no longer require the `@sentry/tracing` package to use tracing and performance monitoring with the
-Sentry JavaScript SDKs. The `@sentry/tracing` package will be removed in a future major release, but can still be used
-in the meantime.
-
-#### Browser:
-
-```js
-// Before
-import * as Sentry from '@sentry/browser';
-import { BrowserTracing } from '@sentry/tracing';
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-  integrations: [new BrowserTracing()],
-});
-
-// After
-import * as Sentry from '@sentry/browser';
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-  integrations: [new Sentry.BrowserTracing()],
-});
-```
-
-#### Node:
-
-```js
-// Before
-const Sentry = require('@sentry/node');
-require('@sentry/tracing');
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
-});
-
-// After
-const Sentry = require('@sentry/node');
-
-Sentry.init({
-  dsn: '__DSN__',
-  tracesSampleRate: 1.0,
   integrations: [
-    // Automatically instrument Node.js libraries and frameworks
-    ...Sentry.autoDiscoverNodePerformanceMonitoringIntegrations(),
+    Sentry.browserTracingIntegration({
+      ignorePerformanceApiSpans: ['third-party-mark'],
+    }),
+  ],
+});
+
+// after
+Sentry.init({
+  integrations: [
+    Sentry.browserTracingIntegration(),
+    Sentry.userTimingIntegration({
+      ignore: ['third-party-mark'],
+    }),
   ],
 });
 ```
 
-**Note:** If you imported `stripUrlQueryAndFragment` from `@sentry/tracing`, you'll need to import it from
-`@sentry/utils`, once you remove `@sentry/tracing`.
+### `@sentry/node` / Server-side SDKs
 
-## Replay options changed (since 7.35.0) - #6645
+- `SentryContextManager` is no longer exported. It is no longer needed now that Sentry does not set up OpenTelemetry by default.
+- The deprecated `honoIntegration` was removed. Use the [`@sentry/hono`](https://www.npmjs.com/package/@sentry/hono) SDK to instrument Hono.
+- The `connect` instrumentation was removed.
+- The deprecated `prismaInstrumentation` option was removed. It was no longer used, as Prisma works out of the box.
+- The `registerEsmLoaderHooks` option was removed. All instrumentation is now channel-based (via `@sentry/server-utils`), so the SDK no longer registers `import-in-the-middle` ESM loader hooks and the option no longer had any effect.
+- The deprecated `SentryHttpInstrumentation` and `SentryNodeFetchInstrumentation` exports were removed. Use `instrumentHttpOutgoingRequests()` and the `nativeNodeFetchIntegration` respectively.
+- The `generateInstrumentOnce` export was removed (from `@sentry/node` and the framework SDKs that re-exported it). It wrapped OpenTelemetry's `registerInstrumentations` and is no longer needed now that instrumentation is channel-based.
+- The `@sentry/node/init` and `@sentry/node/preload` entry points were removed. Create your own instrument file that calls `Sentry.init()` and preload it with `node --import ./instrument.mjs app.js` instead.
+- The `preloadOpenTelemetry()` function was removed. All instrumentation is now channel-based via `orchestrion` and is set up when the instrumented module loads, so preloading is no longer needed.
+- The `@sentry/node/loader` entry point was removed. Use `node --import @sentry/node/import` instead.
+- (Astro) The `@sentry/astro/loader` entry point was removed. Use `node --import @sentry/astro/import` instead.
+- (AWS Lambda) The `@sentry/aws-serverless/loader` entry point was removed. Use `node --import @sentry/aws-serverless/import` instead.
+- (Google Cloud) The `@sentry/google-cloud-serverless/loader` entry point was removed. Use `node --import @sentry/google-cloud-serverless/import` instead.
+- (Next.js) The `@sentry/nextjs/loader` entry point was removed. Use `node --import @sentry/nextjs/import` instead.
+- (Remix) The `@sentry/remix/loader` entry point was removed. Use `node --import @sentry/remix/import` instead.
+- (TanStack Start) The `@sentry/tanstackstart-react/loader` entry point was removed. Use `node --import @sentry/tanstackstart-react/import` instead.
+- (Express) The deprecated `patchExpressModule(options)` signature was removed. Use `patchExpressModule(moduleExports, getOptions)` instead.
+- The `@sentry/node-core/light/otlp` entry point was removed, along with its optional `@opentelemetry/exporter-trace-otlp-http` peer dependency. `otlpIntegration` is now exported directly from every server-side SDK, so `Sentry.otlpIntegration()` needs no extra import or install.
+- The `otlpIntegration` options `setupOtlpTracesExporter` and `collectorUrl` were removed, and the integration no longer sets up a span exporter, span processor, or tracer provider. Configure your own exporter and point it at `Sentry.getOtlpTracesEndpoint(dsn)`, or at your collector's URL if you route through one. See [Connecting Sentry to your OpenTelemetry traces](#connecting-sentry-to-your-opentelemetry-traces).
 
-Some options for replay have been deprecated in favor of new APIs. See
-[Replay Migration docs](./docs/migration/replay.md#upgrading-replay-from-7340-to-7350---6645) for details.
+### `@sentry/cloudflare`
 
-## Renaming of Next.js wrapper methods (since 7.31.0) - #6790
+- The `@sentry/cloudflare/nodejs_compat` subpath export was removed. Since `nodejs_compat` is now required for all users, the main `@sentry/cloudflare` entry point includes everything that was previously only available via the subpath.
 
-We updated the names of the functions to wrap data fetchers and API routes to better reflect what they are doing. The
-old methods can still be used but are deprecated and will be removed in the next major update of the SDK.
+```diff
+- import * as Sentry from '@sentry/cloudflare/nodejs_compat';
++ import * as Sentry from '@sentry/cloudflare';
+```
 
-Following function names were updated:
+- The deprecated `instrumentD1WithSentry` export was removed. `withSentry()` automatically instruments all D1 bindings via `env`.
 
-- `withSentryAPI` was renamed to `wrapApiHandlerWithSentry`
-- `withSentryGetServerSideProps` was renamed to `wrapGetServerSidePropsWithSentry`
-- `withSentryGetStaticProps` was renamed to `wrapGetStaticPropsWithSentry`
-- `withSentryServerSideGetInitialProps` was renamed to `wrapGetInitialPropsWithSentry`
-- `withSentryServerSideAppGetInitialProps` was renamed to `wrapAppGetInitialPropsWithSentry`
-- `withSentryServerSideDocumentGetInitialProps` was renamed to `wrapDocumentGetInitialPropsWithSentry`
-- `withSentryServerSideErrorGetInitialProps` was renamed to `wrapErrorGetInitialPropsWithSentry`
+```diff
+  import * as Sentry from '@sentry/cloudflare';
 
-## Deprecated `tracingOrigins` (since 7.19.0) - #6176
+  export default withSentry(
+    (env) => ({ dsn: env.SENTRY_DSN }),
+    {
+      async fetch(request, env, ctx) {
+-       const db = Sentry.instrumentD1WithSentry(env.DB);
+-       const result = await db.prepare('SELECT * FROM users').all();
++       const result = await env.DB.prepare('SELECT * FROM users').all();
+      },
+    },
+  );
+```
 
-The `tracingOrigins` option is deprecated in favor of using `shouldCreateSpanForRequest` and `tracePropagationTargets`.
+- The `instrumentPrototypeMethods` option of `instrumentDurableObjectWithSentry` was removed. Use `enableRpcTracePropagation` instead, which was introduced as its replacement in v10.
 
-## Deprecate `componentTrackingPreprocessor` in Svelte SDK (since 7.16.0) - #5936
+```diff
+  export const MyDO = Sentry.instrumentDurableObjectWithSentry(
+    (env) => ({
+      dsn: env.SENTRY_DSN,
+-     instrumentPrototypeMethods: true,
++     enableRpcTracePropagation: true,
+    }),
+    MyDOBase,
+  );
+```
 
-This release adds the `withSentryConfig` feature to the Svelte SDK. It replaces the now deprecated Svelte
-`componentTrackingPreprocessor` which will be removed in the next major release.
+- The `honoIntegration` was removed. Use the dedicated [`@sentry/hono`](https://www.npmjs.com/package/@sentry/hono) package instead, which provides a middleware that handles error capturing automatically.
 
-## Deprecate `getGlobalObject` in `@sentry/utils` (since 7.16.0) - #5949
+```diff
+- import * as Sentry from '@sentry/cloudflare';
++ import { sentry } from '@sentry/hono/cloudflare';
 
-This is no longer used.
+  const app = new Hono();
++ app.use(sentry());
+```
 
-## Deprecate @sentry/hub (since 7.15.0) - #5823
+### `@sentry/opentelemetry`
 
-This release deprecates `@sentry/hub` and all of it's exports. All of the `@sentry/hub` exports have moved to
-`@sentry/core`. `@sentry/hub` will be removed in the next major release.
+- `getTraceContextForScope` was removed. Scope-to-trace-context resolution now goes through the shared core implementation.
+- The `@opentelemetry/core` peer dependency was removed; its APIs are now vendored internally.
+- `getSentryResource` was removed.
+- OpenTelemetry resources are no longer collected, and `contexts.otel.resource` was dropped from events. As a result, the `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` environment variables are no longer read by the SDK.
 
-# Upgrading Sentry Replay (beta, 7.24.0)
+### AI integrations
 
-For details on upgrading Replay in its beta phase, please view the
-[dedicated Replay MIGRATION docs](./docs/migration/replay.md).
+- The `enableTruncation` and `streamGenAiSpans` flags were removed. The new default is no truncation and to always stream gen AI spans.
+- The internal `sentry.sdk_meta.gen_ai.input.messages.original_length` span attribute was removed.
+- (Vercel AI) The internal JSON-stringify workaround for array span attributes was removed.
+- AI integrations are no longer available in the browser SDK. They remain available in the server-side SDKs.
+- The AI instrumentation code moved out of `@sentry/core` into `@sentry/server-utils`. If you imported any AI helper **directly from `@sentry/core`**, import it from `@sentry/server-utils` instead (or keep importing it from your platform SDK, e.g. `@sentry/node`, if it re-exported that helper before — platform SDK availability is unchanged from v10). Affected helpers: `instrumentOpenAiClient`, `instrumentAnthropicAiClient`, `instrumentGoogleGenAIClient`, `instrumentWorkersAiClient`, `createLangChainCallbackHandler`, `instrumentLangChainEmbeddings`, `instrumentStateGraph`, `instrumentStateGraphCompile`, `instrumentCreateReactAgent`, `addVercelAiProcessors`.
+- The following low-level AI exports are no longer part of the public API (they were provider-instrumentation internals exported from `@sentry/core`):
+  - Attribute/stream/util helpers: `extractOpenAiRequestAttributes`, `addOpenAiRequestAttributes`, `addOpenAiResponseAttributes`, `extractOpenAiRequestParameters`, `instrumentOpenAiStream`, `extractAnthropicRequestAttributes`, `addAnthropicRequestAttributes`, `addAnthropicResponseAttributes`, `instrumentAsyncIterableStream`, `instrumentMessageStream`, `extractGoogleGenAIRequestAttributes`, `addGoogleGenAIRequestAttributes`, `addGoogleGenAIResponseAttributes`, `instrumentGoogleGenAIStream`, `getProviderMetadataAttributes`, `getTruncatedJsonString`, `shouldEnableTruncation`, `resolveAIRecordingOptions`, `wrapToolsWithSpans`, `extractLLMFromParams`, `extractAgentNameFromParams`, `instrumentCompiledGraphInvoke`.
+  - Integration-name constants: `OPENAI_INTEGRATION_NAME`, `ANTHROPIC_AI_INTEGRATION_NAME`, `GOOGLE_GENAI_INTEGRATION_NAME`, `LANGCHAIN_INTEGRATION_NAME`, `LANGGRAPH_INTEGRATION_NAME`.
+  - Types: `OpenAiClient`, `OpenAiOptions`, `InstrumentedMethod`, `AnthropicAiClient`, `AnthropicAiOptions`, `AnthropicAiResponse`, `AnthropicAiInstrumentedMethod`, `GoogleGenAIClient`, `GoogleGenAIChat`, `GoogleGenAIOptions`, `GoogleGenAIResponse`, `GoogleGenAIInstrumentedMethod`, `GoogleGenAIIstrumentedMethod`, `WorkersAiClient`, `WorkersAiOptions`, `LangChainOptions`, `LangChainIntegration`, `LangGraphOptions`, `LangGraphIntegration`, `CompiledGraph`.
+
+### `@sentry/react-router`
+
+- The deprecated server wrappers `wrapServerLoader` and `wrapServerAction` were removed. Loaders and
+  actions are instrumented automatically via the instrumentation API - export
+  `instrumentations = [Sentry.createSentryServerInstrumentation()]` from your `entry.server.tsx`
+  instead of wrapping them individually.
+
+### `@sentry/profiling-node`
+
+- The `prune-profiler-binaries` script was removed.
+
+### Meta-framework build options
+
+The deprecated `sourceMapsUploadOptions` and other deprecated Vite/build plugin options were removed from `@sentry/nuxt` and `@sentry/sveltekit`. Use the top-level equivalents (e.g. `sourcemaps`, `release`, `authToken`, `org`, `project`, `telemetry`) instead.
+
+### `@sentry/nuxt`
+
+The deprecated `sourceMapsUploadOptions` module option was removed. Move its fields to the root level of the `sentry` module options. Note that `url` was renamed to `sentryUrl`, and `enabled` was replaced by `sourcemaps.disable` (inverted: `enabled: false` becomes `sourcemaps: { disable: true }`).
+
+```ts
+// nuxt.config.ts
+export default defineNuxtConfig({
+  modules: ['@sentry/nuxt/module'],
+  sentry: {
+    // before
+    sourceMapsUploadOptions: {
+      org: 'my-org',
+      project: 'my-project',
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+      url: 'https://my-sentry.example.com',
+      sourcemaps: {
+        assets: ['./dist/**/*'],
+      },
+    },
+
+    // after
+    org: 'my-org',
+    project: 'my-project',
+    authToken: process.env.SENTRY_AUTH_TOKEN,
+    sentryUrl: 'https://my-sentry.example.com',
+    sourcemaps: {
+      assets: ['./dist/**/*'],
+    },
+  },
+});
+```
+
+### `@sentry/sveltekit`
+
+The deprecated `sourceMapsUploadOptions` option was removed from `sentrySvelteKit()`. Move its fields to the root level of the `sentrySvelteKit()` options. Note that `url` was renamed to `sentryUrl`.
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  plugins: [
+    sentrySvelteKit({
+      // before
+      sourceMapsUploadOptions: {
+        org: 'my-org',
+        project: 'my-project',
+        authToken: process.env.SENTRY_AUTH_TOKEN,
+        url: 'https://my-sentry.example.com',
+        sourcemaps: {
+          assets: ['./build/**/*'],
+        },
+      },
+
+      // after
+      org: 'my-org',
+      project: 'my-project',
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+      sentryUrl: 'https://my-sentry.example.com',
+      sourcemaps: {
+        assets: ['./build/**/*'],
+      },
+    }),
+    sveltekit(),
+  ],
+});
+```
+
+### `@sentry/server-utils`
+
+- The following exports were removed from `@sentry/server-utils`. They were only reachable by importing from `@sentry/server-utils` directly (no user-facing SDK re-exported them) and were effectively internal; the underlying functionality is unchanged and still used within the SDK.
+  - `instrumentPrisma`: Prisma is instrumented via `prismaIntegration` and works out of the box, so manual instrumentation is no longer exposed.
+  - `defaultDbStatementSerializer`: the default Redis command statement serializer helper.
+  - Types: `PrismaInstrumentationConfig`, `PrismaOptions`, `RedisDiagnosticChannelsOptions`, `SentryTracingChannel`, `TracingChannelLifeCycleOptions`, `TracingChannelBindingHandle`.
+
+## 4. Package Removals
+
+### `@sentry/types` is no longer published
+
+Import all types from `@sentry/core` instead. `@sentry/types` has only re-exported from `@sentry/core`
+since v8 and has been deprecated since then.
+
+```js
+// before
+import type { Event } from '@sentry/types';
+
+// after
+import type { Event } from '@sentry/core';
+```
+
+### `@sentry/node-core` was merged back into `@sentry/node`
+
+With the reduced OpenTelemetry footprint in v11, `@sentry/node-core` no longer serves a purpose and was removed. Import everything from `@sentry/node` instead.
+
+```js
+// before
+import { init } from '@sentry/node-core';
+
+// after
+import { init } from '@sentry/node';
+```
+
+### `@sentry/tanstackstart` was removed
+
+The utility `@sentry/tanstackstart` package was removed. Use the `@sentry/tanstackstart-react` package for your setup.
+
+## 5. Renames
+
+### `InboundFilters` integration renamed to `EventFilters`
+
+Affected SDKs: All SDKs.
+
+The `InboundFilters` integration was renamed to `EventFilters`, and `inboundFiltersIntegration` to
+`eventFiltersIntegration`. The old `inboundFiltersIntegration` export (deprecated in v10) was removed.
+
+```js
+// before
+import { inboundFiltersIntegration } from '@sentry/browser';
+
+// after
+import { eventFiltersIntegration } from '@sentry/browser';
+```
+
+All SDKs now also set up `eventFiltersIntegration` instead of `inboundFiltersIntegration` as a default
+integration, so the integration reports itself as `EventFilters` (e.g. in the `sdk.integrations` payload of
+events). If you disable the integration by its previous name, update the reference:
+
+```js
+// before
+Sentry.init({
+  integrations: integrations => integrations.filter(integration => integration.name !== 'InboundFilters'),
+});
+
+// after
+Sentry.init({
+  integrations: integrations => integrations.filter(integration => integration.name !== 'EventFilters'),
+});
+```
+
+The same applies when looking the integration up by name, e.g. via `client.getIntegrationByName('InboundFilters')`.
+
+### `instrumentLangGraph` renamed to `instrumentStateGraph`
+
+Affected SDKs: SDKs with LangGraph instrumentation.
+
+`instrumentLangGraph` only instruments the `StateGraph` class, so it was renamed to
+`instrumentStateGraph` to avoid confusion with the separate ReactAgent instrumentation.
+
+```js
+// before
+import { instrumentLangGraph } from '@sentry/node';
+
+// after
+import { instrumentStateGraph } from '@sentry/node';
+```
+
+### `childProcess` integration split into `childProcess` and `workerThreads`
+
+Affected SDKs: `@sentry/node` and dependents.
+
+The `childProcessIntegration` was split into a `childProcessIntegration` (for `child_process`) and a separate `workerThreadsIntegration` (for `worker_threads`).
+
+Both integrations are enabled by default, so no change is needed to keep the previous behavior.
+
+The deprecated `captureWorkerErrors` option was removed. Worker thread errors are always captured as events now. To opt out, remove `workerThreadsIntegration` instead:
+
+```js
+// before
+Sentry.init({
+  integrations: [Sentry.childProcessIntegration({ captureWorkerErrors: false })],
+});
+
+// after
+Sentry.init({
+  integrations: integrations => integrations.filter(integration => integration.name !== 'WorkerThreads'),
+});
+```
+
+Note that `captureWorkerErrors: false` used to downgrade worker thread errors to a `worker_thread` breadcrumb. That breadcrumb is gone, so removing the integration drops worker thread errors entirely.
+
+The `includeChildProcessArgs` option stays on `childProcessIntegration`. Disabling `childProcessIntegration` no longer disables worker thread error capture, since that now lives in `workerThreadsIntegration`.
+
+The mechanism type of worker thread errors changed from `auto.child_process.worker_thread` to `auto.node.worker_threads`. Adjust any alerts or filters that match on it.
+
+### Deno default integrations renamed to match the other SDKs
+
+Affected SDKs: `@sentry/deno`.
+
+Several default integrations were renamed to match the names used by the other SDKs. The old `deno*Integration` exports are kept as deprecated aliases. If you relied on the old names (for example, to disable an integration), update them:
+
+- `DenoAmqplib` => `Amqplib`
+- `DenoKoa` => `Koa`
+- `DenoMongodb` => `Mongodb`
+- `DenoMongoose` => `Mongoose`
+- `DenoMysql` => `Mysql`
+- `DenoPostgres` => `Postgres`
+
+### `OtlpIntegration` integration renamed to `Otlp`
+
+Affected SDKs: Server-side SDKs (`@sentry/node` and all dependents).
+
+The OTLP integration reports itself as `Otlp` rather than `OtlpIntegration`, matching every other integration in the SDKs, none of which carry an `Integration` suffix in their name. The `otlpIntegration()` export itself is unchanged. This only matters if you reference the integration by name:
+
+```js
+// before
+Sentry.init({
+  integrations: integrations => integrations.filter(integration => integration.name !== 'OtlpIntegration'),
+});
+
+// after
+Sentry.init({
+  integrations: integrations => integrations.filter(integration => integration.name !== 'Otlp'),
+});
+```
+
+The same applies when looking the integration up by name, e.g. via `client.getIntegrationByName('OtlpIntegration')`.
+
+### `sentrySvelteKit` moved to the `@sentry/sveltekit/vite` subpath export
+
+Affected SDKs: `@sentry/sveltekit`.
+
+The `sentrySvelteKit` Vite plugin is no longer re-exported from the main `@sentry/sveltekit` entry. Import it from `@sentry/sveltekit/vite` in your `vite.config.ts` instead:
+
+```ts
+// vite.config.ts
+
+// before
+import { sentrySvelteKit } from '@sentry/sveltekit';
+
+// after
+import { sentrySvelteKit } from '@sentry/sveltekit/vite';
+```
+
+The main entry re-exported the build plugin statically, which pulled the whole build-time module graph (`@sentry/vite-plugin`, and through it `@babel/core`) into the server runtime graph whenever the SDK was imported in server code. Serverless bundlers that trace by reachability (e.g. `@vercel/nft`) then copied all of it into the function. Moving the plugin behind its own subpath keeps it off the runtime entry so it is never reachable from server code.
+
+- Several public types that used `any` now use `unknown` — including `StackFrame`, `SamplingContext`,
+  `SentryError`, and `User`. You may need to narrow types explicitly where you previously relied on
+  `any`.
+- (Cloudflare) The `env` types and the generics on `withSentry` and `instrumentDurableObjectWithSentry` were reworked for better type safety. If you were not passing explicit generic type parameters, no changes are needed.
+
+```diff
+- export default withSentry<Env>(
++ export default withSentry(
+    (env) => ({ dsn: env.SENTRY_DSN }),
+    {
+      async fetch(request, env, ctx) {
+        // env is correctly typed based on the handler
+      },
+    } satisfies ExportedHandler<Env>,
+  );
+```
+
+```diff
+- export const MyDO = Sentry.instrumentDurableObjectWithSentry<Env, MyDOBase, typeof MyDOBase>(
++ export const MyDO = Sentry.instrumentDurableObjectWithSentry(
+    (env) => ({ dsn: env.SENTRY_DSN }),
+    MyDOBase,
+  );
+```
+
+## No Version Support Timeline
+
+Version support timelines are stressful for everybody using the SDK, so we won't be defining one.
+Instead, we will be applying bug fixes and features to older versions as long as there is demand.
+
+Additionally, we hold ourselves accountable to any security issues, meaning that if any vulnerabilities are found, we will in almost all cases backport them.
+
+Note, that it is decided on a case-per-case basis, what gets backported or not.
+If you need a fix or feature in a previous version of the SDK, please reach out via a GitHub Issue.

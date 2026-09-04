@@ -1,4 +1,4 @@
-import { expect, test } from '@nuxt/test-utils/playwright';
+import { expect, test } from '@playwright/test';
 import { waitForError } from '@sentry-internal/test-utils';
 
 test.describe('client-side errors', async () => {
@@ -21,6 +21,7 @@ test.describe('client-side errors', async () => {
             value: 'Error thrown from Nuxt-3 E2E test app',
             mechanism: {
               handled: false,
+              type: 'auto.function.nuxt.vue-error',
             },
           },
         ],
@@ -34,6 +35,7 @@ test.describe('client-side errors', async () => {
     });
 
     await page.goto(`/test-param/1234`);
+    await page.waitForFunction(() => typeof window.__SENTRY__ === 'object');
     await page.locator('#errorBtn').click();
 
     const error = await errorPromise;
@@ -49,6 +51,7 @@ test.describe('client-side errors', async () => {
             value: 'Error thrown from Param Route Button',
             mechanism: {
               handled: false,
+              type: 'auto.function.nuxt.vue-error',
             },
           },
         ],
@@ -82,6 +85,7 @@ test.describe('client-side errors', async () => {
             value: 'Error thrown from Nuxt-3 E2E test app',
             mechanism: {
               handled: false,
+              type: 'auto.function.nuxt.vue-error',
             },
           },
         ],
@@ -96,6 +100,7 @@ test.describe('client-side errors', async () => {
             value: 'Another Error thrown from Nuxt-3 E2E test app',
             mechanism: {
               handled: false,
+              type: 'auto.function.nuxt.vue-error',
             },
           },
         ],

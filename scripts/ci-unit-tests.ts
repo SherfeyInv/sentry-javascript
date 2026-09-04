@@ -6,7 +6,7 @@ const UNIT_TEST_ENV = process.env.UNIT_TEST_ENV as 'node' | 'browser' | undefine
 const RUN_AFFECTED = process.argv.includes('--affected');
 
 // These packages are tested separately in CI, so no need to run them here
-const DEFAULT_SKIP_PACKAGES = ['@sentry/profiling-node', '@sentry/bun', '@sentry/deno'];
+const DEFAULT_SKIP_PACKAGES = ['@sentry/bun', '@sentry/deno'];
 
 // All other packages are run for multiple node versions
 const BROWSER_TEST_PACKAGES = [
@@ -17,12 +17,12 @@ const BROWSER_TEST_PACKAGES = [
   '@sentry/angular',
   '@sentry/solid',
   '@sentry/svelte',
-  '@sentry/profiling-node',
-  '@sentry-internal/browser-utils',
-  '@sentry-internal/replay',
-  '@sentry-internal/replay-canvas',
+  '@sentry/browser-utils',
+  '@sentry/replay',
+  '@sentry/replay-canvas',
   '@sentry-internal/replay-worker',
-  '@sentry-internal/feedback',
+  '@sentry/feedback',
+  '@sentry-internal/bundler-tests',
   '@sentry/wasm',
 ];
 
@@ -77,11 +77,11 @@ function run(cmd: string, options?: childProcess.ExecSyncOptions): void {
  * Run tests, ignoring the given packages
  */
 function runAllTests(ignorePackages: Set<string>): void {
-  const ignoreFlags = Array.from(ignorePackages)
-    .map(dep => `--ignore="${dep}"`)
+  const excludeFlags = Array.from(ignorePackages)
+    .map(dep => `--exclude="${dep}"`)
     .join(' ');
 
-  run(`yarn test ${ignoreFlags}`);
+  run(`yarn test ${excludeFlags}`);
 }
 
 /**

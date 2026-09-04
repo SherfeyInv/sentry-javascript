@@ -3,14 +3,11 @@
  */
 
 /* eslint-disable @typescript-eslint/unbound-method */
+import type { Integration } from '@sentry/core/browser';
+import * as SentryCore from '@sentry/core/browser';
+import { createTransport, resolvedSyncPromise } from '@sentry/core/browser';
 import type { Mock } from 'vitest';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import * as SentryCore from '@sentry/core';
-import { Scope, createTransport } from '@sentry/core';
-import { resolvedSyncPromise } from '@sentry/core';
-import type { Client, Integration } from '@sentry/core';
-
+import { afterEach, describe, expect, it, test, vi } from 'vitest';
 import type { BrowserOptions } from '../src';
 import { WINDOW } from '../src';
 import { init } from '../src/sdk';
@@ -34,40 +31,12 @@ export class MockIntegration implements Integration {
   }
 }
 
-vi.mock('@sentry/core', async requireActual => {
-  return {
-    ...((await requireActual()) as any),
-    getCurrentHub(): {
-      bindClient(client: Client): boolean;
-      getClient(): boolean;
-      getScope(): Scope;
-    } {
-      return {
-        getClient(): boolean {
-          return false;
-        },
-        getScope(): Scope {
-          return new Scope();
-        },
-        bindClient(client: Client): boolean {
-          client.init!();
-          return true;
-        },
-      };
-    },
-  };
-});
-
 describe('init', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  afterAll(() => {
-    vi.resetAllMocks();
-  });
-
-  test('installs default integrations', () => {
+  test('installs passed default integrations', () => {
     const DEFAULT_INTEGRATIONS: Integration[] = [
       new MockIntegration('MockIntegration 0.1'),
       new MockIntegration('MockIntegration 0.2'),
@@ -92,6 +61,32 @@ describe('init', () => {
     expect(optionsPassed?.integrations.length).toBeGreaterThan(0);
   });
 
+  it('installs spanStreamingIntegration by default', () => {
+    // @ts-expect-error this is fine for testing
+    const initAndBindSpy = vi.spyOn(SentryCore, 'initAndBind').mockImplementationOnce(() => {});
+    const options = getDefaultBrowserOptions({ dsn: PUBLIC_DSN, defaultIntegrations: undefined });
+
+    init(options);
+
+    const optionsPassed = initAndBindSpy.mock.calls[0]?.[1];
+    expect(optionsPassed?.integrations.some(integration => integration.name === 'SpanStreaming')).toBe(true);
+  });
+
+  it('does not install spanStreamingIntegration when traceLifecycle is static', () => {
+    // @ts-expect-error this is fine for testing
+    const initAndBindSpy = vi.spyOn(SentryCore, 'initAndBind').mockImplementationOnce(() => {});
+    const options = getDefaultBrowserOptions({
+      dsn: PUBLIC_DSN,
+      defaultIntegrations: undefined,
+      traceLifecycle: 'static',
+    });
+
+    init(options);
+
+    const optionsPassed = initAndBindSpy.mock.calls[0]?.[1];
+    expect(optionsPassed?.integrations.some(integration => integration.name === 'SpanStreaming')).toBe(false);
+  });
+
   test("doesn't install default integrations if told not to", () => {
     const DEFAULT_INTEGRATIONS: Integration[] = [
       new MockIntegration('MockIntegration 0.3'),
@@ -102,6 +97,17 @@ describe('init', () => {
 
     expect(DEFAULT_INTEGRATIONS[0]!.setupOnce as Mock).toHaveBeenCalledTimes(0);
     expect(DEFAULT_INTEGRATIONS[1]!.setupOnce as Mock).toHaveBeenCalledTimes(0);
+  });
+
+  it('installs spanStreamingIntegration with defaultIntegrations disabled', () => {
+    // @ts-expect-error this is fine for testing
+    const initAndBindSpy = vi.spyOn(SentryCore, 'initAndBind').mockImplementationOnce(() => {});
+    const options = getDefaultBrowserOptions({ dsn: PUBLIC_DSN, defaultIntegrations: false });
+
+    init(options);
+
+    const optionsPassed = initAndBindSpy.mock.calls[0]?.[1];
+    expect(optionsPassed?.integrations.some(integration => integration.name === 'SpanStreaming')).toBe(true);
   });
 
   it('installs merged default integrations, with overrides provided through options', () => {
@@ -154,8 +160,6 @@ describe('init', () => {
       new MockIntegration('MockIntegration 0.2'),
     ];
 
-    const originalLocation = WINDOW.location || {};
-
     const options = getDefaultBrowserOptions({ dsn: PUBLIC_DSN, defaultIntegrations: DEFAULT_INTEGRATIONS });
 
     afterEach(() => {
@@ -163,7 +167,7 @@ describe('init', () => {
       Object.defineProperty(WINDOW, 'browser', { value: undefined, writable: true });
       Object.defineProperty(WINDOW, 'nw', { value: undefined, writable: true });
       Object.defineProperty(WINDOW, 'window', { value: WINDOW, writable: true });
-      vi.clearAllMocks();
+      vi.restoreAllMocks();
     });
 
     it('logs a browser extension error if executed inside a Chrome extension', () => {
@@ -178,10 +182,8 @@ describe('init', () => {
 
       expect(consoleErrorSpy).toBeCalledTimes(1);
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        '[Sentry] You cannot run Sentry this way in a browser extension, check: https://docs.sentry.io/platforms/javascript/best-practices/browser-extensions/',
+        '[Sentry] You cannot use Sentry.init() in a browser extension, see: https://docs.sentry.io/platforms/javascript/best-practices/browser-extensions/',
       );
-
-      consoleErrorSpy.mockRestore();
     });
 
     it('logs a browser extension error if executed inside a Firefox/Safari extension', () => {
@@ -193,10 +195,8 @@ describe('init', () => {
 
       expect(consoleErrorSpy).toBeCalledTimes(1);
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        '[Sentry] You cannot run Sentry this way in a browser extension, check: https://docs.sentry.io/platforms/javascript/best-practices/browser-extensions/',
+        '[Sentry] You cannot use Sentry.init() in a browser extension, see: https://docs.sentry.io/platforms/javascript/best-practices/browser-extensions/',
       );
-
-      consoleErrorSpy.mockRestore();
     });
 
     it.each(['chrome-extension', 'moz-extension', 'ms-browser-extension', 'safari-web-extension'])(
@@ -204,12 +204,9 @@ describe('init', () => {
       extensionProtocol => {
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-        // @ts-expect-error - this is a hack to simulate a dedicated page in a browser extension
-        delete WINDOW.location;
-        // @ts-expect-error - this is a hack to simulate a dedicated page in a browser extension
-        WINDOW.location = {
-          href: `${extensionProtocol}://mock-extension-id/dedicated-page.html`,
-        };
+        const locationHrefSpy = vi
+          .spyOn(SentryCore, 'getLocationHref')
+          .mockImplementation(() => `${extensionProtocol}://mock-extension-id/dedicated-page.html`);
 
         Object.defineProperty(WINDOW, 'browser', { value: { runtime: { id: 'mock-extension-id' } }, writable: true });
 
@@ -218,7 +215,7 @@ describe('init', () => {
         expect(consoleErrorSpy).toBeCalledTimes(0);
 
         consoleErrorSpy.mockRestore();
-        WINDOW.location = originalLocation;
+        locationHrefSpy.mockRestore();
       },
     );
 
@@ -256,7 +253,7 @@ describe('init', () => {
       consoleErrorSpy.mockRestore();
     });
 
-    it("doesn't return a client on initialization error", () => {
+    it('returns a disabled client on initialization error', () => {
       const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       Object.defineProperty(WINDOW, 'chrome', {
@@ -266,7 +263,9 @@ describe('init', () => {
 
       const client = init(options);
 
-      expect(client).toBeUndefined();
+      expect(client).toBeDefined();
+      expect(SentryCore.isEnabled()).toBe(false);
+      expect(client!['_isEnabled']()).toBe(false);
 
       consoleErrorSpy.mockRestore();
     });

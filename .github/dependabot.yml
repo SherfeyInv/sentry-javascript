@@ -12,13 +12,29 @@ updates:
     directory: '/'
     schedule:
       interval: 'weekly'
-    allow:
-      - dependency-name: "@sentry/*"
-      - dependency-name: "@opentelemetry/*"
-      - dependency-name: "@prisma/instrumentation"
-      - dependency-name: "opentelemetry-instrumentation-remix"
+    ignore:
+      - dependency-name: '@opentelemetry/instrumentation'
+      - dependency-name: '@opentelemetry/instrumentation-*'
+      - dependency-name: 'typescript'
+      # 2.110.0 raised the engine requirement to Node >=22, while this repo runs Node 20.
+      - dependency-name: '@supabase/supabase-js'
+        versions: ['>=2.110.0']
+    groups:
+      opentelemetry:
+        patterns:
+          - '@opentelemetry/*'
+      remix:
+        patterns:
+          - '@remix-run/*'
+      react-router:
+        patterns:
+          - 'react-router'
+          - 'react-router-dom'
+          - '@react-router/*'
     versioning-strategy: increase
     commit-message:
       prefix: feat
-      prefix-development: feat
+      prefix-development: chore
       include: scope
+    exclude-paths:
+      - 'dev-packages/e2e-tests/test-applications/**'

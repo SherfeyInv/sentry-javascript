@@ -1,21 +1,24 @@
 import type { RequestEventData } from '@sentry/core';
-import { getActiveSpan } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  SPAN_STATUS_ERROR,
   captureException,
   continueTrace,
+  debug,
+  getActiveSpan,
   getClient,
   getIsolationScope,
   handleCallbackErrors,
-  logger,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
+  SPAN_STATUS_ERROR,
+  SPAN_STATUS_OK,
   startSpan,
-  vercelWaitUntil,
   withIsolationScope,
 } from '@sentry/core';
+import { flushSafelyWithTimeout, waitUntil } from '../common/utils/responseEnd';
 import { DEBUG_BUILD } from './debug-build';
 import { isNotFoundNavigationError, isRedirectNavigationError } from './nextNavigationErrorUtils';
-import { flushSafelyWithTimeout } from './utils/responseEnd';
+import { SENTRY_KIND, SENTRY_OP } from '@sentry/conventions/attributes';
+import { WEB_SERVER_FUNCTION_SPAN_OP } from '@sentry/conventions/op';
 
 interface Options {
   formData?: FormData;
@@ -70,7 +73,7 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
   callback: A,
 ): Promise<ReturnType<A>> {
   return withIsolationScope(async isolationScope => {
-    const sendDefaultPii = getClient()?.getOptions().sendDefaultPii;
+    const shouldRecordResponse = getClient()?.getDataCollectionOptions().httpBodies.includes('outgoingResponse');
 
     let sentryTraceHeader;
     let baggageHeader;
@@ -82,9 +85,9 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
       awaitedHeaders?.forEach((value, key) => {
         fullHeadersObject[key] = value;
       });
-    } catch (e) {
+    } catch {
       DEBUG_BUILD &&
-        logger.warn(
+        debug.warn(
           "Sentry wasn't able to extract the tracing headers for a server action. Will not trace this request.",
         );
     }
@@ -111,31 +114,39 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
         try {
           return await startSpan(
             {
-              op: 'function.server_action',
               name: `serverAction/${serverActionName}`,
               forceTransaction: true,
               attributes: {
+                [SENTRY_KIND]: 'server',
+                [SENTRY_OP]: WEB_SERVER_FUNCTION_SPAN_OP,
                 [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+                [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.nextjs.server_action',
               },
             },
             async span => {
+              // oxlint-disable-next-line typescript/await-thenable -- callback may be async at runtime
               const result = await handleCallbackErrors(callback, error => {
                 if (isNotFoundNavigationError(error)) {
                   // We don't want to report "not-found"s
                   span.setStatus({ code: SPAN_STATUS_ERROR, message: 'not_found' });
                 } else if (isRedirectNavigationError(error)) {
-                  // Don't do anything for redirects
+                  // Redirects are normal Next.js control flow, not errors. Mark the span as OK and end it
+                  // early so the surrounding `startSpan` error handler doesn't override the status to
+                  // `internal_error`
+                  span.setStatus({ code: SPAN_STATUS_OK });
+                  span.end();
                 } else {
                   span.setStatus({ code: SPAN_STATUS_ERROR, message: 'internal_error' });
                   captureException(error, {
                     mechanism: {
                       handled: false,
+                      type: 'auto.function.nextjs.server_action',
                     },
                   });
                 }
               });
 
-              if (options.recordResponse !== undefined ? options.recordResponse : sendDefaultPii) {
+              if (options.recordResponse !== undefined ? options.recordResponse : shouldRecordResponse) {
                 getIsolationScope().setExtra('server_action_result', result);
               }
 
@@ -152,7 +163,7 @@ async function withServerActionInstrumentationImplementation<A extends (...args:
             },
           );
         } finally {
-          vercelWaitUntil(flushSafelyWithTimeout());
+          waitUntil(flushSafelyWithTimeout());
         }
       },
     );

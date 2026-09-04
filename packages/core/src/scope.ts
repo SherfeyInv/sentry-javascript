@@ -1,31 +1,30 @@
 /* eslint-disable max-lines */
-import type {
-  Attachment,
-  Breadcrumb,
-  Client,
-  Context,
-  Contexts,
-  Event,
-  EventHint,
-  EventProcessor,
-  Extra,
-  Extras,
-  Primitive,
-  PropagationContext,
-  Session,
-  SeverityLevel,
-  Span,
-  User,
-} from './types-hoist';
-
+import type { AttributeObject, RawAttribute, RawAttributes } from './attributes';
+import type { Client } from './client';
+import { DEBUG_BUILD } from './debug-build';
 import { updateSession } from './session';
-import { isPlainObject } from './utils-hoist/is';
-import { logger } from './utils-hoist/logger';
-import { uuid4 } from './utils-hoist/misc';
-import { generateSpanId, generateTraceId } from './utils-hoist/propagationContext';
-import { dateTimestampInSeconds } from './utils-hoist/time';
+import type { Attachment } from './types/attachment';
+import type { Breadcrumb } from './types/breadcrumb';
+import type { Context, Contexts } from './types/context';
+import type { DynamicSamplingContext } from './types/envelope';
+import type { Event, EventHint } from './types/event';
+import type { EventProcessor } from './types/eventprocessor';
+import type { Extra, Extras } from './types/extra';
+import type { Primitive } from './types/misc';
+import type { RequestEventData } from './types/request';
+import type { Session } from './types/session';
+import type { SeverityLevel } from './types/severity';
+import type { PropagationContext } from './types/tracing';
+import type { User } from './types/user';
+import { debug } from './utils/debug-logger';
+import { isPlainObject } from './utils/is';
+import { addNonEnumerableProperty } from './utils/object';
 import { merge } from './utils/merge';
-import { _getSpanForScope, _setSpanForScope } from './utils/spanOnScope';
+import { uuid4 } from './utils/misc';
+import { generateTraceId } from './utils/propagationContext';
+import { safeMathRandom } from './utils/randomSafeContext';
+import { truncate } from './utils/string';
+import { dateTimestampInSeconds } from './utils/time';
 
 /**
  * Default value for maximum number of breadcrumbs added to an event.
@@ -48,16 +47,23 @@ export interface ScopeContext {
   extra: Extras;
   contexts: Contexts;
   tags: { [key: string]: Primitive };
+  attributes?: RawAttributes<Record<string, unknown>>;
   fingerprint: string[];
   propagationContext: PropagationContext;
+  conversationId?: string;
 }
 
-// TODO(v9): Add `normalizedRequest`
 export interface SdkProcessingMetadata {
   [key: string]: unknown;
   requestSession?: {
     status: 'ok' | 'errored' | 'crashed';
   };
+  normalizedRequest?: RequestEventData;
+  dynamicSamplingContext?: Partial<DynamicSamplingContext>;
+  capturedSpanScope?: Scope;
+  capturedSpanIsolationScope?: Scope;
+  spanCountBeforeProcessing?: number;
+  ipAddress?: string;
 }
 
 /**
@@ -68,6 +74,7 @@ export interface ScopeData {
   breadcrumbs: Breadcrumb[];
   user: User;
   tags: { [key: string]: Primitive };
+  attributes: RawAttributes<Record<string, unknown>>;
   extra: Extras;
   contexts: Contexts;
   attachments: Attachment[];
@@ -76,7 +83,7 @@ export interface ScopeData {
   fingerprint: string[];
   level?: SeverityLevel;
   transactionName?: string;
-  span?: Span;
+  conversationId?: string;
 }
 
 /**
@@ -100,6 +107,9 @@ export class Scope {
 
   /** Tags */
   protected _tags: { [key: string]: Primitive };
+
+  /** Attributes */
+  protected _attributes: RawAttributes<Record<string, unknown>>;
 
   /** Extra */
   protected _extra: Extras;
@@ -142,6 +152,18 @@ export class Scope {
   /** Contains the last event id of a captured event.  */
   protected _lastEventId?: string;
 
+  /** Conversation ID */
+  protected _conversationId?: string;
+
+  /**
+   * A place to stash references to objects that are associated with this scope but should not be serialized,
+   * such as the currently active span (core) or the OpenTelemetry context (opentelemetry).
+   * These are cloned as-is (shallow) when the scope is cloned, so they survive `clone()`.
+   *
+   * This is non-enumerable so it does not leak into `toJSON`, `Object.keys` or structural comparisons.
+   */
+  declare public refs: Record<string, unknown>;
+
   // NOTE: Any field which gets added here should get added not only to the constructor but also to the `clone` method.
 
   public constructor() {
@@ -152,12 +174,14 @@ export class Scope {
     this._attachments = [];
     this._user = {};
     this._tags = {};
+    this._attributes = {};
     this._extra = {};
     this._contexts = {};
     this._sdkProcessingMetadata = {};
+    addNonEnumerableProperty(this, 'refs', {});
     this._propagationContext = {
       traceId: generateTraceId(),
-      spanId: generateSpanId(),
+      sampleRand: safeMathRandom(),
     };
   }
 
@@ -168,6 +192,7 @@ export class Scope {
     const newScope = new Scope();
     newScope._breadcrumbs = [...this._breadcrumbs];
     newScope._tags = { ...this._tags };
+    newScope._attributes = { ...this._attributes };
     newScope._extra = { ...this._extra };
     newScope._contexts = { ...this._contexts };
     if (this._contexts.flags) {
@@ -189,8 +214,8 @@ export class Scope {
     newScope._propagationContext = { ...this._propagationContext };
     newScope._client = this._client;
     newScope._lastEventId = this._lastEventId;
-
-    _setSpanForScope(newScope, _getSpanForScope(this));
+    newScope._conversationId = this._conversationId;
+    newScope.refs = { ...this.refs };
 
     return newScope;
   }
@@ -272,6 +297,16 @@ export class Scope {
   }
 
   /**
+   * Set the conversation ID for this scope.
+   * Set to `null` to unset the conversation ID.
+   */
+  public setConversationId(conversationId: string | null | undefined): this {
+    this._conversationId = conversationId || undefined;
+    this._notifyScopeListeners();
+    return this;
+  }
+
+  /**
    * Set an object that will be merged into existing tags on the scope,
    * and will be sent as tags data with the event.
    */
@@ -288,8 +323,77 @@ export class Scope {
    * Set a single tag that will be sent as tags data with the event.
    */
   public setTag(key: string, value: Primitive): this {
-    this._tags = { ...this._tags, [key]: value };
+    return this.setTags({ [key]: value });
+  }
+
+  /**
+   * Sets attributes onto the scope.
+   *
+   * These attributes are applied to logs, metrics and streamed spans.
+   *
+   * Supported attribute value types are `string`, `number`, `boolean`, `string[]`, `number[]` and `boolean[]`.
+   *
+   * @param newAttributes - The attributes to set on the scope, as key-value pairs.
+   *
+   * @example
+   * ```typescript
+   * scope.setAttributes({
+   *   is_admin: true,
+   *   payment_selection: 'credit_card',
+   *   render_duration: 150,
+   * });
+   * ```
+   */
+  public setAttributes<T extends Record<string, unknown>>(newAttributes: RawAttributes<T>): this {
+    this._attributes = {
+      ...this._attributes,
+      ...newAttributes,
+    };
+
     this._notifyScopeListeners();
+    return this;
+  }
+
+  /**
+   * Sets an attribute onto the scope.
+   *
+   * These attributes are applied to logs, metrics and streamed spans.
+   *
+   * Supported attribute value types are `string`, `number`, `boolean`, `string[]`, `number[]` and `boolean[]`.
+   *
+   * @param key - The attribute key.
+   * @param value - The attribute value.
+   *
+   * @example
+   * ```typescript
+   * scope.setAttribute('is_admin', true);
+   * scope.setAttribute('render_duration', 150);
+   * ```
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public setAttribute<T extends (RawAttribute<T> extends { value: any } | { unit: any } ? AttributeObject : unknown)>(
+    key: string,
+    value: RawAttribute<T>,
+  ): this {
+    return this.setAttributes({ [key]: value });
+  }
+
+  /**
+   * Removes the attribute with the given key from the scope.
+   *
+   * @param key - The attribute key.
+   *
+   * @example
+   * ```typescript
+   * scope.removeAttribute('is_admin');
+   * ```
+   */
+  public removeAttribute(key: string): this {
+    if (key in this._attributes) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete this._attributes[key];
+      this._notifyScopeListeners();
+    }
     return this;
   }
 
@@ -335,12 +439,12 @@ export class Scope {
   }
 
   /**
-   * Sets the transaction name on the scope so that the name of the transaction
-   * (e.g. taken server route or page location) is attached to future events.
+   * Sets the transaction name on the scope so that the name of e.g. taken server route or
+   * the page location is attached to future events.
    *
    * IMPORTANT: Calling this function does NOT change the name of the currently active
-   * span. If you want to change the name of the active span, use `span.updateName()`
-   * instead.
+   * root span. If you want to change the name of the active root span, use
+   * `Sentry.updateSpanName(rootSpan, 'new name')` instead.
    *
    * By default, the SDK updates the scope's transaction name automatically on sensible
    * occasions, such as a page navigation or when handling a new request on the server.
@@ -408,9 +512,20 @@ export class Scope {
           ? (captureContext as ScopeContext)
           : undefined;
 
-    const { tags, extra, user, contexts, level, fingerprint = [], propagationContext } = scopeInstance || {};
+    const {
+      tags,
+      attributes,
+      extra,
+      user,
+      contexts,
+      level,
+      fingerprint = [],
+      propagationContext,
+      conversationId,
+    } = scopeInstance || {};
 
     this._tags = { ...this._tags, ...tags };
+    this._attributes = { ...this._attributes, ...attributes };
     this._extra = { ...this._extra, ...extra };
     this._contexts = { ...this._contexts, ...contexts };
 
@@ -430,29 +545,10 @@ export class Scope {
       this._propagationContext = propagationContext;
     }
 
-    return this;
-  }
+    if (conversationId) {
+      this._conversationId = conversationId;
+    }
 
-  /**
-   * Clears the current scope and resets its properties.
-   * Note: The client will not be cleared.
-   */
-  public clear(): this {
-    // client is not cleared here on purpose!
-    this._breadcrumbs = [];
-    this._tags = {};
-    this._extra = {};
-    this._user = {};
-    this._contexts = {};
-    this._level = undefined;
-    this._transactionName = undefined;
-    this._fingerprint = undefined;
-    this._session = undefined;
-    _setSpanForScope(this, undefined);
-    this._attachments = [];
-    this.setPropagationContext({ traceId: generateTraceId() });
-
-    this._notifyScopeListeners();
     return this;
   }
 
@@ -468,14 +564,18 @@ export class Scope {
       return this;
     }
 
-    const mergedBreadcrumb = {
+    const mergedBreadcrumb: Breadcrumb = {
       timestamp: dateTimestampInSeconds(),
       ...breadcrumb,
+      // Breadcrumb messages can theoretically be infinitely large and they're held in memory so we truncate them not to leak (too much) memory
+      message: breadcrumb.message ? truncate(breadcrumb.message, 2048) : breadcrumb.message,
     };
 
-    const breadcrumbs = this._breadcrumbs;
-    breadcrumbs.push(mergedBreadcrumb);
-    this._breadcrumbs = breadcrumbs.length > maxCrumbs ? breadcrumbs.slice(-maxCrumbs) : breadcrumbs;
+    this._breadcrumbs.push(mergedBreadcrumb);
+    if (this._breadcrumbs.length > maxCrumbs) {
+      this._breadcrumbs = this._breadcrumbs.slice(-maxCrumbs);
+      this._client?.recordDroppedEvent('buffer_overflow', 'log_item');
+    }
 
     this._notifyScopeListeners();
 
@@ -523,6 +623,7 @@ export class Scope {
       attachments: this._attachments,
       contexts: this._contexts,
       tags: this._tags,
+      attributes: this._attributes,
       extra: this._extra,
       user: this._user,
       level: this._level,
@@ -531,16 +632,14 @@ export class Scope {
       propagationContext: this._propagationContext,
       sdkProcessingMetadata: this._sdkProcessingMetadata,
       transactionName: this._transactionName,
-      span: _getSpanForScope(this),
+      conversationId: this._conversationId,
     };
   }
 
   /**
    * Add data which will be accessible during event processing but won't get sent to Sentry.
-   *
-   * TODO(v9): We should type this stricter, so that e.g. `normalizedRequest` is strictly typed.
    */
-  public setSDKProcessingMetadata(newData: { [key: string]: unknown }): this {
+  public setSDKProcessingMetadata(newData: SdkProcessingMetadata): this {
     this._sdkProcessingMetadata = merge(this._sdkProcessingMetadata, newData, 2);
     return this;
   }
@@ -548,14 +647,8 @@ export class Scope {
   /**
    * Add propagation context to the scope, used for distributed tracing
    */
-  public setPropagationContext(
-    context: Omit<PropagationContext, 'spanId'> & Partial<Pick<PropagationContext, 'spanId'>>,
-  ): this {
-    this._propagationContext = {
-      // eslint-disable-next-line deprecation/deprecation
-      spanId: generateSpanId(),
-      ...context,
-    };
+  public setPropagationContext(context: PropagationContext): this {
+    this._propagationContext = context;
     return this;
   }
 
@@ -572,10 +665,10 @@ export class Scope {
    * @returns {string} The id of the captured Sentry event.
    */
   public captureException(exception: unknown, hint?: EventHint): string {
-    const eventId = hint && hint.event_id ? hint.event_id : uuid4();
+    const eventId = hint?.event_id || uuid4();
 
     if (!this._client) {
-      logger.warn('No client configured on scope - will not capture exception!');
+      DEBUG_BUILD && debug.warn('No client configured on scope - will not capture exception!');
       return eventId;
     }
 
@@ -601,14 +694,14 @@ export class Scope {
    * @returns {string} The id of the captured message.
    */
   public captureMessage(message: string, level?: SeverityLevel, hint?: EventHint): string {
-    const eventId = hint && hint.event_id ? hint.event_id : uuid4();
+    const eventId = hint?.event_id || uuid4();
 
     if (!this._client) {
-      logger.warn('No client configured on scope - will not capture message!');
+      DEBUG_BUILD && debug.warn('No client configured on scope - will not capture message!');
       return eventId;
     }
 
-    const syntheticException = new Error(message);
+    const syntheticException = hint?.syntheticException ?? new Error(message);
 
     this._client.captureMessage(
       message,
@@ -631,10 +724,10 @@ export class Scope {
    * @returns {string} The id of the captured event.
    */
   public captureEvent(event: Event, hint?: EventHint): string {
-    const eventId = hint && hint.event_id ? hint.event_id : uuid4();
+    const eventId = event.event_id || hint?.event_id || uuid4();
 
     if (!this._client) {
-      logger.warn('No client configured on scope - will not capture event!');
+      DEBUG_BUILD && debug.warn('No client configured on scope - will not capture event!');
       return eventId;
     }
 

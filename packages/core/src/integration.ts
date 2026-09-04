@@ -1,8 +1,11 @@
+import type { Client } from './client';
 import { getClient } from './currentScopes';
-import type { Client, Event, EventHint, Integration, IntegrationFn, Options } from './types-hoist';
-
 import { DEBUG_BUILD } from './debug-build';
-import { logger } from './utils-hoist/logger';
+import type { Event, EventHint } from './types/event';
+import type { Integration, IntegrationFn } from './types/integration';
+import type { CoreOptions } from './types/options';
+import type { StreamedSpanJSON } from './types/span';
+import { debug } from './utils/debug-logger';
 
 export const installedIntegrations: string[] = [];
 
@@ -40,7 +43,9 @@ function filterDuplicates(integrations: Integration[]): Integration[] {
 }
 
 /** Gets integrations to install */
-export function getIntegrationsToSetup(options: Pick<Options, 'defaultIntegrations' | 'integrations'>): Integration[] {
+export function getIntegrationsToSetup(
+  options: Pick<CoreOptions, 'defaultIntegrations' | 'integrations'>,
+): Integration[] {
   const defaultIntegrations = options.defaultIntegrations || [];
   const userIntegrations = options.integrations;
 
@@ -60,19 +65,7 @@ export function getIntegrationsToSetup(options: Pick<Options, 'defaultIntegratio
     integrations = defaultIntegrations;
   }
 
-  const finalIntegrations = filterDuplicates(integrations);
-
-  // The `Debug` integration prints copies of the `event` and `hint` which will be passed to `beforeSend` or
-  // `beforeSendTransaction`. It therefore has to run after all other integrations, so that the changes of all event
-  // processors will be reflected in the printed values. For lack of a more elegant way to guarantee that, we therefore
-  // locate it and, assuming it exists, pop it out of its current spot and shove it onto the end of the array.
-  const debugIndex = finalIntegrations.findIndex(integration => integration.name === 'Debug');
-  if (debugIndex > -1) {
-    const [debugInstance] = finalIntegrations.splice(debugIndex, 1) as [Integration];
-    finalIntegrations.push(debugInstance);
-  }
-
-  return finalIntegrations;
+  return filterDuplicates(integrations);
 }
 
 /**
@@ -84,7 +77,13 @@ export function getIntegrationsToSetup(options: Pick<Options, 'defaultIntegratio
 export function setupIntegrations(client: Client, integrations: Integration[]): IntegrationIndex {
   const integrationIndex: IntegrationIndex = {};
 
-  integrations.forEach(integration => {
+  integrations.forEach((integration: Integration | undefined) => {
+    if (integration?.beforeSetup) {
+      integration.beforeSetup(client);
+    }
+  });
+
+  integrations.forEach((integration: Integration | undefined) => {
     // guard against empty provided integrations
     if (integration) {
       setupIntegration(client, integration, integrationIndex);
@@ -100,7 +99,7 @@ export function setupIntegrations(client: Client, integrations: Integration[]): 
 export function afterSetupIntegrations(client: Client, integrations: Integration[]): void {
   for (const integration of integrations) {
     // guard against empty provided integrations
-    if (integration && integration.afterAllSetup) {
+    if (integration?.afterAllSetup) {
       integration.afterAllSetup(client);
     }
   }
@@ -109,13 +108,13 @@ export function afterSetupIntegrations(client: Client, integrations: Integration
 /** Setup a single integration.  */
 export function setupIntegration(client: Client, integration: Integration, integrationIndex: IntegrationIndex): void {
   if (integrationIndex[integration.name]) {
-    DEBUG_BUILD && logger.log(`Integration skipped because it was already installed: ${integration.name}`);
+    DEBUG_BUILD && debug.log(`Integration skipped because it was already installed: ${integration.name}`);
     return;
   }
   integrationIndex[integration.name] = integration;
 
   // `setupOnce` is only called the first time
-  if (installedIntegrations.indexOf(integration.name) === -1 && typeof integration.setupOnce === 'function') {
+  if (!installedIntegrations.includes(integration.name) && typeof integration.setupOnce === 'function') {
     integration.setupOnce();
     installedIntegrations.push(integration.name);
   }
@@ -140,7 +139,16 @@ export function setupIntegration(client: Client, integration: Integration, integ
     client.addEventProcessor(processor);
   }
 
-  DEBUG_BUILD && logger.log(`Integration installed: ${integration.name}`);
+  (['processSpan', 'processSegmentSpan'] as const).forEach(hook => {
+    const callback = integration[hook];
+    if (typeof callback === 'function') {
+      // The cast is needed because TS can't resolve overloads when the discriminant is a union type.
+      // Both overloads have the same callback signature so this is safe.
+      client.on(hook as 'processSpan', (span: StreamedSpanJSON) => callback.call(integration, span, client));
+    }
+  });
+
+  DEBUG_BUILD && debug.log(`Integration installed: ${integration.name}`);
 }
 
 /** Add an integration to the current scope's client. */
@@ -148,7 +156,7 @@ export function addIntegration(integration: Integration): void {
   const client = getClient();
 
   if (!client) {
-    DEBUG_BUILD && logger.warn(`Cannot add integration "${integration.name}" because no SDK Client is available.`);
+    DEBUG_BUILD && debug.warn(`Cannot add integration "${integration.name}" because no SDK Client is available.`);
     return;
   }
 
@@ -159,6 +167,75 @@ export function addIntegration(integration: Integration): void {
  * Define an integration function that can be used to create an integration instance.
  * Note that this by design hides the implementation details of the integration, as they are considered internal.
  */
-export function defineIntegration<Fn extends IntegrationFn>(fn: Fn): (...args: Parameters<Fn>) => Integration {
+export function defineIntegration<Fn extends IntegrationFn>(
+  fn: Fn,
+): (...args: Parameters<Fn>) => Integration & { name: ReturnType<Fn>['name'] } {
   return fn;
+}
+
+// When  extending an integration, we allow other properties to be passed-through
+type IntegrationWithOtherProperties = Record<string, unknown> & Integration;
+type ExtendedIntegration<Base extends Integration, Extended extends Partial<IntegrationWithOtherProperties>> = Omit<
+  Base,
+  keyof Extended
+> &
+  Extended;
+
+/**
+ * Wrap a parent integration with an extended integration.
+ * Any passed integration function will call the parent integration function first, if it exists.
+ *
+ * Example usage:
+ *
+ * @example
+ * ```typescript
+ * const parentIntegration = defineIntegration(() => ({
+ *   name: 'ParentIntegration',
+ *   setupOnce: () => {
+ *     console.log('ParentIntegration setupOnce');
+ *   },
+ * }));
+ *
+ * const extendedIntegration = extendIntegration(parentIntegration, {
+ *   setupOnce: () => {
+ *     console.log('ExtendedIntegration setupOnce');
+ *   },
+ * });
+ * ```
+ */
+export function extendIntegration<Base extends Integration, Extended extends Partial<IntegrationWithOtherProperties>>(
+  integration: Base,
+  extendedIntegration: Extended,
+): ExtendedIntegration<Base, Extended> {
+  // The extension overrides the base for any shared key (object spread + the wrapping below), so the
+  // result type drops the overridden base keys rather than intersecting them — `Base & Extended` would
+  // wrongly intersect shared keys (e.g. a re-typed property collapses to `never`).
+  const wrappedIntegration = {
+    ...integration,
+    ...extendedIntegration,
+  } as ExtendedIntegration<Base, Extended>;
+
+  // Make sure that functions that are extended also call the base functions, if defined
+  // oxlint-disable-next-line guard-for-in
+  for (const key in extendedIntegration) {
+    const baseValue = integration[key as keyof Base];
+    const extendedValue = extendedIntegration[key];
+
+    type ValueType = typeof extendedValue;
+
+    if (typeof baseValue === 'function' && typeof extendedValue === 'function') {
+      const wrappedFunction = new Proxy(baseValue, {
+        apply: (target, thisArg, args) => {
+          Reflect.apply(target, thisArg, args);
+          return Reflect.apply(extendedValue, thisArg, args);
+        },
+      }) as ValueType;
+
+      // We know this is OK, but typescript does not properly narrow/infer types here
+      // so instead of casting the wrappedFunction to some complicated type, we just make clear that we simply overwrite this
+      (wrappedIntegration as Record<string, unknown>)[key] = wrappedFunction;
+    }
+  }
+
+  return wrappedIntegration;
 }

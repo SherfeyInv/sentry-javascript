@@ -1,8 +1,35 @@
 import { getAsyncContextStrategy } from './asyncContext';
-import { getGlobalSingleton, getMainCarrier } from './carrier';
+import { getGlobalSingleton, getMainCarrier, getSentryCarrier } from './carrier';
+import type { Client } from './client';
 import { Scope } from './scope';
-import type { Client, TraceContext } from './types-hoist';
-import { dropUndefinedKeys } from './utils-hoist/object';
+import type { TraceContext } from './types/context';
+import { generateSpanId } from './utils/propagationContext';
+
+/**
+ * Register an external propagation context provider function.
+ * When registered, trace context will be read from the external source (e.g. OpenTelemetry)
+ * instead of from the Sentry scope's propagation context.
+ */
+export function registerExternalPropagationContext(fn: () => { traceId: string; spanId: string } | undefined): void {
+  // Kept on the carrier rather than in module state: bundlers routinely emit more than one copy of
+  // `@sentry/core` (e.g. one per Next.js server chunk), and the copy the integration registers on is
+  // usually not the copy that reads it back when an event is assembled.
+  getSentryCarrier(getMainCarrier()).externalPropagationContextProvider = fn;
+}
+
+/**
+ * Get the external propagation context, if a provider has been registered.
+ */
+export function getExternalPropagationContext(): { traceId: string; spanId: string } | undefined {
+  return getSentryCarrier(getMainCarrier()).externalPropagationContextProvider?.();
+}
+
+/**
+ * Check if an external propagation context provider has been registered.
+ */
+export function hasExternalPropagationContext(): boolean {
+  return getSentryCarrier(getMainCarrier()).externalPropagationContextProvider !== undefined;
+}
 
 /**
  * Get the currently active scope.
@@ -124,17 +151,23 @@ export function getClient<C extends Client>(): C | undefined {
  * Get a trace context for the given scope.
  */
 export function getTraceContextFromScope(scope: Scope): TraceContext {
+  const externalContext = getExternalPropagationContext();
+  if (externalContext) {
+    return { trace_id: externalContext.traceId, span_id: externalContext.spanId };
+  }
+
   const propagationContext = scope.getPropagationContext();
 
-  // TODO(v9): Use generateSpanId() instead of spanId
-  // eslint-disable-next-line deprecation/deprecation
-  const { traceId, spanId, parentSpanId } = propagationContext;
+  const { traceId, parentSpanId, propagationSpanId } = propagationContext;
 
-  const traceContext: TraceContext = dropUndefinedKeys({
+  const traceContext: TraceContext = {
     trace_id: traceId,
-    span_id: spanId,
-    parent_span_id: parentSpanId,
-  });
+    span_id: propagationSpanId || generateSpanId(),
+  };
+
+  if (parentSpanId) {
+    traceContext.parent_span_id = parentSpanId;
+  }
 
   return traceContext;
 }

@@ -1,48 +1,39 @@
 import type { SpanContext } from '@opentelemetry/api';
-import { ROOT_CONTEXT } from '@opentelemetry/api';
-import { TraceFlags, context, trace } from '@opentelemetry/api';
-import type { SpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { context, ROOT_CONTEXT, trace, TraceFlags } from '@opentelemetry/api';
+import { TraceState } from '../../src/utils/TraceState';
+import type { Event, TransactionEvent } from '@sentry/core';
 import {
+  addBreadcrumb,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  addBreadcrumb,
-  getClient,
   setTag,
-  startSpanManual,
+  startInactiveSpan,
+  startSpan,
   withIsolationScope,
 } from '@sentry/core';
-import { logger } from '@sentry/core';
-import type { Event, TransactionEvent } from '@sentry/core';
-
-import { TraceState } from '@opentelemetry/core';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SENTRY_TRACE_STATE_DSC } from '../../src/constants';
-import { SentrySpanProcessor } from '../../src/spanProcessor';
-import { startInactiveSpan, startSpan } from '../../src/trace';
 import { makeTraceState } from '../../src/utils/makeTraceState';
-import type { TestClientInterface } from '../helpers/TestClient';
-import { cleanupOtel, getProvider, mockSdkInit } from '../helpers/mockSdkInit';
+import { mockSdkInit } from '../helpers/mockSdkInit';
 
 describe('Integration | Transactions', () => {
-  afterEach(() => {
-    jest.restoreAllMocks();
-    jest.useRealTimers();
-    cleanupOtel();
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('correctly creates transaction & spans', async () => {
     const transactions: TransactionEvent[] = [];
-    const beforeSendTransaction = jest.fn(event => {
+    const beforeSendTransaction = vi.fn(event => {
       transactions.push(event);
       return null;
     });
 
-    mockSdkInit({
-      enableTracing: true,
+    const client = mockSdkInit({
+      tracesSampleRate: 1,
       beforeSendTransaction,
       release: '8.0.0',
     });
-
-    const client = getClient() as TestClientInterface;
 
     addBreadcrumb({ message: 'test breadcrumb 1', timestamp: 123456 });
     setTag('outer.tag', 'test value');
@@ -89,17 +80,6 @@ describe('Integration | Transactions', () => {
       { message: 'test breadcrumb 3', timestamp: 123456 },
     ]);
 
-    expect(transaction.contexts?.otel).toEqual({
-      resource: {
-        'service.name': 'opentelemetry-test',
-        'service.namespace': 'sentry',
-        'service.version': expect.any(String),
-        'telemetry.sdk.language': 'nodejs',
-        'telemetry.sdk.name': 'opentelemetry',
-        'telemetry.sdk.version': expect.any(String),
-      },
-    });
-
     expect(transaction.contexts?.trace).toEqual({
       data: {
         'sentry.op': 'test op',
@@ -115,7 +95,6 @@ describe('Integration | Transactions', () => {
       origin: 'auto.test',
     });
 
-    expect(transaction.sdkProcessingMetadata?.sampleRate).toEqual(1);
     expect(transaction.sdkProcessingMetadata?.dynamicSamplingContext).toEqual({
       environment: 'production',
       public_key: expect.any(String),
@@ -124,6 +103,7 @@ describe('Integration | Transactions', () => {
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
       transaction: 'test name',
       release: '8.0.0',
+      sample_rand: expect.any(String),
     });
 
     expect(transaction.environment).toEqual('production');
@@ -176,11 +156,9 @@ describe('Integration | Transactions', () => {
   });
 
   it('correctly creates concurrent transaction & spans', async () => {
-    const beforeSendTransaction = jest.fn(() => null);
+    const beforeSendTransaction = vi.fn(() => null);
 
-    mockSdkInit({ enableTracing: true, beforeSendTransaction });
-
-    const client = getClient() as TestClientInterface;
+    const client = mockSdkInit({ tracesSampleRate: 1, beforeSendTransaction });
 
     addBreadcrumb({ message: 'test breadcrumb 1', timestamp: 123456 });
 
@@ -293,9 +271,9 @@ describe('Integration | Transactions', () => {
             data: {
               'sentry.op': 'test op b',
               'sentry.origin': 'manual',
-              'sentry.source': 'custom',
               'test.outer': 'test value b',
               'sentry.sample_rate': 1,
+              'sentry.source': 'custom',
             },
             op: 'test op b',
             span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -311,7 +289,6 @@ describe('Integration | Transactions', () => {
         },
         timestamp: expect.any(Number),
         transaction: 'test name b',
-        transaction_info: { source: 'custom' },
         type: 'transaction',
       }),
       {
@@ -321,7 +298,7 @@ describe('Integration | Transactions', () => {
   });
 
   it('correctly creates transaction & spans with a trace header data', async () => {
-    const beforeSendTransaction = jest.fn(() => null);
+    const beforeSendTransaction = vi.fn(() => null);
 
     const traceId = 'd4cda95b652f4a1592b449d5929fda1b';
     const parentSpanId = '6e0c63257de34c92';
@@ -339,11 +316,8 @@ describe('Integration | Transactions', () => {
       traceState,
     };
 
-    mockSdkInit({ enableTracing: true, beforeSendTransaction });
+    const client = mockSdkInit({ tracesSampleRate: 1, beforeSendTransaction });
 
-    const client = getClient() as TestClientInterface;
-
-    // We simulate the correct context we'd normally get from the SentryPropagator
     context.with(trace.setSpanContext(ROOT_CONTEXT, spanContext), () => {
       startSpan(
         {
@@ -373,7 +347,6 @@ describe('Integration | Transactions', () => {
               'sentry.op': 'test op',
               'sentry.origin': 'auto.test',
               'sentry.source': 'task',
-              'sentry.sample_rate': 1,
             },
             op: 'test op',
             span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -433,199 +406,9 @@ describe('Integration | Transactions', () => {
     ]);
   });
 
-  it('cleans up spans that are not flushed for over 5 mins', async () => {
-    const beforeSendTransaction = jest.fn(() => null);
-
-    const now = Date.now();
-    jest.useFakeTimers();
-    jest.setSystemTime(now);
-
-    const logs: unknown[] = [];
-    jest.spyOn(logger, 'log').mockImplementation(msg => logs.push(msg));
-
-    mockSdkInit({ enableTracing: true, beforeSendTransaction });
-
-    const provider = getProvider();
-    const multiSpanProcessor = provider?.activeSpanProcessor as
-      | (SpanProcessor & { _spanProcessors?: SpanProcessor[] })
-      | undefined;
-    const spanProcessor = multiSpanProcessor?.['_spanProcessors']?.find(
-      spanProcessor => spanProcessor instanceof SentrySpanProcessor,
-    ) as SentrySpanProcessor | undefined;
-
-    const exporter = spanProcessor ? spanProcessor['_exporter'] : undefined;
-
-    if (!exporter) {
-      throw new Error('No exporter found, aborting test...');
-    }
-
-    void startSpan({ name: 'test name' }, async () => {
-      startInactiveSpan({ name: 'inner span 1' }).end();
-      startInactiveSpan({ name: 'inner span 2' }).end();
-
-      // Pretend this is pending for 10 minutes
-      await new Promise(resolve => setTimeout(resolve, 10 * 60 * 1000));
-    });
-
-    // Child-spans have been added to the exporter, but they are pending since they are waiting for their parent
-    const finishedSpans1 = [];
-    exporter['_finishedSpanBuckets'].forEach(bucket => {
-      if (bucket) {
-        finishedSpans1.push(...bucket.spans);
-      }
-    });
-    expect(finishedSpans1.length).toBe(2);
-    expect(beforeSendTransaction).toHaveBeenCalledTimes(0);
-
-    // Now wait for 5 mins
-    jest.advanceTimersByTime(5 * 60 * 1_000 + 1);
-
-    // Adding another span will trigger the cleanup
-    startSpan({ name: 'other span' }, () => {});
-
-    jest.advanceTimersByTime(1);
-
-    // Old spans have been cleared away
-    const finishedSpans2 = [];
-    exporter['_finishedSpanBuckets'].forEach(bucket => {
-      if (bucket) {
-        finishedSpans2.push(...bucket.spans);
-      }
-    });
-    expect(finishedSpans2.length).toBe(0);
-
-    // Called once for the 'other span'
-    expect(beforeSendTransaction).toHaveBeenCalledTimes(1);
-
-    expect(logs).toEqual(
-      expect.arrayContaining([
-        'SpanExporter dropped 2 spans because they were pending for more than 300 seconds.',
-        'SpanExporter exported 1 spans, 0 spans are waiting for their parent spans to finish',
-      ]),
-    );
-  });
-
-  it('includes child spans that are finished in the same tick but after their parent span', async () => {
-    const now = Date.now();
-    jest.useFakeTimers();
-    jest.setSystemTime(now);
-
-    const logs: unknown[] = [];
-    jest.spyOn(logger, 'log').mockImplementation(msg => logs.push(msg));
-
-    const transactions: Event[] = [];
-
-    mockSdkInit({
-      enableTracing: true,
-      beforeSendTransaction: event => {
-        transactions.push(event);
-        return null;
-      },
-    });
-
-    const provider = getProvider();
-    const multiSpanProcessor = provider?.activeSpanProcessor as
-      | (SpanProcessor & { _spanProcessors?: SpanProcessor[] })
-      | undefined;
-    const spanProcessor = multiSpanProcessor?.['_spanProcessors']?.find(
-      spanProcessor => spanProcessor instanceof SentrySpanProcessor,
-    ) as SentrySpanProcessor | undefined;
-
-    const exporter = spanProcessor ? spanProcessor['_exporter'] : undefined;
-
-    if (!exporter) {
-      throw new Error('No exporter found, aborting test...');
-    }
-
-    startSpanManual({ name: 'test name' }, async span => {
-      const subSpan = startInactiveSpan({ name: 'inner span 1' });
-      subSpan.end();
-
-      const subSpan2 = startInactiveSpan({ name: 'inner span 2' });
-
-      span.end();
-      subSpan2.end();
-    });
-
-    jest.advanceTimersByTime(1);
-
-    expect(transactions).toHaveLength(1);
-    expect(transactions[0]?.spans).toHaveLength(2);
-
-    // No spans are pending
-    const finishedSpans = [];
-    exporter['_finishedSpanBuckets'].forEach(bucket => {
-      if (bucket) {
-        finishedSpans.push(...bucket.spans);
-      }
-    });
-    expect(finishedSpans.length).toBe(0);
-  });
-
-  it('discards child spans that are finished after their parent span', async () => {
-    const now = Date.now();
-    jest.useFakeTimers();
-    jest.setSystemTime(now);
-
-    const logs: unknown[] = [];
-    jest.spyOn(logger, 'log').mockImplementation(msg => logs.push(msg));
-
-    const transactions: Event[] = [];
-
-    mockSdkInit({
-      enableTracing: true,
-      beforeSendTransaction: event => {
-        transactions.push(event);
-        return null;
-      },
-    });
-
-    const provider = getProvider();
-    const multiSpanProcessor = provider?.activeSpanProcessor as
-      | (SpanProcessor & { _spanProcessors?: SpanProcessor[] })
-      | undefined;
-    const spanProcessor = multiSpanProcessor?.['_spanProcessors']?.find(
-      spanProcessor => spanProcessor instanceof SentrySpanProcessor,
-    ) as SentrySpanProcessor | undefined;
-
-    const exporter = spanProcessor ? spanProcessor['_exporter'] : undefined;
-
-    if (!exporter) {
-      throw new Error('No exporter found, aborting test...');
-    }
-
-    startSpanManual({ name: 'test name' }, async span => {
-      const subSpan = startInactiveSpan({ name: 'inner span 1' });
-      subSpan.end();
-
-      const subSpan2 = startInactiveSpan({ name: 'inner span 2' });
-
-      span.end();
-
-      setTimeout(() => {
-        subSpan2.end();
-      }, 1);
-    });
-
-    jest.advanceTimersByTime(2);
-
-    expect(transactions).toHaveLength(1);
-    expect(transactions[0]?.spans).toHaveLength(1);
-
-    // subSpan2 is pending (and will eventually be cleaned up)
-    const finishedSpans: any = [];
-    exporter['_finishedSpanBuckets'].forEach(bucket => {
-      if (bucket) {
-        finishedSpans.push(...bucket.spans);
-      }
-    });
-    expect(finishedSpans.length).toBe(1);
-    expect(finishedSpans[0]?.name).toBe('inner span 2');
-  });
-
   it('uses & inherits DSC on span trace state', async () => {
     const transactionEvents: Event[] = [];
-    const beforeSendTransaction = jest.fn(event => {
+    const beforeSendTransaction = vi.fn(event => {
       transactionEvents.push(event);
       return null;
     });
@@ -643,15 +426,12 @@ describe('Integration | Transactions', () => {
       traceState: new TraceState().set(SENTRY_TRACE_STATE_DSC, dscString),
     };
 
-    mockSdkInit({
-      enableTracing: true,
+    const client = mockSdkInit({
+      tracesSampleRate: 1,
       beforeSendTransaction,
       release: '7.0.0',
     });
 
-    const client = getClient() as TestClientInterface;
-
-    // We simulate the correct context we'd normally get from the SentryPropagator
     context.with(trace.setSpanContext(ROOT_CONTEXT, spanContext), () => {
       startSpan(
         {
@@ -662,18 +442,11 @@ describe('Integration | Transactions', () => {
             [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'task',
           },
         },
-        span => {
-          expect(span.spanContext().traceState?.get(SENTRY_TRACE_STATE_DSC)).toEqual(dscString);
-
+        () => {
           const subSpan = startInactiveSpan({ name: 'inner span 1' });
-
-          expect(subSpan.spanContext().traceState?.get(SENTRY_TRACE_STATE_DSC)).toEqual(dscString);
-
           subSpan.end();
 
-          startSpan({ name: 'inner span 2' }, subSpan => {
-            expect(subSpan.spanContext().traceState?.get(SENTRY_TRACE_STATE_DSC)).toEqual(dscString);
-          });
+          startSpan({ name: 'inner span 2' }, () => {});
         },
       );
     });

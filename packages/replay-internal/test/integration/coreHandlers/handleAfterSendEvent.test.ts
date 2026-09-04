@@ -2,16 +2,11 @@
  * @vitest-environment jsdom
  */
 
-import type { MockInstance } from 'vitest';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-import { useFakeTimers } from '../../utils/use-fake-timers';
-
-useFakeTimers();
-
-import { getClient } from '@sentry/core';
+import '../../utils/mock-internal-setTimeout';
 import type { ErrorEvent, Event } from '@sentry/core';
-
+import { getClient } from '@sentry/core';
+import type { MockInstance } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { UNABLE_TO_SEND_REPLAY } from '../../../src/constants';
 import { handleAfterSendEvent } from '../../../src/coreHandlers/handleAfterSendEvent';
 import type { ReplayContainer } from '../../../src/replay';
@@ -22,6 +17,10 @@ import { resetSdkMock } from '../../mocks/resetSdkMock';
 let replay: ReplayContainer;
 
 describe('Integration | coreHandlers | handleAfterSendEvent', () => {
+  beforeAll(() => {
+    vi.useFakeTimers();
+  });
+
   afterEach(() => {
     replay.stop();
   });
@@ -55,9 +54,10 @@ describe('Integration | coreHandlers | handleAfterSendEvent', () => {
 
     expect(Array.from(replay.getContext().errorIds)).toEqual(['err2']);
     expect(Array.from(replay.getContext().traceIds)).toEqual([]);
+    expect(Array.from(replay.getContext().segmentNames)).toEqual([]);
   });
 
-  it('records traceIds from sent transaction events', async () => {
+  it('records traceIds and segmentNames from sent transaction events', async () => {
     ({ replay } = await resetSdkMock({
       replayOptions: {
         stickySession: false,
@@ -86,15 +86,57 @@ describe('Integration | coreHandlers | handleAfterSendEvent', () => {
 
     expect(Array.from(replay.getContext().errorIds)).toEqual([]);
     expect(Array.from(replay.getContext().traceIds)).toEqual(['tr2']);
+    expect(Array.from(replay.getContext().segmentNames)).toEqual(['/organizations/:orgId/replays/:replaySlug/']);
 
     // Does not affect error session
     await vi.advanceTimersToNextTimerAsync();
 
     expect(Array.from(replay.getContext().errorIds)).toEqual([]);
     expect(Array.from(replay.getContext().traceIds)).toEqual(['tr2']);
+    expect(Array.from(replay.getContext().segmentNames)).toEqual(['/organizations/:orgId/replays/:replaySlug/']);
     expect(replay.isEnabled()).toBe(true);
     expect(replay.isPaused()).toBe(false);
     expect(replay.recordingMode).toBe('buffer');
+  });
+
+  it('records traceId but not segmentName for nameless transaction events', async () => {
+    ({ replay } = await resetSdkMock({
+      replayOptions: {
+        stickySession: false,
+      },
+      sentryOptions: {
+        replaysSessionSampleRate: 0.0,
+        replaysOnErrorSampleRate: 1.0,
+      },
+    }));
+
+    const handler = handleAfterSendEvent(replay);
+
+    const namelessTransaction = Transaction('tr-nameless', { transaction: undefined });
+    handler(namelessTransaction, { statusCode: 200 });
+
+    expect(Array.from(replay.getContext().traceIds)).toEqual(['tr-nameless']);
+    expect(Array.from(replay.getContext().segmentNames)).toEqual([]);
+  });
+
+  it('records segmentName but not traceId for transaction events with missing trace context', async () => {
+    ({ replay } = await resetSdkMock({
+      replayOptions: {
+        stickySession: false,
+      },
+      sentryOptions: {
+        replaysSessionSampleRate: 0.0,
+        replaysOnErrorSampleRate: 1.0,
+      },
+    }));
+
+    const handler = handleAfterSendEvent(replay);
+
+    const noTraceTransaction = Transaction(undefined, { contexts: {} });
+    handler(noTraceTransaction, { statusCode: 200 });
+
+    expect(Array.from(replay.getContext().traceIds)).toEqual([]);
+    expect(Array.from(replay.getContext().segmentNames)).toEqual(['/organizations/:orgId/replays/:replaySlug/']);
   });
 
   it('limits errorIds to max. 100', async () => {
@@ -147,6 +189,8 @@ describe('Integration | coreHandlers | handleAfterSendEvent', () => {
         .fill(undefined)
         .map((_, i) => `tr-${i}`),
     );
+    expect(replay.getContext().segmentNames.size).toBe(1);
+    expect(Array.from(replay.getContext().segmentNames)).toEqual(['/organizations/:orgId/replays/:replaySlug/']);
   });
 
   it('flushes when in buffer mode', async () => {

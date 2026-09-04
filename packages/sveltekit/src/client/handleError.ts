@@ -1,4 +1,4 @@
-import { consoleSandbox } from '@sentry/core';
+import { isObjectLike, consoleSandbox } from '@sentry/core';
 import { captureException } from '@sentry/svelte';
 import type { HandleClientError } from '@sveltejs/kit';
 
@@ -28,20 +28,37 @@ type SafeHandleServerErrorInput = Omit<HandleClientErrorInput, 'status' | 'messa
  *
  * @param handleError The original SvelteKit error handler.
  */
-export function handleErrorWithSentry(handleError: HandleClientError = defaultErrorHandler): HandleClientError {
-  return (input: SafeHandleServerErrorInput): ReturnType<HandleClientError> => {
-    // SvelteKit 2.0 offers a reliable way to check for a 404 error:
-    if (input.status !== 404) {
-      captureException(input.error, {
-        mechanism: {
-          type: 'sveltekit',
-          handled: false,
-        },
-      });
+export function handleErrorWithSentry(handleError?: HandleClientError): HandleClientError {
+  const errorHandler = handleError ?? defaultErrorHandler;
+
+  return (input: HandleClientErrorInput): ReturnType<HandleClientError> => {
+    if (is4xxError(input)) {
+      return errorHandler(input);
     }
 
-    // We're extra cautious with SafeHandleServerErrorInput - this type is not compatible with HandleServerErrorInput
-    // @ts-expect-error - we're still passing the same object, just with a different (backwards-compatible) type
-    return handleError(input);
+    captureException(input.error, {
+      mechanism: {
+        type: 'auto.function.sveltekit.handle_error',
+        handled: !!handleError,
+      },
+    });
+
+    return errorHandler(input);
   };
+}
+
+// 4xx are expected errors and thus we don't want to capture them
+function is4xxError(input: SafeHandleServerErrorInput): boolean {
+  const { status } = input;
+
+  if (status && status >= 400 && status < 500) {
+    return true;
+  }
+
+  // SvelteKit __data.json requests return HTTP 200 with errors embedded in JSON,
+  // so get_status() may resolve to 500 for a deserialized plain error object.
+  // Fall back to checking input.error.status directly.
+  const errorStatus = isObjectLike(input.error) ? (input.error as Record<string, unknown>)['status'] : undefined;
+
+  return typeof errorStatus === 'number' && errorStatus >= 400 && errorStatus < 500;
 }

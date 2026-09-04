@@ -1,10 +1,12 @@
+import { FAAS_TRIGGER, SENTRY_OP } from '@sentry/conventions/attributes';
+import { FAAS_FUNCTION_GCP_SPAN_OP } from '@sentry/conventions/op';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
+  debug,
   handleCallbackErrors,
   httpRequestToRequestData,
   isString,
-  logger,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   setHttpStatus,
   stripUrlQueryAndFragment,
 } from '@sentry/core';
@@ -51,8 +53,9 @@ function _wrapHttpFunction(fn: HttpFunction, options: Partial<WrapperOptions>): 
       return startSpanManual(
         {
           name: `${reqMethod} ${reqUrl}`,
-          op: 'function.gcp.http',
           attributes: {
+            [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+            [FAAS_TRIGGER]: 'http',
             [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_http',
           },
@@ -68,7 +71,7 @@ function _wrapHttpFunction(fn: HttpFunction, options: Partial<WrapperOptions>): 
             // eslint-disable-next-line @typescript-eslint/no-floating-promises
             flush(flushTimeout)
               .then(null, e => {
-                DEBUG_BUILD && logger.error(e);
+                DEBUG_BUILD && debug.error(e);
               })
               .then(() => {
                 _end.call(this, chunk, encoding, cb);
@@ -78,7 +81,7 @@ function _wrapHttpFunction(fn: HttpFunction, options: Partial<WrapperOptions>): 
           return handleCallbackErrors(
             () => fn(req, res),
             err => {
-              captureException(err, scope => markEventUnhandled(scope));
+              captureException(err, scope => markEventUnhandled(scope, 'auto.function.serverless.gcp_http'));
             },
           );
         },

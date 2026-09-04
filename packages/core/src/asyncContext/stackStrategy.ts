@@ -1,7 +1,9 @@
+import type { Client } from '../client';
 import { getDefaultCurrentScope, getDefaultIsolationScope } from '../defaultScopes';
 import { Scope } from '../scope';
-import type { Client } from '../types-hoist';
-import { isThenable } from '../utils-hoist/is';
+import { SUPPRESS_TRACING_KEY } from '../tracing/constants';
+import { chainAndCopyPromiseLike } from '../utils/chain-and-copy-promiselike';
+import { isThenable } from '../utils/is';
 import { getMainCarrier, getSentryCarrier } from './../carrier';
 import type { AsyncContextStrategy } from './types';
 
@@ -52,17 +54,11 @@ export class AsyncContextStack {
     }
 
     if (isThenable(maybePromiseResult)) {
-      // @ts-expect-error - isThenable returns the wrong type
-      return maybePromiseResult.then(
-        res => {
-          this._popScope();
-          return res;
-        },
-        e => {
-          this._popScope();
-          throw e;
-        },
-      );
+      return chainAndCopyPromiseLike(
+        maybePromiseResult as PromiseLike<Awaited<typeof maybePromiseResult>> & Record<string, unknown>,
+        () => this._popScope(),
+        () => this._popScope(),
+      ) as T;
     }
 
     this._popScope();
@@ -135,7 +131,7 @@ function withScope<T>(callback: (scope: Scope) => T): T {
 }
 
 function withSetScope<T>(scope: Scope, callback: (scope: Scope) => T): T {
-  const stack = getAsyncContextStack() as AsyncContextStack;
+  const stack = getAsyncContextStack();
   return stack.withScope(() => {
     stack.getStackTop().scope = scope;
     return callback(scope);
@@ -153,6 +149,7 @@ function withIsolationScope<T>(callback: (isolationScope: Scope) => T): T {
  */
 export function getStackAsyncContextStrategy(): AsyncContextStrategy {
   return {
+    suppressTracing: suppressTracingInStack,
     withIsolationScope,
     withScope,
     withSetScope,
@@ -162,4 +159,20 @@ export function getStackAsyncContextStrategy(): AsyncContextStrategy {
     getCurrentScope: () => getAsyncContextStack().getScope(),
     getIsolationScope: () => getAsyncContextStack().getIsolationScope(),
   };
+}
+
+/**
+ * In stack-based ACS, we do not wait for the callback to finish before we reset the metadata
+ * the reason for this is that otherwise, in the stack this can lead to very weird behavior
+ * as there is only a single top scope, if the callback takes longer to finish,
+ * other, unrelated spans may also be suppressed, which we do not want
+ * so instead, we only suppress tracing synchronoysly in the stack.
+ */
+function suppressTracingInStack<T>(callback: () => T): T {
+  return withScope(scope => {
+    scope.setSDKProcessingMetadata({ [SUPPRESS_TRACING_KEY]: true });
+    const res = callback();
+    scope.setSDKProcessingMetadata({ [SUPPRESS_TRACING_KEY]: undefined });
+    return res;
+  });
 }

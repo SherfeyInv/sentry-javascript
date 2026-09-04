@@ -1,23 +1,24 @@
-import { SENTRY_XHR_DATA_KEY, addXhrInstrumentationHandler } from '@sentry-internal/browser-utils';
-import type { Client, Event as SentryEvent, IntegrationFn, SentryWrappedXMLHttpRequest } from '@sentry/core';
+import type { Client, Event as SentryEvent, IntegrationFn, SentryWrappedXMLHttpRequest } from '@sentry/core/browser';
 import {
-  GLOBAL_OBJ,
+  _INTERNAL_filterCookies,
+  _INTERNAL_filterKeyValueData,
   addExceptionMechanism,
   addFetchInstrumentationHandler,
   captureEvent,
+  debug,
   defineIntegration,
   getClient,
+  GLOBAL_OBJ,
   isSentryRequestUrl,
-  logger,
   supportsNativeFetch,
-} from '@sentry/core';
-
+} from '@sentry/core/browser';
+import { addXhrInstrumentationHandler, SENTRY_XHR_DATA_KEY } from '@sentry/browser-utils';
 import { DEBUG_BUILD } from '../debug-build';
 
 export type HttpStatusCodeRange = [number, number] | number;
 export type HttpRequestTarget = string | RegExp;
 
-const INTEGRATION_NAME = 'HttpClient';
+const INTEGRATION_NAME = 'HttpClient' as const;
 
 interface HttpClientOptions {
   /**
@@ -80,9 +81,29 @@ function _fetchResponseHandler(
 
     let requestHeaders, responseHeaders, requestCookies, responseCookies;
 
-    if (_shouldSendDefaultPii()) {
-      [requestHeaders, requestCookies] = _parseCookieHeaders('Cookie', request);
-      [responseHeaders, responseCookies] = _parseCookieHeaders('Set-Cookie', response);
+    const dc = _getDataCollectionSettings();
+
+    if (dc.requestHeaders !== false) {
+      requestHeaders = _INTERNAL_filterKeyValueData(_extractFetchHeaders(request.headers), dc.requestHeaders);
+    }
+    if (dc.responseHeaders !== false) {
+      responseHeaders = _INTERNAL_filterKeyValueData(_extractFetchHeaders(response.headers), dc.responseHeaders);
+    }
+    if (dc.cookies !== false) {
+      const reqCookieStr = request.headers.get('Cookie') || undefined;
+      if (reqCookieStr) {
+        const filtered = _INTERNAL_filterCookies(reqCookieStr, dc.cookies);
+        if (typeof filtered === 'object') {
+          requestCookies = filtered;
+        }
+      }
+      const resCookieStr = response.headers.get('Set-Cookie') || undefined;
+      if (resCookieStr) {
+        const filtered = _INTERNAL_filterCookies(resCookieStr, dc.cookies);
+        if (typeof filtered === 'object') {
+          responseCookies = filtered;
+        }
+      }
     }
 
     const event = _createEvent({
@@ -94,30 +115,11 @@ function _fetchResponseHandler(
       requestCookies,
       responseCookies,
       error,
+      type: 'fetch',
     });
 
     captureEvent(event);
   }
-}
-
-function _parseCookieHeaders(
-  cookieHeader: string,
-  obj: Request | Response,
-): [Record<string, string>, Record<string, string> | undefined] {
-  const headers = _extractFetchHeaders(obj.headers);
-  let cookies;
-
-  try {
-    const cookieString = headers[cookieHeader] || headers[cookieHeader.toLowerCase()] || undefined;
-
-    if (cookieString) {
-      cookies = _parseCookieString(cookieString);
-    }
-  } catch {
-    // ignore it if parsing fails
-  }
-
-  return [headers, cookies];
 }
 
 /**
@@ -137,24 +139,32 @@ function _xhrResponseHandler(
   if (_shouldCaptureResponse(options, xhr.status, xhr.responseURL)) {
     let requestHeaders, responseCookies, responseHeaders;
 
-    if (_shouldSendDefaultPii()) {
+    const dc = _getDataCollectionSettings();
+
+    if (dc.cookies !== false) {
       try {
         const cookieString = xhr.getResponseHeader('Set-Cookie') || xhr.getResponseHeader('set-cookie') || undefined;
-
         if (cookieString) {
-          responseCookies = _parseCookieString(cookieString);
+          const filtered = _INTERNAL_filterCookies(cookieString, dc.cookies);
+          if (typeof filtered === 'object') {
+            responseCookies = filtered;
+          }
         }
       } catch {
         // ignore it if parsing fails
       }
+    }
 
+    if (dc.responseHeaders !== false) {
       try {
-        responseHeaders = _getXHRResponseHeaders(xhr);
+        responseHeaders = _INTERNAL_filterKeyValueData(_getXHRResponseHeaders(xhr), dc.responseHeaders);
       } catch {
         // ignore it if parsing fails
       }
+    }
 
-      requestHeaders = headers;
+    if (dc.requestHeaders !== false) {
+      requestHeaders = _INTERNAL_filterKeyValueData(headers, dc.requestHeaders);
     }
 
     const event = _createEvent({
@@ -166,6 +176,7 @@ function _xhrResponseHandler(
       responseHeaders,
       responseCookies,
       error,
+      type: 'xhr',
     });
 
     captureEvent(event);
@@ -188,22 +199,6 @@ function _getResponseSizeFromHeaders(headers?: Record<string, string>): number |
   }
 
   return undefined;
-}
-
-/**
- * Creates an object containing cookies from the given cookie string
- *
- * @param cookieString The cookie string to parse
- * @returns The parsed cookies
- */
-function _parseCookieString(cookieString: string): Record<string, string> {
-  return cookieString.split('; ').reduce((acc: Record<string, string>, cookie: string) => {
-    const [key, value] = cookie.split('=');
-    if (key && value) {
-      acc[key] = value;
-    }
-    return acc;
-  }, {});
 }
 
 /**
@@ -303,7 +298,7 @@ function _wrapFetch(client: Client, options: HttpClientOptions): void {
     }
 
     _fetchResponseHandler(options, requestInfo, response as Response, requestInit, error || virtualError);
-  }, false);
+  });
 }
 
 /**
@@ -334,7 +329,7 @@ function _wrapXHR(client: Client, options: HttpClientOptions): void {
     try {
       _xhrResponseHandler(options, xhr, method, headers, error || virtualError);
     } catch (e) {
-      DEBUG_BUILD && logger.warn('Error while extracting response event form XHR response', e);
+      DEBUG_BUILD && debug.warn('Error while extracting response event form XHR response', e);
     }
   });
 }
@@ -363,6 +358,7 @@ function _createEvent(data: {
   url: string;
   method: string;
   status: number;
+  type: 'fetch' | 'xhr';
   responseHeaders?: Record<string, string>;
   responseCookies?: Record<string, string>;
   requestHeaders?: Record<string, string>;
@@ -403,7 +399,7 @@ function _createEvent(data: {
   };
 
   addExceptionMechanism(event, {
-    type: 'http.client',
+    type: `auto.http.client.${data.type}`,
     handled: false,
   });
 
@@ -425,7 +421,12 @@ function _getRequest(requestInfo: RequestInfo, requestInit?: RequestInit): Reque
   return new Request(requestInfo, requestInit);
 }
 
-function _shouldSendDefaultPii(): boolean {
+function _getDataCollectionSettings() {
   const client = getClient();
-  return client ? Boolean(client.getOptions().sendDefaultPii) : false;
+  if (!client) {
+    return { cookies: false, requestHeaders: false, responseHeaders: false };
+  }
+
+  const { cookies, httpHeaders } = client.getDataCollectionOptions();
+  return { cookies, requestHeaders: httpHeaders.request, responseHeaders: httpHeaders.response };
 }

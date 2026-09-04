@@ -1,29 +1,52 @@
-import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
+import { afterAll, describe, expect } from 'vitest';
+import { cleanupChildProcesses, createEsmAndCjsTests } from '../../../utils/runner';
+import { createCjsTests } from '../../../utils/runner/createEsmAndCjsTests';
 
 describe('lru-memoizer', () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  test('keeps outer context inside the memoized inner functions', done => {
-    createRunner(__dirname, 'scenario.js')
-      // We expect only one transaction and nothing else.
-      // A failed test will result in an error event being sent to Sentry.
-      // Which will fail this suite.
-      .expect({
+  createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createTestRunner, test) => {
+    test('keeps outer context inside the memoized inner functions', async () => {
+      await createTestRunner()
+        .expect({
+          transaction: {
+            transaction: 'test-name',
+            contexts: {
+              trace: expect.objectContaining({
+                op: 'run',
+                data: expect.objectContaining({
+                  'sentry.op': 'run',
+                  'sentry.origin': 'manual',
+                  'memoized.context_preserved': true,
+                }),
+              }),
+            },
+          },
+        })
+        .start()
+        .completed();
+    });
+  });
+
+  // CJS-only: the parallel scenario is flaky in ESM (see #21729).
+  createCjsTests(__dirname, 'scenario-parallel.mjs', 'instrument.mjs', (createTestRunner, test) => {
+    test('keeps each span context across parallel memoized requests', async () => {
+      // Each parallel request emits a transaction whose callback must have run in its own context.
+      // Two identical expectations keep this order-independent.
+      const expectation = {
         transaction: {
-          transaction: '<unknown>',
           contexts: {
             trace: expect.objectContaining({
-              op: 'run',
-              data: expect.objectContaining({
-                'sentry.op': 'run',
-                'sentry.origin': 'manual',
-              }),
+              op: expect.stringMatching(/^(first|second)$/),
+              data: expect.objectContaining({ 'memoized.context_preserved': true }),
             }),
           },
         },
-      })
-      .start(done);
+      };
+
+      await createTestRunner().expect(expectation).expect(expectation).start().completed();
+    });
   });
 });

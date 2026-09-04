@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'vitest';
 import type { ProcessArgs, ProcessInterface } from '../../src/utils/entry-point';
 import { getEntryPointType, parseProcessPaths } from '../../src/utils/entry-point';
 
@@ -40,6 +41,18 @@ const PROCESS_ARG_TESTS: [ProcessInterface, ProcessArgs][] = [
       appPath: '/user/tim/docs/app.js',
       importPaths: [],
       requirePaths: ['/user/tim/docs/here/something.js'],
+    },
+  ],
+  [
+    {
+      cwd: () => '/user/tim/docs',
+      argv: ['/bin/node', 'app.js'],
+      execArgv: ['-r', './something.js'],
+    },
+    {
+      appPath: '/user/tim/docs/app.js',
+      importPaths: [],
+      requirePaths: ['/user/tim/docs/something.js'],
     },
   ],
 ];

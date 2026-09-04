@@ -1,11 +1,12 @@
-import { defineIntegration } from '../integration';
-import type { Event, Exception, IntegrationFn, StackFrame } from '../types-hoist';
-
 import { DEBUG_BUILD } from '../debug-build';
-import { logger } from '../utils-hoist/logger';
-import { getFramesFromEvent } from '../utils-hoist/stacktrace';
+import { defineIntegration } from '../integration';
+import type { Event } from '../types/event';
+import type { Exception } from '../types/exception';
+import type { IntegrationFn } from '../types/integration';
+import { debug } from '../utils/debug-logger';
+import { getFramesFromEvent } from '../utils/stacktrace';
 
-const INTEGRATION_NAME = 'Dedupe';
+const INTEGRATION_NAME = 'Dedupe' as const;
 
 const _dedupeIntegration = (() => {
   let previousEvent: Event | undefined;
@@ -22,10 +23,10 @@ const _dedupeIntegration = (() => {
       // Juuust in case something goes wrong
       try {
         if (_shouldDropEvent(currentEvent, previousEvent)) {
-          DEBUG_BUILD && logger.warn('Event dropped due to being a duplicate of previously captured event.');
+          DEBUG_BUILD && debug.warn('Event dropped due to being a duplicate of previously captured event.');
           return null;
         }
-      } catch (_oO) {} // eslint-disable-line no-empty
+      } catch {} // eslint-disable-line no-empty
 
       return (previousEvent = currentEvent);
     },
@@ -107,21 +108,13 @@ function _isSameExceptionEvent(currentEvent: Event, previousEvent: Event): boole
 }
 
 function _isSameStacktrace(currentEvent: Event, previousEvent: Event): boolean {
-  let currentFrames = getFramesFromEvent(currentEvent);
-  let previousFrames = getFramesFromEvent(previousEvent);
+  const currentFrames = getFramesFromEvent(currentEvent);
+  const previousFrames = getFramesFromEvent(previousEvent);
 
-  // If neither event has a stacktrace, they are assumed to be the same
-  if (!currentFrames && !previousFrames) {
-    return true;
+  // If either event is missing a stacktrace, they are the same only if neither has one
+  if (!currentFrames || !previousFrames) {
+    return !currentFrames && !previousFrames;
   }
-
-  // If only one event has a stacktrace, but not the other one, they are not the same
-  if ((currentFrames && !previousFrames) || (!currentFrames && previousFrames)) {
-    return false;
-  }
-
-  currentFrames = currentFrames as StackFrame[];
-  previousFrames = previousFrames as StackFrame[];
 
   // If number of frames differ, they are not the same
   if (previousFrames.length !== currentFrames.length) {
@@ -149,30 +142,22 @@ function _isSameStacktrace(currentEvent: Event, previousEvent: Event): boolean {
 }
 
 function _isSameFingerprint(currentEvent: Event, previousEvent: Event): boolean {
-  let currentFingerprint = currentEvent.fingerprint;
-  let previousFingerprint = previousEvent.fingerprint;
+  const currentFingerprint = currentEvent.fingerprint;
+  const previousFingerprint = previousEvent.fingerprint;
 
-  // If neither event has a fingerprint, they are assumed to be the same
-  if (!currentFingerprint && !previousFingerprint) {
-    return true;
+  // If either event is missing a fingerprint, they are the same only if neither has one
+  if (!currentFingerprint || !previousFingerprint) {
+    return !currentFingerprint && !previousFingerprint;
   }
-
-  // If only one event has a fingerprint, but not the other one, they are not the same
-  if ((currentFingerprint && !previousFingerprint) || (!currentFingerprint && previousFingerprint)) {
-    return false;
-  }
-
-  currentFingerprint = currentFingerprint as string[];
-  previousFingerprint = previousFingerprint as string[];
 
   // Otherwise, compare the two
   try {
     return !!(currentFingerprint.join('') === previousFingerprint.join(''));
-  } catch (_oO) {
+  } catch {
     return false;
   }
 }
 
 function _getExceptionFromEvent(event: Event): Exception | undefined {
-  return event.exception && event.exception.values && event.exception.values[0];
+  return event.exception?.values?.[0];
 }

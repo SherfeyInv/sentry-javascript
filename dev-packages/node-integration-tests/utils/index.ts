@@ -1,8 +1,9 @@
-import type * as http from 'http';
-import { parseSemver } from '@sentry/core';
 import type { EnvelopeItemType } from '@sentry/core';
+import { parseSemver } from '@sentry/core';
+import type * as http from 'http';
+import { describe } from 'vitest';
 
-const NODE_VERSION = parseSemver(process.versions.node).major;
+export const NODE_VERSION = parseSemver(process.versions.node).major || 0;
 
 export type TestServerConfig = {
   url: string;
@@ -31,17 +32,21 @@ export type DataCollectorOptions = {
  * Returns`describe` or `describe.skip` depending on allowed major versions of Node.
  *
  * @param {{ min?: number; max?: number }} allowedVersion
- * @return {*}  {jest.Describe}
  */
-export const conditionalTest = (allowedVersion: { min?: number; max?: number }): jest.Describe => {
+export function conditionalTest(allowedVersion: {
+  min?: number;
+  max?: number;
+}): typeof describe | typeof describe.skip {
+  return describe.skipIf(!matchesNodeVersion(allowedVersion));
+}
+
+function matchesNodeVersion({ min, max }: { min?: number; max?: number }): boolean {
   if (!NODE_VERSION) {
-    return describe.skip;
+    return false;
   }
 
-  return NODE_VERSION < (allowedVersion.min || -Infinity) || NODE_VERSION > (allowedVersion.max || Infinity)
-    ? describe.skip
-    : describe;
-};
+  return !(NODE_VERSION < (min || -Infinity) || NODE_VERSION > (max || Infinity));
+}
 
 /**
  * Parses response body containing an Envelope
@@ -52,3 +57,14 @@ export const conditionalTest = (allowedVersion: { min?: number; max?: number }):
 export const parseEnvelope = (body: string): Array<Record<string, unknown>> => {
   return body.split('\n').map(e => JSON.parse(e));
 };
+
+/**
+ * Narrows a typed span attribute value to a string.
+ *
+ * Streamed span attribute values are a union (`string | number | boolean | string[] | ...`), so
+ * assertions that call string methods (`includes`, `startsWith`, `match`, `length`) need the value
+ * narrowed first. Returns `undefined` if the value is not a string.
+ */
+export function getStringAttributeValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}

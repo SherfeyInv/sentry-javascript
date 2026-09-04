@@ -2,36 +2,50 @@
  * Rollup plugin hooks docs: https://rollupjs.org/guide/en/#build-hooks and
  * https://rollupjs.org/guide/en/#output-generation-hooks
  *
- * Cleanup plugin docs: https://github.com/aMarCruz/rollup-plugin-cleanup
+ * esbuild plugin docs: https://github.com/egoist/rollup-plugin-esbuild
  * Replace plugin docs: https://github.com/rollup/plugins/tree/master/packages/replace
- * Sucrase plugin docs: https://github.com/rollup/plugins/tree/master/packages/sucrase
  */
-
-import * as fs from 'fs';
-import * as path from 'path';
 
 import json from '@rollup/plugin-json';
 import replace from '@rollup/plugin-replace';
-import cleanup from 'rollup-plugin-cleanup';
-import sucrase from './vendor/sucrase-plugin.mjs';
+import esbuild from 'rollup-plugin-esbuild';
 
 /**
- * Create a plugin to transpile TS syntax using `sucrase`.
+ * Create a plugin to transpile TS/JSX syntax using `esbuild`.
  *
- * @returns An instance of the `@rollup/plugin-sucrase` plugin
+ * `target: 'es2020'` keeps ES2020-native syntax (`?.`, `??`, optional catch binding) and
+ * downlevels everything newer (logical assignment, numeric separators, class private
+ * fields, static class blocks, ...).
+ *
+ * `esbuildOptions` are forwarded to `rollup-plugin-esbuild` verbatim and can override
+ * any of the pinned defaults (e.g. JSX-related keys like `jsxFactory` / `jsxFragment`
+ * for packages that use a non-React pragma).
  */
-export function makeSucrasePlugin(options = {}, sucraseOptions = {}) {
-  return sucrase(
-    {
-      // Required for bundling OTEL code properly
-      exclude: ['**/*.json'],
-      ...options,
+export function makeEsbuildPlugin(esbuildOptions = {}) {
+  const plugin = esbuild({
+    // `.json` is handled by the JSON plugin further down the pipeline.
+    exclude: ['**/*.json'],
+    // ES2020 is our floor — keeps `?.`/`??` native, downlevels everything newer.
+    target: 'es2020',
+    // Don't read per-package tsconfig (they vary and can pull in unrelated settings).
+    // Pin only the compilerOptions that affect codegen.
+    tsconfig: false,
+    tsconfigRaw: {
+      compilerOptions: {
+        // Match the project tsconfig's effective behavior at target=es2020: class
+        // field initializers compile to `this.x = v` (set semantics), not via the
+        // `Object.defineProperty`-based `__publicField` helper esbuild emits by
+        // default. This is what tsc itself outputs at this target.
+        useDefineForClassFields: false,
+      },
     },
-    {
-      transforms: ['typescript', 'jsx'],
-      ...sucraseOptions,
-    },
-  );
+    sourceMap: true,
+    ...esbuildOptions,
+  });
+
+  // Force a stable plugin name so the plugin sort order in utils.mjs can target it.
+  plugin.name = 'esbuild';
+  return plugin;
 }
 
 export function makeJsonPlugin() {
@@ -89,23 +103,6 @@ export function makeDebuggerPlugin(hookName) {
 }
 
 /**
- * Create a plugin to clean up output files by:
- * - Converting line endings unix line endings
- * - Removing consecutive empty lines
- *
- * @returns A `rollup-plugin-cleanup` instance.
- */
-export function makeCleanupPlugin() {
-  return cleanup({
-    // line endings are unix-ized by default
-    comments: 'all', // comments to keep
-    compactComments: 'false', // don't remove blank lines in multi-line comments
-    maxEmptyLines: 1,
-    extensions: ['js', 'jsx', 'ts', 'tsx'],
-  });
-}
-
-/**
  * Creates a plugin to replace all instances of "__DEBUG_BUILD__" with a safe statement that
  * a) evaluates to `true`
  * b) can easily be modified by our users' bundlers to evaluate to false, facilitating the treeshaking of logger code.
@@ -113,25 +110,50 @@ export function makeCleanupPlugin() {
  * @returns A `@rollup/plugin-replace` instance.
  */
 export function makeDebugBuildStatementReplacePlugin() {
-  return replace({
+  const plugin = replace({
     preventAssignment: false,
     values: {
       __DEBUG_BUILD__: "(typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__)",
     },
   });
+  plugin.name = 'replace-debug-build-statement';
+  return plugin;
 }
 
-/**
- * Because jest doesn't like `import.meta` statements but we still need it in the code base we instead use a magic
- * string that we replace with import.meta.url in the build.
- */
-export function makeImportMetaUrlReplacePlugin() {
-  return replace({
-    preventAssignment: false,
-    values: {
-      __IMPORT_META_URL_REPLACEMENT__: 'import.meta.url',
+// Markers use the `/*! ... */` legal-comment syntax so esbuild preserves them through
+// transpile. We still run as a `transform` (per-module) hook rather than `renderChunk`:
+// the block typically uses imports declared at the module top, and stripping it before
+// rollup analyses module-graph imports lets those now-unused imports be tree-shaken away.
+// The plugin sort order in utils.mjs pins this before `esbuild`.
+const REMOVE_DEV_BLOCK =
+  /\/\*! rollup-include-development-only \*\/[\s\S]*?\/\*! rollup-include-development-only-end \*\/\s*/g;
+
+export function makeProductionReplacePlugin() {
+  return {
+    name: 'remove-dev-mode-blocks',
+    transform(code) {
+      if (!code.includes('rollup-include-development-only')) return null;
+      return { code: code.replace(REMOVE_DEV_BLOCK, ''), map: null };
     },
-  });
+  };
+}
+
+const REMOVE_CJS_BLOCK = /\/\*! rollup-include-cjs-only \*\/[\s\S]*?\/\*! rollup-include-cjs-only-end \*\/\s*/g;
+const REMOVE_ESM_BLOCK = /\/\*! rollup-include-esm-only \*\/[\s\S]*?\/\*! rollup-include-esm-only-end \*\/\s*/g;
+const STRIP_CJS_MARKERS = /[ \t]*\/\*! rollup-include-cjs-only(?:-end)? \*\/[ \t]*\r?\n?/g;
+const STRIP_ESM_MARKERS = /[ \t]*\/\*! rollup-include-esm-only(?:-end)? \*\/[ \t]*\r?\n?/g;
+
+export function makeEsmCjsReplacePlugin(type) {
+  const removeBlock = type === 'esm' ? REMOVE_CJS_BLOCK : REMOVE_ESM_BLOCK;
+  const stripMarkers = type === 'esm' ? STRIP_ESM_MARKERS : STRIP_CJS_MARKERS;
+
+  return {
+    name: 'remove-esm-cjs-mode-blocks',
+    transform(code) {
+      if (!code.includes('rollup-include-')) return null;
+      return { code: code.replace(removeBlock, '').replace(stripMarkers, ''), map: null };
+    },
+  };
 }
 
 /**
@@ -153,23 +175,10 @@ export function makeRrwebBuildPlugin({ excludeShadowDom, excludeIframe } = {}) {
     values['__RRWEB_EXCLUDE_IFRAME__'] = excludeIframe;
   }
 
-  return replace({
+  const plugin = replace({
     preventAssignment: true,
     values,
   });
-}
-
-/**
- * Plugin that uploads bundle analysis to codecov.
- *
- * @param type The type of bundle being uploaded.
- * @param prefix The prefix for the codecov bundle name. Defaults to 'npm'.
- */
-export function makeCodeCovPlugin() {
-  const packageJson = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), './package.json'), { encoding: 'utf8' }));
-  return codecovRollupPlugin({
-    enableBundleAnalysis: process.env.CODECOV_TOKEN !== undefined,
-    bundleName: packageJson.name,
-    uploadToken: process.env.CODECOV_TOKEN,
-  });
+  plugin.name = 'replace-rrweb-build-flags';
+  return plugin;
 }

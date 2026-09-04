@@ -1,7 +1,7 @@
 import type { Event, IntegrationFn, StackFrame } from '@sentry/core';
-import { LRUMap, addContextToFrame, defineIntegration } from '@sentry/core';
+import { addContextToFrame, defineIntegration, LRUMap } from '@sentry/core';
 
-const INTEGRATION_NAME = 'ContextLines';
+const INTEGRATION_NAME = 'ContextLines' as const;
 const FILE_CONTENT_CACHE = new LRUMap<string, string | null>(100);
 const DEFAULT_LINES_OF_CONTEXT = 7;
 
@@ -28,7 +28,7 @@ async function readSourceFile(filename: string): Promise<string | null> {
   let content: string | null = null;
   try {
     content = await Deno.readTextFile(filename);
-  } catch (_) {
+  } catch {
     //
   }
 
@@ -36,22 +36,25 @@ async function readSourceFile(filename: string): Promise<string | null> {
   return content;
 }
 
+// TODO(v11): Use `dataCollection.frameContextLines` default (5)
 interface ContextLinesOptions {
   /**
    * Sets the number of context lines for each frame when loading a file.
    * Defaults to 7.
    *
    * Set to 0 to disable loading and inclusion of source files.
-   */
+   *
+   * When set, this option takes precedence over `dataCollection.frameContextLines`.
+   **/
   frameContextLines?: number;
 }
 
 const _contextLinesIntegration = ((options: ContextLinesOptions = {}) => {
-  const contextLines = options.frameContextLines !== undefined ? options.frameContextLines : DEFAULT_LINES_OF_CONTEXT;
-
   return {
     name: INTEGRATION_NAME,
-    processEvent(event) {
+    processEvent(event, _hint, client) {
+      const contextLines =
+        options.frameContextLines ?? client?.getDataCollectionOptions().frameContextLines ?? DEFAULT_LINES_OF_CONTEXT;
       return addSourceContext(event, contextLines);
     },
   };
@@ -74,9 +77,9 @@ export const contextLinesIntegration = defineIntegration(_contextLinesIntegratio
 
 /** Processes an event and adds context lines */
 async function addSourceContext(event: Event, contextLines: number): Promise<Event> {
-  if (contextLines > 0 && event.exception && event.exception.values) {
+  if (contextLines > 0 && event.exception?.values) {
     for (const exception of event.exception.values) {
-      if (exception.stacktrace && exception.stacktrace.frames) {
+      if (exception.stacktrace?.frames) {
         await addSourceContextToFrames(exception.stacktrace.frames, contextLines);
       }
     }
@@ -102,7 +105,7 @@ async function addSourceContextToFrames(frames: StackFrame[], contextLines: numb
           try {
             const lines = sourceFile.split('\n');
             addContextToFrame(lines, frame, contextLines);
-          } catch (_) {
+          } catch {
             // anomaly, being defensive in case
             // unlikely to ever happen in practice but can definitely happen in theory
           }

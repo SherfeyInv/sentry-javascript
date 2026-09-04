@@ -18,10 +18,10 @@ test('Sends successful transaction', async ({ baseURL }) => {
       'sentry.origin': 'auto.http.otel.http',
       'sentry.op': 'http.server',
       'sentry.sample_rate': 1,
-      url: 'http://localhost:3030/test-success',
-      'otel.kind': 'SERVER',
+      'sentry.kind': 'server',
       'http.response.status_code': 200,
-      'http.url': 'http://localhost:3030/test-success',
+      'url.full': 'http://localhost:3030/test-success',
+      'url.path': '/test-success',
       'http.host': 'localhost:3030',
       'net.host.name': 'localhost',
       'http.method': 'GET',
@@ -37,6 +37,13 @@ test('Sends successful transaction', async ({ baseURL }) => {
       'http.status_code': 200,
       'http.status_text': 'OK',
       'http.route': '/test-success',
+      'http.request.header.accept': '*/*',
+      'http.request.header.accept_encoding': 'gzip, deflate',
+      'http.request.header.accept_language': '*',
+      'http.request.header.connection': 'keep-alive',
+      'http.request.header.host': expect.any(String),
+      'http.request.header.sec_fetch_mode': 'cors',
+      'http.request.header.user_agent': 'node',
     },
     op: 'http.server',
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -57,18 +64,22 @@ test('Sends successful transaction', async ({ baseURL }) => {
 
   const spans = transactionEvent.spans || [];
 
+  spans.forEach(span => {
+    expect(Object.keys(span.data).some(key => key.startsWith('http.request.header.'))).toBe(false);
+  });
+
   expect(spans).toEqual([
     {
       data: {
         'hapi.type': 'router',
         'http.method': 'GET',
         'http.route': '/test-success',
-        'sentry.op': 'router.hapi',
-        'sentry.origin': 'auto.http.otel.hapi',
+        'sentry.op': 'router',
+        'sentry.origin': 'auto.http.hapi',
       },
       description: 'GET /test-success',
-      op: 'router.hapi',
-      origin: 'auto.http.otel.hapi',
+      op: 'router',
+      origin: 'auto.http.hapi',
       parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
       span_id: expect.stringMatching(/[a-f0-9]{16}/),
       start_timestamp: expect.any(Number),
@@ -80,13 +91,13 @@ test('Sends successful transaction', async ({ baseURL }) => {
       // this comes from "onPreResponse"
       data: {
         'hapi.type': 'server.ext',
-        'sentry.op': 'server.ext.hapi',
-        'sentry.origin': 'auto.http.otel.hapi',
+        'sentry.op': 'middleware',
+        'sentry.origin': 'auto.http.hapi',
         'server.ext.type': 'onPreResponse',
       },
       description: 'ext - onPreResponse',
-      op: 'server.ext.hapi',
-      origin: 'auto.http.otel.hapi',
+      op: 'middleware',
+      origin: 'auto.http.hapi',
       parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
       span_id: expect.stringMatching(/[a-f0-9]{16}/),
       start_timestamp: expect.any(Number),

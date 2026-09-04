@@ -1,5 +1,4 @@
-import { getTraceMetaTags } from '@sentry/core';
-import { addNonEnumerableProperty } from '@sentry/core';
+import { addNonEnumerableProperty, getTraceMetaTags } from '@sentry/core';
 import type { ResponseMiddleware } from '@solidjs/start/middleware';
 import type { FetchEvent } from '@solidjs/start/server';
 
@@ -33,7 +32,7 @@ export function sentryBeforeResponseMiddleware() {
     addNonEnumerableProperty(response, '__sentry_wrapped__', true);
 
     const contentType = event.response.headers.get('content-type');
-    const isPageloadRequest = contentType && contentType.startsWith('text/html');
+    const isPageloadRequest = contentType?.startsWith('text/html');
 
     if (!isPageloadRequest) {
       return;

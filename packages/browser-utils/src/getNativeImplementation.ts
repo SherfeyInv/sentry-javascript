@@ -1,4 +1,4 @@
-import { isNativeFunction, logger } from '@sentry/core';
+import { debug, isNativeFunction } from '@sentry/core';
 import { DEBUG_BUILD } from './debug-build';
 import { WINDOW } from './types';
 
@@ -40,20 +40,20 @@ export function getNativeImplementation<T extends keyof CacheableImplementations
   }
 
   const document = WINDOW.document;
-  // eslint-disable-next-line deprecation/deprecation
+  // eslint-disable-next-line typescript/no-deprecated
   if (document && typeof document.createElement === 'function') {
     try {
       const sandbox = document.createElement('iframe');
       sandbox.hidden = true;
       document.head.appendChild(sandbox);
       const contentWindow = sandbox.contentWindow;
-      if (contentWindow && contentWindow[name]) {
+      if (contentWindow?.[name]) {
         impl = contentWindow[name] as CacheableImplementations[T];
       }
       document.head.removeChild(sandbox);
     } catch (e) {
       // Could not create sandbox iframe, just use window.xxx
-      DEBUG_BUILD && logger.warn(`Could not create sandbox iframe for ${name} check, bailing to window.${name}: `, e);
+      DEBUG_BUILD && debug.warn(`Could not create sandbox iframe for ${name} check, bailing to window.${name}: `, e);
     }
   }
 

@@ -1,5 +1,20 @@
-import { isThenable } from '../utils-hoist/is';
+import { chainAndCopyPromiseLike } from '../utils/chain-and-copy-promiselike';
+import { isThenable } from '../utils/is';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function handleCallbackErrors<Fn extends () => Promise<any>, PromiseValue = Awaited<ReturnType<Fn>>>(
+  fn: Fn,
+  onError: (error: unknown) => void,
+  onFinally?: () => void,
+  onSuccess?: (result: PromiseValue) => void,
+): ReturnType<Fn>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function handleCallbackErrors<Fn extends () => any>(
+  fn: Fn,
+  onError: (error: unknown) => void,
+  onFinally?: () => void,
+  onSuccess?: (result: ReturnType<Fn>) => void,
+): ReturnType<Fn>;
 /**
  * Wrap a callback function with error handling.
  * If an error is thrown, it will be passed to the `onError` callback and re-thrown.
@@ -14,12 +29,13 @@ import { isThenable } from '../utils-hoist/is';
 export function handleCallbackErrors<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Fn extends () => any,
+  ValueType = ReturnType<Fn>,
 >(
   fn: Fn,
   onError: (error: unknown) => void,
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
   onFinally: () => void = () => {},
-): ReturnType<Fn> {
+  onSuccess: (result: ValueType | Awaited<ValueType>) => void = () => {},
+): ValueType {
   let maybePromiseResult: ReturnType<Fn>;
   try {
     maybePromiseResult = fn();
@@ -29,35 +45,41 @@ export function handleCallbackErrors<
     throw e;
   }
 
-  return maybeHandlePromiseRejection(maybePromiseResult, onError, onFinally);
+  return maybeHandlePromiseRejection(maybePromiseResult, onError, onFinally, onSuccess);
 }
 
 /**
  * Maybe handle a promise rejection.
  * This expects to be given a value that _may_ be a promise, or any other value.
  * If it is a promise, and it rejects, it will call the `onError` callback.
- * Other than this, it will generally return the given value as-is.
+ *
+ * For thenable objects with extra methods (like jQuery's jqXHR),
+ * this function preserves those methods by wrapping the original thenable in a Proxy
+ * that intercepts .then() calls to apply error handling while forwarding all other
+ * properties to the original object.
+ * This allows code like `startSpan(() => $.ajax(...)).abort()` to work correctly.
  */
 function maybeHandlePromiseRejection<MaybePromise>(
   value: MaybePromise,
   onError: (error: unknown) => void,
   onFinally: () => void,
+  onSuccess: (result: MaybePromise | Awaited<MaybePromise>) => void,
 ): MaybePromise {
   if (isThenable(value)) {
-    // @ts-expect-error - the isThenable check returns the "wrong" type here
-    return value.then(
-      res => {
+    return chainAndCopyPromiseLike(
+      value as MaybePromise & PromiseLike<Awaited<typeof value>> & Record<string, unknown>,
+      result => {
         onFinally();
-        return res;
+        onSuccess(result as Awaited<MaybePromise>);
       },
-      e => {
-        onError(e);
+      err => {
+        onError(err);
         onFinally();
-        throw e;
       },
-    );
+    ) as MaybePromise;
   }
-
+  // Non-thenable value - call callbacks immediately and return as-is
   onFinally();
+  onSuccess(value);
   return value;
 }

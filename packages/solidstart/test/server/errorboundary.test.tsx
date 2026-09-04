@@ -1,21 +1,25 @@
 /* eslint-disable @typescript-eslint/unbound-method */
+import type * as SentryCoreBrowser from '@sentry/core/browser';
 import type * as SentryCore from '@sentry/core';
+
 import { createTransport, getCurrentScope, setCurrentClient } from '@sentry/core';
 import { render } from '@solidjs/testing-library';
 import userEvent from '@testing-library/user-event';
-import { vi } from 'vitest';
-
 import { ErrorBoundary } from 'solid-js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NodeClient, withSentryErrorBoundary } from '../../src/server';
 
+// mock both old combined @sentry/core and @sentry/core/browser to be safe.
 const mockCaptureException = vi.fn();
-vi.mock('@sentry/core', async () => {
-  const actual = await vi.importActual<typeof SentryCore>('@sentry/core');
+async function mockCore<T extends typeof SentryCore | typeof SentryCoreBrowser>(importActual: () => Promise<T>) {
+  const actual = await importActual();
   return {
     ...actual,
     captureException: (...args) => mockCaptureException(...args),
   } as typeof SentryCore;
-});
+}
+vi.mock('@sentry/core/browser', mockCore<typeof SentryCoreBrowser>);
+vi.mock('@sentry/core', mockCore<typeof SentryCore>);
 
 const user = userEvent.setup();
 const SentryErrorBoundary = withSentryErrorBoundary(ErrorBoundary);
@@ -50,7 +54,12 @@ describe('withSentryErrorBoundary', () => {
     ));
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
-    expect(mockCaptureException).toHaveBeenLastCalledWith(new ReferenceError('NonExistentComponent is not defined'));
+    expect(mockCaptureException).toHaveBeenLastCalledWith(new ReferenceError('NonExistentComponent is not defined'), {
+      mechanism: {
+        handled: true,
+        type: 'auto.function.solid.error_boundary',
+      },
+    });
   });
 
   it('renders the fallback component', async () => {
@@ -90,13 +99,23 @@ describe('withSentryErrorBoundary', () => {
     ));
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
-    expect(mockCaptureException).toHaveBeenNthCalledWith(1, new ReferenceError('NonExistentComponent is not defined'));
+    expect(mockCaptureException).toHaveBeenNthCalledWith(1, new ReferenceError('NonExistentComponent is not defined'), {
+      mechanism: {
+        handled: true,
+        type: 'auto.function.solid.error_boundary',
+      },
+    });
 
     const button = await findByRole('button');
     await user.click(button);
 
     expect(mockCaptureException).toHaveBeenCalledTimes(2);
-    expect(mockCaptureException).toHaveBeenNthCalledWith(2, new ReferenceError('NonExistentComponent is not defined'));
+    expect(mockCaptureException).toHaveBeenNthCalledWith(2, new ReferenceError('NonExistentComponent is not defined'), {
+      mechanism: {
+        handled: true,
+        type: 'auto.function.solid.error_boundary',
+      },
+    });
   });
 
   it('renders children when there is no error', async () => {

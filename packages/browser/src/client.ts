@@ -4,23 +4,26 @@ import type {
   ClientOptions,
   Event,
   EventHint,
-  Options,
+  Options as CoreOptions,
   ParameterizedString,
   Scope,
   SeverityLevel,
-} from '@sentry/core';
-import { BaseClient, applySdkMetadata, getSDKSource } from '@sentry/core';
+} from '@sentry/core/browser';
+import { addAutoIpAddressToSession, applySdkMetadata, Client, getSDKSource } from '@sentry/core/browser';
 import { eventFromException, eventFromMessage } from './eventbuilder';
 import { WINDOW } from './helpers';
 import type { BrowserTransportOptions } from './transports/types';
 
 /**
- * Configuration options for the Sentry Browser SDK.
- * @see @sentry/core Options for more information.
+ * A magic string that build tooling can leverage in order to inject a release value into the SDK.
  */
-export type BrowserOptions = Options<BrowserTransportOptions> &
-  BrowserClientReplayOptions &
+declare const __SENTRY_RELEASE__: string | undefined;
+
+type BrowserSpecificOptions = BrowserClientReplayOptions &
   BrowserClientProfilingOptions & {
+    /** If configured, this URL will be used as base URL for lazy loading integration. */
+    cdnBaseUrl?: string;
+
     /**
      * Important: Only set this option if you know what you are doing!
      *
@@ -39,18 +42,30 @@ export type BrowserOptions = Options<BrowserTransportOptions> &
      * @default false
      */
     skipBrowserExtensionCheck?: boolean;
+
+    /**
+     * If you use Spotlight by Sentry during development, use
+     * this option to forward captured Sentry events to Spotlight.
+     *
+     * Either set it to true, or provide a specific Spotlight Sidecar URL.
+     *
+     * More details: https://spotlightjs.com/
+     *
+     * IMPORTANT: Only set this option to `true` while developing, not in production!
+     */
+    spotlight?: boolean | string;
   };
+/**
+ * Configuration options for the Sentry Browser SDK.
+ * @see @sentry/core Options for more information.
+ */
+export type BrowserOptions = CoreOptions<BrowserTransportOptions> & BrowserSpecificOptions;
 
 /**
  * Configuration options for the Sentry Browser SDK Client class
  * @see BrowserClient for more information.
  */
-export type BrowserClientOptions = ClientOptions<BrowserTransportOptions> &
-  BrowserClientReplayOptions &
-  BrowserClientProfilingOptions & {
-    /** If configured, this URL will be used as base URL for lazy loading integration. */
-    cdnBaseUrl?: string;
-  };
+export type BrowserClientOptions = ClientOptions<BrowserTransportOptions> & BrowserSpecificOptions;
 
 /**
  * The Sentry Browser SDK Client.
@@ -58,29 +73,59 @@ export type BrowserClientOptions = ClientOptions<BrowserTransportOptions> &
  * @see BrowserOptions for documentation on configuration options.
  * @see SentryClient for usage documentation.
  */
-export class BrowserClient extends BaseClient<BrowserClientOptions> {
+export class BrowserClient extends Client<BrowserClientOptions> {
   /**
    * Creates a new Browser SDK instance.
    *
    * @param options Configuration options for this SDK.
    */
   public constructor(options: BrowserClientOptions) {
-    const opts = {
-      // We default this to true, as it is the safer scenario
-      parentSpanIsAlwaysRootSpan: true,
-      ...options,
-    };
+    const opts = applyDefaultOptions(options);
     const sdkSource = WINDOW.SENTRY_SDK_SOURCE || getSDKSource();
     applySdkMetadata(opts, 'browser', ['browser'], sdkSource);
 
     super(opts);
 
-    if (opts.sendClientReports && WINDOW.document) {
+    // Unhandled errors don't actually crash the browser, so we report `unhandled` rather than `crashed`.
+    this._unhandledSessionStatus = 'unhandled';
+
+    const { userInfo } = this.getDataCollectionOptions();
+
+    if (opts._metadata?.sdk) {
+      opts._metadata.sdk.settings = {
+        // Only allow IP inferral by Relay if the user opted in via dataCollection
+        infer_ip: userInfo ? 'auto' : 'never',
+        // purposefully allowing already passed settings to override the default
+        ...opts._metadata.sdk.settings,
+      };
+    }
+
+    const { sendClientReports } = this._options;
+
+    // Flush buffered data when the page becomes hidden (e.g. tab switch, navigation, or the page
+    // being discarded). `flush()` emits the `flush` hook, which drains the span (streaming), log and
+    // metric buffers and hands the resulting envelopes to the transport (which uses `keepalive`).
+    // Client report outcomes don't listen to the `flush` hook, so we flush them separately.
+    if (WINDOW.document) {
       WINDOW.document.addEventListener('visibilitychange', () => {
         if (WINDOW.document.visibilityState === 'hidden') {
-          this._flushOutcomes();
+          if (sendClientReports) {
+            this._flushOutcomes();
+          }
+          // Defer the flush to a microtask so that visibilitychange listeners registered after this
+          // one have already run. In particular, browser tracing's background-tab detection ends the
+          // active pageload/navigation (segment) span when the page is hidden. Deferring ensures that
+          // segment span has been added to the streaming buffer before we flush, so it is sent
+          // together with its child spans instead of being orphaned.
+          queueMicrotask(() => {
+            void this.flush();
+          });
         }
       });
+    }
+
+    if (userInfo) {
+      this.on('beforeSendSession', addAutoIpAddressToSession);
     }
   }
 
@@ -105,8 +150,28 @@ export class BrowserClient extends BaseClient<BrowserClientOptions> {
   /**
    * @inheritDoc
    */
-  protected _prepareEvent(event: Event, hint: EventHint, scope?: Scope): PromiseLike<Event | null> {
+  protected _prepareEvent(
+    event: Event,
+    hint: EventHint,
+    currentScope: Scope,
+    isolationScope: Scope,
+  ): PromiseLike<Event | null> {
     event.platform = event.platform || 'javascript';
-    return super._prepareEvent(event, hint, scope);
+
+    return super._prepareEvent(event, hint, currentScope, isolationScope);
   }
+}
+
+/** Exported only for tests. */
+export function applyDefaultOptions<T extends Partial<BrowserClientOptions>>(optionsArg: T): T {
+  return {
+    release:
+      typeof __SENTRY_RELEASE__ === 'string' // This allows build tooling to find-and-replace __SENTRY_RELEASE__ to inject a release value
+        ? __SENTRY_RELEASE__
+        : WINDOW.SENTRY_RELEASE?.id, // This supports the variable that sentry-webpack-plugin injects
+    sendClientReports: true,
+    // We default this to true, as it is the safer scenario
+    parentSpanIsAlwaysRootSpan: true,
+    ...optionsArg,
+  };
 }

@@ -1,13 +1,7 @@
-import {
-  buildFeedbackIntegration,
-  feedbackModalIntegration,
-  feedbackScreenshotIntegration,
-} from '@sentry-internal/feedback';
-import { lazyLoadIntegration } from './utils/lazyLoadIntegration';
+import { buildFeedbackIntegration, feedbackModalIntegration, feedbackScreenshotIntegration } from '@sentry/feedback';
 
 /** Add a widget to capture user feedback to your application. */
-export const feedbackSyncIntegration = buildFeedbackIntegration({
-  lazyLoadIntegration,
+export const feedbackSyncIntegration: ReturnType<typeof buildFeedbackIntegration> = buildFeedbackIntegration({
   getModalIntegration: () => feedbackModalIntegration,
   getScreenshotIntegration: () => feedbackScreenshotIntegration,
 });

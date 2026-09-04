@@ -24,6 +24,15 @@ SDK is for [SolidStart](https://start.solidjs.com/). If you're using [Solid](htt
 This package is a wrapper around `@sentry/node` for the server and `@sentry/solid` for the client side, with added
 functionality related to SolidStart.
 
+## SolidStart version support
+
+The setup differs by SolidStart major, because SolidStart 2 dropped vinxi and `app.config.ts`:
+
+- **SolidStart 1** — configure the SDK with `withSentry` in `app.config.ts`. This is what the "Manual Setup" section
+  below describes.
+- **SolidStart 2** — configure the SDK with the `sentrySolidStart` Vite plugin in `vite.config.ts`. See
+  [SolidStart 2 setup](#solidstart-2-setup).
+
 ## Manual Setup
 
 If the setup through the wizard doesn't work for you, you can also set up the SDK manually.
@@ -60,7 +69,7 @@ mount(() => <StartClient />, document.getElementById('app'));
 
 ### 3. Server-side Setup
 
-Create an instrument file named `instrument.server.mjs` and add your initialization code for the server-side SDK.
+Create an instrument file named `src/instrument.server.ts` and add your initialization code for the server-side SDK.
 
 ```javascript
 import * as Sentry from '@sentry/solidstart';
@@ -101,14 +110,148 @@ export default defineConfig({
 The Sentry middleware enhances the data collected by Sentry on the server side by enabling distributed tracing between
 the client and server.
 
-### 5. Run your application
+### 5. Configure your application
+
+For Sentry to work properly, SolidStart's `app.config.ts` has to be modified. Wrap your config with `withSentry` and
+configure it to upload source maps.
+
+If your `instrument.server.ts` file is not located in the `src` folder, you can specify the path via the
+`instrumentation` option to `withSentry`.
+
+To upload source maps, configure an auth token. Auth tokens can be passed explicitly with the `authToken` option, with a
+`SENTRY_AUTH_TOKEN` environment variable, or with an `.env.sentry-build-plugin` file in the working directory when
+building your project. We recommend adding the auth token to your CI/CD environment as an environment variable.
+
+Learn more about configuring the plugin in our
+[Sentry Vite Plugin documentation](https://www.npmjs.com/package/@sentry/vite-plugin).
+
+```typescript
+import { defineConfig } from '@solidjs/start/config';
+import { withSentry } from '@sentry/solidstart';
+
+export default defineConfig(
+  withSentry(
+    {
+      // SolidStart config
+      middleware: './src/middleware.ts',
+    },
+    {
+      // Sentry `withSentry` options
+      org: process.env.SENTRY_ORG,
+      project: process.env.SENTRY_PROJECT,
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+      debug: true,
+      // optional: if your `instrument.server.ts` file is not located inside `src`
+      instrumentation: './mypath/instrument.server.ts',
+    },
+  ),
+);
+```
+
+### 6. Run your application
 
 Then run your app
 
 ```bash
-NODE_OPTIONS='--import=./instrument.server.mjs' yarn start
-# or
-NODE_OPTIONS='--require=./instrument.server.js' yarn start
+NODE_OPTIONS='--import=./.output/server/instrument.server.mjs' yarn start
+```
+
+⚠️ **Note build presets** ⚠️  
+Depending on [build preset](https://nitro.unjs.io/deploy), the location of `instrument.server.mjs` differs. To find out
+where `instrument.server.mjs` is located, monitor the build log output for
+
+```bash
+[Sentry SolidStart withSentry] Successfully created /my/project/path/.output/server/instrument.server.mjs.
+```
+
+⚠️ **Note for platforms without the ability to modify `NODE_OPTIONS` or use `--import`** ⚠️  
+Depending on where the application is deployed to, it might not be possible to modify or use `NODE_OPTIONS` to import
+`instrument.server.mjs`.
+
+For such platforms, we offer the option `autoInjectServerSentry: 'top-level-import'` to add a top level import of
+`instrument.server.mjs` to the server entry file.
+
+```typescript
+import { defineConfig } from '@solidjs/start/config';
+import { withSentry } from '@sentry/solidstart';
+
+export default defineConfig(
+  withSentry(
+    {
+      // ...
+      middleware: './src/middleware.ts',
+    },
+    {
+      org: process.env.SENTRY_ORG,
+      project: process.env.SENTRY_PROJECT,
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+      debug: true,
+      // optional: if your `instrument.server.ts` file is not located inside `src`
+      instrumentation: './mypath/instrument.server.ts',
+      // optional: if NODE_OPTIONS or --import is not avaiable
+      autoInjectServerSentry: 'top-level-import',
+    },
+  ),
+);
+```
+
+This has a **fundamental restriction**: It only supports limited performance instrumentation. **Only basic http
+instrumentation** will work, and no DB or framework-specific instrumentation will be available.
+
+# SolidStart 2 setup
+
+SolidStart 2 has no `app.config.ts`, so `withSentry` does not apply. Configure the SDK with the `sentrySolidStart`
+Vite plugin instead. Client-side setup (`Sentry.init` in `entry-client.tsx`) and the Solid Router and
+`ErrorBoundary` wrappers below are unchanged.
+
+### 1. Add the Vite plugin
+
+```typescript
+// vite.config.ts
+import { sentrySolidStart } from '@sentry/solidstart/vite';
+import { solidStart } from '@solidjs/start/config';
+import { nitro } from 'nitro/vite';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [
+    solidStart(),
+    sentrySolidStart({
+      org: process.env.SENTRY_ORG,
+      project: process.env.SENTRY_PROJECT,
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+    }),
+    // `serverDir` is required for Nitro to pick up the Sentry plugin below.
+    nitro({ serverDir: './server' }),
+  ],
+});
+```
+
+### 2. Initialize Sentry on the server
+
+Create a Nitro plugin. Nitro runs it once at server startup, before any request is handled:
+
+```typescript
+// server/plugins/sentry.ts
+import * as Sentry from '@sentry/solidstart';
+import { definePlugin } from 'nitro';
+
+export default definePlugin(() => {
+  Sentry.init({
+    dsn: '__PUBLIC_DSN__',
+    tracesSampleRate: 1.0,
+  });
+});
+```
+
+Nitro's `serverDir` defaults to `false`, which disables plugin scanning entirely. If it is not set (step 1), this
+file is silently ignored and Sentry never initializes on the server.
+
+Unlike SolidStart 1, there is **no `--import` flag and no instrumentation file to copy** into the build output. The
+SDK instruments your server dependencies at build time, so a plain start command is all that is needed:
+
+```bash
+node .output/server/index.mjs
 ```
 
 # Solid Router
@@ -155,36 +298,4 @@ render(
   ),
   document.getElementById('root'),
 );
-```
-
-## Uploading Source Maps
-
-To upload source maps, add the `sentrySolidStartVite` plugin from `@sentry/solidstart` to your `app.config.ts` and
-configure an auth token. Auth tokens can be passed to the plugin explicitly with the `authToken` option, with a
-`SENTRY_AUTH_TOKEN` environment variable, or with an `.env.sentry-build-plugin` file in the working directory when
-building your project. We recommend you add the auth token to your CI/CD environment as an environment variable.
-
-Learn more about configuring the plugin in our
-[Sentry Vite Plugin documentation](https://www.npmjs.com/package/@sentry/vite-plugin).
-
-```typescript
-// app.config.ts
-import { defineConfig } from '@solidjs/start/config';
-import { sentrySolidStartVite } from '@sentry/solidstart';
-
-export default defineConfig({
-  // ...
-
-  vite: {
-    plugins: [
-      sentrySolidStartVite({
-        org: process.env.SENTRY_ORG,
-        project: process.env.SENTRY_PROJECT,
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        debug: true,
-      }),
-    ],
-  },
-  // ...
-});
 ```

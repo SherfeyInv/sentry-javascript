@@ -1,18 +1,23 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { BigQuery } from '@google-cloud/bigquery';
-import * as nock from 'nock';
-
+import { HTTP_REQUEST_METHOD, SENTRY_OP, SERVER_ADDRESS, URL_FULL } from '@sentry/conventions/attributes';
+import { WEB_SERVER_HTTP_CLIENT_SPAN_OP } from '@sentry/conventions/op';
 import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN } from '@sentry/core';
-import { NodeClient, createTransport, setCurrentClient } from '@sentry/node';
+import { createTransport, NodeClient, setCurrentClient } from '@sentry/node';
+import * as fs from 'fs';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore ESM/CJS interop issue
+import nock from 'nock';
+import * as path from 'path';
+import { afterAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { googleCloudHttpIntegration } from '../../src/integrations/google-cloud-http';
 
-const mockSpanEnd = jest.fn();
-const mockStartInactiveSpan = jest.fn(spanArgs => ({ ...spanArgs }));
+const mockSpanEnd = vi.fn();
+const mockStartInactiveSpan = vi.fn(spanArgs => ({ ...spanArgs }));
 
-jest.mock('@sentry/node', () => {
+vi.mock('@sentry/node', async () => {
+  const original = await vi.importActual('@sentry/node');
   return {
-    ...jest.requireActual('@sentry/node'),
+    ...original,
     startInactiveSpan: (ctx: unknown) => {
       mockStartInactiveSpan(ctx);
       return { end: mockSpanEnd };
@@ -73,21 +78,47 @@ describe('GoogleCloudHttp tracing', () => {
       const resp = await bigquery.query('SELECT true AS foo');
       expect(resp).toEqual([[{ foo: true }]]);
       expect(mockStartInactiveSpan).toBeCalledWith({
-        op: 'http.client.bigquery',
         name: 'POST /jobs',
         onlyIfParent: true,
         attributes: {
+          [SENTRY_OP]: WEB_SERVER_HTTP_CLIENT_SPAN_OP,
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.http.serverless',
+          [HTTP_REQUEST_METHOD]: 'POST',
+          [SERVER_ADDRESS]: 'bigquery.googleapis.com',
+          [URL_FULL]: '/jobs',
         },
       });
       expect(mockStartInactiveSpan).toBeCalledWith({
-        op: 'http.client.bigquery',
         name: expect.stringMatching(/^GET \/queries\/.+/),
         onlyIfParent: true,
         attributes: {
+          [SENTRY_OP]: WEB_SERVER_HTTP_CLIENT_SPAN_OP,
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.http.serverless',
+          [HTTP_REQUEST_METHOD]: 'GET',
+          [SERVER_ADDRESS]: 'bigquery.googleapis.com',
+          [URL_FULL]: expect.stringMatching(/^\/queries\/.+/),
         },
       });
+    });
+
+    // Span names follow `METHOD scheme://host/path`, so a query string must never reach the name,
+    // whatever the caller passes as `uri`.
+    test('strips the query string from the span name', async () => {
+      nock('https://bigquery.googleapis.com')
+        .get('/bigquery/v2/projects/project-id/datasets')
+        .query(true)
+        .reply(200, '{}');
+
+      await new Promise<void>((resolve, reject) => {
+        (bigquery as unknown as { request: (o: unknown, cb: (e: unknown) => void) => void }).request(
+          { uri: '/datasets?key=SECRET_TOKEN_VALUE&alt=json', method: 'GET' },
+          (err: unknown) => (err ? reject(err) : resolve()),
+        );
+      });
+
+      expect(mockStartInactiveSpan).toBeCalledWith(expect.objectContaining({ name: 'GET /datasets' }));
+      const names = mockStartInactiveSpan.mock.calls.map(([args]) => (args as { name: string }).name);
+      expect(names.join('\n')).not.toContain('SECRET_TOKEN_VALUE');
     });
   });
 });

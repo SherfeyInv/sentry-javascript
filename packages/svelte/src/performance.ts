@@ -1,9 +1,9 @@
 import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN } from '@sentry/browser';
 import type { Span } from '@sentry/core';
+import { debug, startInactiveSpan } from '@sentry/core';
+import { SENTRY_OP } from '@sentry/conventions/attributes';
 import { afterUpdate, beforeUpdate, onMount } from 'svelte';
-
-import { startInactiveSpan } from '@sentry/core';
-import { DEFAULT_COMPONENT_NAME, UI_SVELTE_INIT, UI_SVELTE_UPDATE } from './constants';
+import { DEBUG_BUILD } from './debug_build';
 import type { TrackComponentOptions } from './types';
 
 const defaultTrackComponentOptions: {
@@ -12,7 +12,7 @@ const defaultTrackComponentOptions: {
   componentName?: string;
 } = {
   trackInit: true,
-  trackUpdates: true,
+  trackUpdates: false,
 };
 
 /**
@@ -29,23 +29,33 @@ export function trackComponent(options?: TrackComponentOptions): void {
 
   const customComponentName = mergedOptions.componentName;
 
-  const componentName = `<${customComponentName || DEFAULT_COMPONENT_NAME}>`;
+  const componentName = `<${customComponentName || 'Svelte Component'}>`;
 
   if (mergedOptions.trackInit) {
     recordInitSpan(componentName);
   }
 
   if (mergedOptions.trackUpdates) {
-    recordUpdateSpans(componentName);
+    try {
+      recordUpdateSpans(componentName);
+    } catch {
+      DEBUG_BUILD &&
+        debug.warn(
+          "Cannot track component updates. This is likely because you're using Svelte 5 in Runes mode. Set `trackUpdates: false` in `withSentryConfig` or `trackComponent` to disable this warning.",
+        );
+    }
   }
 }
 
 function recordInitSpan(componentName: string): void {
   const initSpan = startInactiveSpan({
     onlyIfParent: true,
-    op: UI_SVELTE_INIT,
     name: componentName,
-    attributes: { [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.svelte' },
+    attributes: {
+      // TODO(conventions): Replace `'ui.mount'` with the `ui.mount` span op constant once it is released in `@sentry/conventions`.
+      [SENTRY_OP]: 'ui.mount',
+      [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.svelte',
+    },
   });
 
   onMount(() => {
@@ -58,9 +68,12 @@ function recordUpdateSpans(componentName: string): void {
   beforeUpdate(() => {
     updateSpan = startInactiveSpan({
       onlyIfParent: true,
-      op: UI_SVELTE_UPDATE,
       name: componentName,
-      attributes: { [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.svelte' },
+      attributes: {
+        // TODO(conventions): Replace `'ui.update'` with the `ui.update` span op constant once it is released in `@sentry/conventions`.
+        [SENTRY_OP]: 'ui.update',
+        [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.svelte',
+      },
     });
   });
 

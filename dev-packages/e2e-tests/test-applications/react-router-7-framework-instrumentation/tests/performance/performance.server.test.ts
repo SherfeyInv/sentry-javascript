@@ -1,0 +1,194 @@
+import { expect, test } from '@playwright/test';
+import { waitForTransaction } from '@sentry-internal/test-utils';
+import { APP_NAME } from '../constants';
+
+test.describe('server - instrumentation API performance', () => {
+  test('should send server transaction on pageload with instrumentation API origin', async ({ page }) => {
+    const txPromise = waitForTransaction(APP_NAME, async transactionEvent => {
+      return transactionEvent.transaction === 'GET /performance';
+    });
+
+    await page.goto(`/performance`);
+
+    const transaction = await txPromise;
+
+    expect(transaction).toMatchObject({
+      contexts: {
+        trace: {
+          span_id: expect.any(String),
+          trace_id: expect.any(String),
+          data: {
+            'sentry.op': 'http.server',
+            'sentry.origin': 'auto.http.react_router.instrumentation_api',
+            'sentry.source': 'route',
+          },
+          op: 'http.server',
+          origin: 'auto.http.react_router.instrumentation_api',
+        },
+      },
+      spans: expect.any(Array),
+      start_timestamp: expect.any(Number),
+      timestamp: expect.any(Number),
+      transaction: 'GET /performance',
+      type: 'transaction',
+      transaction_info: { source: 'route' },
+      platform: 'node',
+      request: {
+        url: expect.stringContaining('/performance'),
+        headers: expect.any(Object),
+      },
+      event_id: expect.any(String),
+      environment: 'qa',
+      sdk: {
+        integrations: expect.arrayContaining([expect.any(String)]),
+        name: 'sentry.javascript.react-router',
+        version: expect.any(String),
+        packages: [
+          { name: 'npm:@sentry/react-router', version: expect.any(String) },
+          { name: 'npm:@sentry/node', version: expect.any(String) },
+        ],
+      },
+      tags: {
+        runtime: 'node',
+      },
+    });
+  });
+
+  test('should send server transaction on parameterized route with instrumentation API origin', async ({ page }) => {
+    const txPromise = waitForTransaction(APP_NAME, async transactionEvent => {
+      return transactionEvent.transaction === 'GET /performance/with/:param';
+    });
+
+    await page.goto(`/performance/with/some-param`);
+
+    const transaction = await txPromise;
+
+    expect(transaction).toMatchObject({
+      contexts: {
+        trace: {
+          span_id: expect.any(String),
+          trace_id: expect.any(String),
+          data: {
+            'sentry.op': 'http.server',
+            'sentry.origin': 'auto.http.react_router.instrumentation_api',
+            'sentry.source': 'route',
+          },
+          op: 'http.server',
+          origin: 'auto.http.react_router.instrumentation_api',
+        },
+      },
+      spans: expect.any(Array),
+      start_timestamp: expect.any(Number),
+      timestamp: expect.any(Number),
+      transaction: 'GET /performance/with/:param',
+      type: 'transaction',
+      transaction_info: { source: 'route' },
+      platform: 'node',
+      request: {
+        url: expect.stringContaining('/performance/with/some-param'),
+        headers: expect.any(Object),
+      },
+      event_id: expect.any(String),
+      environment: 'qa',
+    });
+  });
+
+  test('should instrument server loader with instrumentation API origin', async ({ page }) => {
+    const txPromise = waitForTransaction(APP_NAME, async transactionEvent => {
+      return transactionEvent.transaction === 'GET /performance/server-loader';
+    });
+
+    await page.goto(`/performance/server-loader`);
+
+    const transaction = await txPromise;
+
+    // Find the loader span
+    const loaderSpan = transaction?.spans?.find(span => span.data?.['code.function.name'] === 'loader');
+
+    expect(loaderSpan).toMatchObject({
+      span_id: expect.any(String),
+      trace_id: expect.any(String),
+      data: {
+        'sentry.origin': 'auto.function.react_router.instrumentation_api',
+        'sentry.op': 'function',
+        'code.function.name': 'loader',
+      },
+      description: '/performance/server-loader',
+      parent_span_id: expect.any(String),
+      start_timestamp: expect.any(Number),
+      timestamp: expect.any(Number),
+      status: 'ok',
+      op: 'function',
+      origin: 'auto.function.react_router.instrumentation_api',
+    });
+  });
+
+  test('should instrument server action with instrumentation API origin', async ({ page }) => {
+    const txPromise = waitForTransaction(APP_NAME, async transactionEvent => {
+      return transactionEvent.transaction === 'POST /performance/server-action';
+    });
+
+    await page.goto(`/performance/server-action`);
+    await page.getByRole('button', { name: 'Submit' }).click();
+
+    const transaction = await txPromise;
+
+    // Find the action span
+    const actionSpan = transaction?.spans?.find(span => span.data?.['code.function.name'] === 'action');
+
+    expect(actionSpan).toMatchObject({
+      span_id: expect.any(String),
+      trace_id: expect.any(String),
+      data: {
+        'sentry.origin': 'auto.function.react_router.instrumentation_api',
+        'sentry.op': 'function',
+        'code.function.name': 'action',
+      },
+      description: '/performance/server-action',
+      parent_span_id: expect.any(String),
+      start_timestamp: expect.any(Number),
+      timestamp: expect.any(Number),
+      status: 'ok',
+      op: 'function',
+      origin: 'auto.function.react_router.instrumentation_api',
+    });
+  });
+
+  // Prod-only: the dev server (Vite) serves source modules (`/@vite/client`, `/app/*`) as separate
+  // requests, each producing its own http.server transaction, so "exactly one" only holds in prod.
+  test('sends exactly one http.server transaction per request (no double-instrumentation)', async ({ page }) => {
+    test.skip(
+      process.env.TEST_ENV === 'development',
+      'Dev server emits extra http.server transactions for module requests',
+    );
+
+    const httpServerTransactions: Array<string | undefined> = [];
+    void waitForTransaction(APP_NAME, async transactionEvent => {
+      if (transactionEvent.contexts?.trace?.op === 'http.server') {
+        httpServerTransactions.push(transactionEvent.transaction);
+      }
+      return false;
+    });
+
+    await page.goto(`/performance`);
+    // Give any (erroneous) duplicate transaction time to arrive before asserting.
+    await page.waitForTimeout(3000);
+
+    expect(httpServerTransactions).toEqual(['GET /performance']);
+  });
+
+  test('resolves a real http.route on routes without a loader/action', async ({ page }) => {
+    // Regression guard for the server OTel removal: routes without a loader/action must still get a
+    // proper `http.route` (not the catch-all `*` placeholder) from the underlying HTTP instrumentation.
+    const txPromise = waitForTransaction(APP_NAME, async transactionEvent => {
+      return transactionEvent.transaction === 'GET /performance/ssr';
+    });
+
+    await page.goto(`/performance/ssr`);
+
+    const transaction = await txPromise;
+
+    expect(transaction.contexts?.trace?.op).toBe('http.server');
+    expect(transaction.contexts?.trace?.data?.['http.route']).toBe('/performance/ssr');
+  });
+});

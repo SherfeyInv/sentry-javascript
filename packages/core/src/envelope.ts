@@ -1,48 +1,50 @@
-import { getDynamicSamplingContextFromSpan } from './tracing/dynamicSamplingContext';
-import type { SentrySpan } from './tracing/sentrySpan';
+import type { LegacyCSPReport } from './types/csp';
+import type { DsnComponents } from './types/dsn';
 import type {
-  Client,
-  DsnComponents,
-  DynamicSamplingContext,
-  Event,
   EventEnvelope,
   EventItem,
-  LegacyCSPReport,
   RawSecurityEnvelope,
   RawSecurityItem,
-  SdkInfo,
-  SdkMetadata,
-  Session,
-  SessionAggregates,
   SessionEnvelope,
   SessionItem,
-  SpanEnvelope,
-  SpanItem,
-  SpanJSON,
-} from './types-hoist';
-import { dsnToString } from './utils-hoist/dsn';
-import {
-  createEnvelope,
-  createEventEnvelopeHeaders,
-  createSpanEnvelopeItem,
-  getSdkMetadataForEnvelopeHeader,
-} from './utils-hoist/envelope';
-import { uuid4 } from './utils-hoist/misc';
-import { showSpanDropWarning, spanToJSON } from './utils/spanUtils';
+} from './types/envelope';
+import type { Event } from './types/event';
+import type { SdkInfo } from './types/sdkinfo';
+import type { SdkMetadata } from './types/sdkmetadata';
+import type { Session, SessionAggregates } from './types/session';
+import { dsnToString } from './utils/dsn';
+import { createEnvelope, createEventEnvelopeHeaders, getSdkMetadataForEnvelopeHeader } from './utils/envelope';
+import { uuid4 } from './utils/misc';
+import { safeDateNow } from './utils/randomSafeContext';
 
 /**
  * Apply SdkInfo (name, version, packages, integrations) to the corresponding event key.
  * Merge with existing data if any.
+ *
+ * @internal, exported only for testing
  **/
-function enhanceEventWithSdkInfo(event: Event, sdkInfo?: SdkInfo): Event {
-  if (!sdkInfo) {
+export function _enhanceEventWithSdkInfo(event: Event, newSdkInfo?: SdkInfo): Event {
+  if (!newSdkInfo) {
     return event;
   }
-  event.sdk = event.sdk || {};
-  event.sdk.name = event.sdk.name || sdkInfo.name;
-  event.sdk.version = event.sdk.version || sdkInfo.version;
-  event.sdk.integrations = [...(event.sdk.integrations || []), ...(sdkInfo.integrations || [])];
-  event.sdk.packages = [...(event.sdk.packages || []), ...(sdkInfo.packages || [])];
+
+  const eventSdkInfo = event.sdk || {};
+
+  event.sdk = {
+    ...eventSdkInfo,
+    name: eventSdkInfo.name || newSdkInfo.name,
+    version: eventSdkInfo.version || newSdkInfo.version,
+    integrations: [...(event.sdk?.integrations || []), ...(newSdkInfo.integrations || [])],
+    packages: [...(event.sdk?.packages || []), ...(newSdkInfo.packages || [])],
+    settings:
+      event.sdk?.settings || newSdkInfo.settings
+        ? {
+            ...event.sdk?.settings,
+            ...newSdkInfo.settings,
+          }
+        : undefined,
+  };
+
   return event;
 }
 
@@ -55,7 +57,7 @@ export function createSessionEnvelope(
 ): SessionEnvelope {
   const sdkInfo = getSdkMetadataForEnvelopeHeader(metadata);
   const envelopeHeaders = {
-    sent_at: new Date().toISOString(),
+    sent_at: new Date(safeDateNow()).toISOString(),
     ...(sdkInfo && { sdk: sdkInfo }),
     ...(!!tunnel && dsn && { dsn: dsnToString(dsn) }),
   };
@@ -86,7 +88,7 @@ export function createEventEnvelope(
   */
   const eventType = event.type && event.type !== 'replay_event' ? event.type : 'event';
 
-  enhanceEventWithSdkInfo(event, metadata && metadata.sdk);
+  _enhanceEventWithSdkInfo(event, metadata?.sdk);
 
   const envelopeHeaders = createEventEnvelopeHeaders(event, sdkInfo, tunnel, dsn);
 
@@ -98,52 +100,6 @@ export function createEventEnvelope(
 
   const eventItem: EventItem = [{ type: eventType }, event];
   return createEnvelope<EventEnvelope>(envelopeHeaders, [eventItem]);
-}
-
-/**
- * Create envelope from Span item.
- *
- * Takes an optional client and runs spans through `beforeSendSpan` if available.
- */
-export function createSpanEnvelope(spans: [SentrySpan, ...SentrySpan[]], client?: Client): SpanEnvelope {
-  function dscHasRequiredProps(dsc: Partial<DynamicSamplingContext>): dsc is DynamicSamplingContext {
-    return !!dsc.trace_id && !!dsc.public_key;
-  }
-
-  // For the moment we'll obtain the DSC from the first span in the array
-  // This might need to be changed if we permit sending multiple spans from
-  // different segments in one envelope
-  const dsc = getDynamicSamplingContextFromSpan(spans[0]);
-
-  const dsn = client && client.getDsn();
-  const tunnel = client && client.getOptions().tunnel;
-
-  const headers: SpanEnvelope[0] = {
-    sent_at: new Date().toISOString(),
-    ...(dscHasRequiredProps(dsc) && { trace: dsc }),
-    ...(!!tunnel && dsn && { dsn: dsnToString(dsn) }),
-  };
-
-  const beforeSendSpan = client && client.getOptions().beforeSendSpan;
-  const convertToSpanJSON = beforeSendSpan
-    ? (span: SentrySpan) => {
-        const spanJson = beforeSendSpan(spanToJSON(span) as SpanJSON);
-        if (!spanJson) {
-          showSpanDropWarning();
-        }
-        return spanJson;
-      }
-    : (span: SentrySpan) => spanToJSON(span);
-
-  const items: SpanItem[] = [];
-  for (const span of spans) {
-    const spanJson = convertToSpanJSON(span);
-    if (spanJson) {
-      items.push(createSpanEnvelopeItem(spanJson));
-    }
-  }
-
-  return createEnvelope<SpanEnvelope>(headers, items);
 }
 
 /**

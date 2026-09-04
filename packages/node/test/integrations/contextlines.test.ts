@@ -1,15 +1,23 @@
 import * as fs from 'node:fs';
-import { parseStackFrames } from '@sentry/core';
 import type { StackFrame } from '@sentry/core';
-
+import { parseStackFrames } from '@sentry/core';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  _contextLinesIntegration,
   MAX_CONTEXTLINES_COLNO,
   MAX_CONTEXTLINES_LINENO,
-  _contextLinesIntegration,
   resetFileContentCache,
 } from '../../src/integrations/contextlines';
 import { defaultStackParser } from '../../src/sdk/api';
 import { getError } from '../helpers/error';
+
+vi.mock('node:fs', async () => {
+  const original = await vi.importActual('node:fs');
+  return {
+    ...original,
+    createReadStream: original.createReadStream,
+  };
+});
 
 describe('ContextLines', () => {
   let contextLines: ReturnType<typeof _contextLinesIntegration>;
@@ -24,7 +32,7 @@ describe('ContextLines', () => {
   });
 
   afterEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('limits', () => {
@@ -39,7 +47,7 @@ describe('ContextLines', () => {
         },
       ];
 
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
       await addContext(frames);
       expect(readStreamSpy).not.toHaveBeenCalled();
     });
@@ -55,7 +63,7 @@ describe('ContextLines', () => {
         },
       ];
 
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
       await addContext(frames);
       expect(readStreamSpy).not.toHaveBeenCalled();
     });
@@ -73,7 +81,7 @@ describe('ContextLines', () => {
         },
       ];
 
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
       await addContext(frames);
 
       expect(frames[0]!.pre_context).toBeUndefined();
@@ -85,7 +93,7 @@ describe('ContextLines', () => {
       expect.assertions(1);
 
       const frames = parseStackFrames(defaultStackParser, new Error('test'));
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
 
       await addContext(frames);
       const numCalls = readStreamSpy.mock.calls.length;
@@ -99,7 +107,7 @@ describe('ContextLines', () => {
     test('parseStack with ESM module names', async () => {
       expect.assertions(1);
 
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
       const framesWithFilePath: StackFrame[] = [
         {
           colno: 1,
@@ -116,7 +124,7 @@ describe('ContextLines', () => {
     test('parseStack with adding different file', async () => {
       expect.assertions(1);
       const frames = parseStackFrames(defaultStackParser, new Error('test'));
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
 
       await addContext(frames);
 
@@ -170,7 +178,7 @@ describe('ContextLines', () => {
 
     test('parseStack with duplicate files', async () => {
       expect.assertions(1);
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
       const framesWithDuplicateFiles: StackFrame[] = [
         {
           colno: 1,
@@ -198,7 +206,7 @@ describe('ContextLines', () => {
 
     test('stack errors without lineno', async () => {
       expect.assertions(1);
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
       const framesWithDuplicateFiles: StackFrame[] = [
         {
           colno: 1,
@@ -215,12 +223,64 @@ describe('ContextLines', () => {
     test('parseStack with no context', async () => {
       expect.assertions(1);
       contextLines = _contextLinesIntegration({ frameContextLines: 0 });
-      const readStreamSpy = jest.spyOn(fs, 'createReadStream');
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
 
       const frames = parseStackFrames(defaultStackParser, new Error('test'));
 
       await addContext(frames);
       expect(readStreamSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('dataCollection.frameContextLines', () => {
+    function clientWithFrameContextLines(frameContextLines: number) {
+      return {
+        getDataCollectionOptions: () => ({ frameContextLines }),
+      } as unknown as Parameters<NonNullable<typeof contextLines.processEvent>>[2];
+    }
+
+    test('uses dataCollection.frameContextLines when no integration option is set', async () => {
+      contextLines = _contextLinesIntegration();
+      const frames = parseStackFrames(defaultStackParser, new Error('test'));
+
+      await contextLines.processEvent(
+        { exception: { values: [{ stacktrace: { frames } }] } },
+        {},
+        clientWithFrameContextLines(2),
+      );
+
+      const frame = frames.find(f => f.context_line !== undefined);
+      expect(frame?.pre_context).toHaveLength(2);
+      expect(frame?.post_context).toHaveLength(2);
+    });
+
+    test('does not read source files when dataCollection.frameContextLines is 0', async () => {
+      contextLines = _contextLinesIntegration();
+      const readStreamSpy = vi.spyOn(fs, 'createReadStream');
+      const frames = parseStackFrames(defaultStackParser, new Error('test'));
+
+      await contextLines.processEvent(
+        { exception: { values: [{ stacktrace: { frames } }] } },
+        {},
+        clientWithFrameContextLines(0),
+      );
+
+      expect(readStreamSpy).not.toHaveBeenCalled();
+    });
+
+    test('integration option takes precedence over dataCollection.frameContextLines', async () => {
+      contextLines = _contextLinesIntegration({ frameContextLines: 1 });
+      const frames = parseStackFrames(defaultStackParser, new Error('test'));
+
+      await contextLines.processEvent(
+        { exception: { values: [{ stacktrace: { frames } }] } },
+        {},
+        clientWithFrameContextLines(5),
+      );
+
+      const frame = frames.find(f => f.context_line !== undefined);
+      expect(frame?.pre_context).toHaveLength(1);
+      expect(frame?.post_context).toHaveLength(1);
     });
   });
 });

@@ -1,14 +1,15 @@
-import type { Mechanism, WrappedFunction } from '@sentry/core';
+import type { Mechanism, WrappedFunction } from '@sentry/core/browser';
 import {
-  GLOBAL_OBJ,
   addExceptionMechanism,
   addExceptionTypeValue,
   addNonEnumerableProperty,
   captureException,
+  getLocationHref,
   getOriginalFunction,
+  GLOBAL_OBJ,
   markFunctionWrapped,
   withScope,
-} from '@sentry/core';
+} from '@sentry/core/browser';
 
 export const WINDOW = GLOBAL_OBJ as typeof GLOBAL_OBJ & Window;
 
@@ -78,10 +79,12 @@ export function wrap<T extends WrappableFunction, NonFunction>(
   }
 
   try {
-    // if we're dealing with a function that was previously wrapped, return
-    // the original wrapper.
-    const wrapper = (fn as WrappedFunction<T>).__sentry_wrapped__;
-    if (wrapper) {
+    // If we're dealing with a function that was previously wrapped, return the original wrapper.
+    // Check via hasOwnProperty so a `__sentry_wrapped__` inherited from a wrapped `Function.prototype`
+    // is not mistaken for a real wrapper.
+    const hasOwnWrapper = Object.prototype.hasOwnProperty.call(fn, '__sentry_wrapped__');
+    if (hasOwnWrapper) {
+      const wrapper = (fn as WrappedFunction<T>).__sentry_wrapped__;
       if (typeof wrapper === 'function') {
         return wrapper;
       } else {
@@ -95,7 +98,7 @@ export function wrap<T extends WrappableFunction, NonFunction>(
     if (getOriginalFunction(fn)) {
       return fn;
     }
-  } catch (e) {
+  } catch {
     // Just accessing custom props in some Selenium environments
     // can cause a "Permission denied" exception (see raven-js#495).
     // Bail on wrapping and return the function as-is (defers to window.onerror).
@@ -105,6 +108,9 @@ export function wrap<T extends WrappableFunction, NonFunction>(
   // Wrap the function itself
   // It is important that `sentryWrapped` is not an arrow function to preserve the context of `this`
   const sentryWrapped = function (this: unknown, ...args: unknown[]): unknown {
+    // Track depth on GLOBAL_OBJ so the thirdPartyErrorFilterIntegration (in @sentry/core) can detect
+    // that processEvent is running inside a sentryWrapped call, even with minified/bundled code.
+    GLOBAL_OBJ._sentryWrappedDepth = (GLOBAL_OBJ._sentryWrappedDepth || 0) + 1;
     try {
       // Also wrap arguments that are themselves functions
       const wrappedArguments = args.map(arg => wrap(arg, options));
@@ -132,10 +138,13 @@ export function wrap<T extends WrappableFunction, NonFunction>(
           return event;
         });
 
+        // no need to add a mechanism here, we already add it via an event processor above
         captureException(ex);
       });
 
       throw ex;
+    } finally {
+      GLOBAL_OBJ._sentryWrappedDepth = (GLOBAL_OBJ._sentryWrappedDepth || 0) - 1;
     }
   } as unknown as WrappedFunction<T>;
 
@@ -174,4 +183,25 @@ export function wrap<T extends WrappableFunction, NonFunction>(
   }
 
   return sentryWrapped;
+}
+
+/**
+ * Get HTTP request data from the current page.
+ */
+export function getHttpRequestData(): { url: string; headers: Record<string, string> } {
+  // grab as much info as exists and add it to the event
+  const url = getLocationHref();
+  const { referrer } = WINDOW.document || {};
+  const { userAgent } = WINDOW.navigator || {};
+
+  const headers = {
+    ...(referrer && { Referer: referrer }),
+    ...(userAgent && { 'User-Agent': userAgent }),
+  };
+  const request = {
+    url,
+    headers,
+  };
+
+  return request;
 }

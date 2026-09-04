@@ -1,16 +1,27 @@
-import { captureException, extractTraceparentData, getCurrentScope, withIsolationScope } from '@sentry/core';
+import {
+  isObjectLike,
+  addNonEnumerableProperty,
+  captureException,
+  extractTraceparentData,
+  getCurrentScope,
+  withIsolationScope,
+} from '@sentry/core';
 
 interface FunctionComponent {
   (...args: unknown[]): unknown;
 }
 
 interface ClassComponent {
-  new (
-    ...args: unknown[]
-  ): {
+  new (...args: unknown[]): {
     props?: unknown;
     render(...args: unknown[]): unknown;
   };
+}
+
+function storeCapturedEventIdOnError(error: unknown, eventId: string | undefined): void {
+  if (isObjectLike(error)) {
+    addNonEnumerableProperty(error, '__sentry_event_id__', eventId);
+  }
 }
 
 function isReactClassComponent(target: unknown): target is ClassComponent {
@@ -29,8 +40,7 @@ export function wrapPageComponentWithSentry(pageComponent: FunctionComponent | C
           const scope = getCurrentScope();
           // We extract the sentry trace data that is put in the component props by datafetcher wrappers
           const sentryTraceData =
-            typeof this.props === 'object' &&
-            this.props !== null &&
+            isObjectLike(this.props) &&
             '_sentryTraceData' in this.props &&
             typeof this.props._sentryTraceData === 'string'
               ? this.props._sentryTraceData
@@ -47,11 +57,13 @@ export function wrapPageComponentWithSentry(pageComponent: FunctionComponent | C
           try {
             return super.render(...args);
           } catch (e) {
-            captureException(e, {
+            const eventId = captureException(e, {
               mechanism: {
                 handled: false,
+                type: 'auto.function.nextjs.page_class',
               },
             });
+            storeCapturedEventIdOnError(e, eventId);
             throw e;
           }
         });
@@ -76,11 +88,13 @@ export function wrapPageComponentWithSentry(pageComponent: FunctionComponent | C
           try {
             return target.apply(thisArg, argArray);
           } catch (e) {
-            captureException(e, {
+            const eventId = captureException(e, {
               mechanism: {
                 handled: false,
+                type: 'auto.function.nextjs.page_function',
               },
             });
+            storeCapturedEventIdOnError(e, eventId);
             throw e;
           }
         });

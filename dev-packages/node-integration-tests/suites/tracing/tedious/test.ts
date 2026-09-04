@@ -1,52 +1,50 @@
-import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
+import { afterAll, expect } from 'vitest';
+import { cleanupChildProcesses, createEsmAndCjsTests, describeWithDockerCompose } from '../../../utils/runner';
 
-jest.setTimeout(75000);
+describeWithDockerCompose('tedious auto instrumentation', { workingDirectory: [__dirname] }, () => {
+  const ORIGIN = 'auto.db.tedious';
 
-// Tedious version we are testing against only supports Node 18+
-// https://github.com/tediousjs/tedious/blob/8310c455a2cc1cba83c1ca3c16677da4f83e12a9/package.json#L38
-describe('tedious auto instrumentation', () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  test('should auto-instrument `tedious` package', done => {
-    const EXPECTED_TRANSACTION = {
-      transaction: 'Test Transaction',
-      spans: expect.arrayContaining([
-        expect.objectContaining({
-          description: 'SELECT GETDATE()',
-          data: expect.objectContaining({
-            'sentry.origin': 'auto.db.otel.tedious',
-            'sentry.op': 'db',
-            'db.name': 'master',
-            'db.statement': 'SELECT GETDATE()',
-            'db.system': 'mssql',
-            'db.user': 'sa',
-            'net.peer.name': '127.0.0.1',
-            'net.peer.port': 1433,
-          }),
-          status: 'ok',
-        }),
-        expect.objectContaining({
-          description: 'SELECT 1 + 1 AS solution',
-          data: expect.objectContaining({
-            'sentry.origin': 'auto.db.otel.tedious',
-            'sentry.op': 'db',
-            'db.name': 'master',
-            'db.statement': 'SELECT 1 + 1 AS solution',
-            'db.system': 'mssql',
-            'db.user': 'sa',
-            'net.peer.name': '127.0.0.1',
-            'net.peer.port': 1433,
-          }),
-          status: 'ok',
-        }),
-      ]),
-    };
+  const dbSpan = (overrides: Record<string, unknown>) =>
+    expect.objectContaining({
+      op: 'db',
+      origin: ORIGIN,
+      data: expect.objectContaining({
+        'sentry.origin': ORIGIN,
+        'sentry.op': 'db',
+        'db.system.name': 'mssql',
+        'db.namespace': 'master',
+        'db.user': 'sa',
+        'server.address': '127.0.0.1',
+        'server.port': 1433,
+      }),
+      ...overrides,
+    });
 
-    createRunner(__dirname, 'scenario.js')
-      .withDockerCompose({ workingDirectory: [__dirname], readyMatches: ['1433'] })
-      .expect({ transaction: EXPECTED_TRANSACTION })
-      .start(done);
+  const EXPECTED_TRANSACTION = {
+    transaction: 'Test Transaction',
+    spans: expect.arrayContaining([
+      dbSpan({ description: 'SELECT 1 + 1 AS solution', status: 'ok' }),
+      dbSpan({ description: 'SELECT 42; SELECT 42;', status: 'ok' }),
+      dbSpan({ description: 'select !', status: 'internal_error' }),
+      dbSpan({ description: '[dbo].[test_proced]', status: 'ok' }),
+      dbSpan({ description: 'INSERT INTO [dbo].[test_prepared] VALUES (@val1, @val2)', status: 'ok' }),
+      expect.objectContaining({
+        description: 'execBulkLoad test_bulk master',
+        op: 'db',
+        origin: ORIGIN,
+        status: 'ok',
+        data: expect.objectContaining({ 'db.sql.table': 'test_bulk' }),
+      }),
+    ]),
+  };
+
+  createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createTestRunner, test) => {
+    test('should auto-instrument `tedious` package', async () => {
+      await createTestRunner().expect({ transaction: EXPECTED_TRANSACTION }).start().completed();
+    });
   });
 });

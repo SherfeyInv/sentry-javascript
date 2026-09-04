@@ -1,5 +1,4 @@
-import type { CompileOptions } from 'svelte/types/compiler';
-import type { PreprocessorGroup } from 'svelte/types/compiler/preprocess';
+import type { CompileOptions } from 'svelte/compiler';
 
 // Adds an id property to the preprocessor object we can use to check for duplication
 // in the preprocessors array
@@ -29,7 +28,7 @@ export type SpanOptions = {
    * onMount lifecycle hook. This span tells how long it takes a component
    * to be created and inserted into the DOM.
    *
-   * Defaults to true if component tracking is enabled
+   * @default `true` if component tracking is enabled
    */
   trackInit?: boolean;
 
@@ -37,7 +36,10 @@ export type SpanOptions = {
    * If true, a span is recorded between a component's beforeUpdate and afterUpdate
    * lifecycle hooks.
    *
-   * Defaults to true if component tracking is enabled
+   * Caution: Component updates can only be tracked in Svelte versions prior to version 5
+   * or in Svelte 5 in legacy mode (i.e. without Runes).
+   *
+   * @default `false` if component tracking is enabled
    */
   trackUpdates?: boolean;
 };
@@ -67,3 +69,32 @@ export type TrackComponentOptions = {
    */
   componentName?: string;
 } & SpanOptions;
+
+// vendor those types from svelte/types/compiler/preprocess
+export interface Processed {
+  code: string;
+  map?: string | object;
+  dependencies?: string[];
+  toString?: () => string;
+}
+export declare type MarkupPreprocessor = (options: {
+  content: string;
+  filename?: string;
+}) => Processed | void | Promise<Processed | void>;
+export declare type Preprocessor = (options: {
+  /**
+   * The script/style tag content
+   */
+  content: string;
+  attributes: Record<string, string | boolean>;
+  /**
+   * The whole Svelte file content
+   */
+  markup: string;
+  filename?: string;
+}) => Processed | void | Promise<Processed | void>;
+export interface PreprocessorGroup {
+  markup?: MarkupPreprocessor;
+  style?: Preprocessor;
+  script?: Preprocessor;
+}

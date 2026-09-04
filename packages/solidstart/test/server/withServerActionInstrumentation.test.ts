@@ -1,21 +1,21 @@
+import * as SentryCore from '@sentry/core';
 import * as SentryNode from '@sentry/node';
 import {
+  createTransport,
+  NodeClient,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  createTransport,
-  getCurrentScope,
-  getIsolationScope,
   setCurrentClient,
   spanToJSON,
 } from '@sentry/node';
-import { NodeClient } from '@sentry/node';
 import { redirect } from '@solidjs/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withServerActionInstrumentation } from '../../src/server';
 
 const mockCaptureException = vi.spyOn(SentryNode, 'captureException').mockImplementation(() => '');
-const mockFlush = vi.spyOn(SentryNode, 'flush').mockImplementation(async () => true);
-const mockGetActiveSpan = vi.spyOn(SentryNode, 'getActiveSpan');
+const mockFlush = vi.spyOn(SentryCore, 'flushIfServerless').mockImplementation(async () => {});
+const mockGetActiveSpan = vi.spyOn(SentryCore, 'getActiveSpan');
 
 const mockGetRequestEvent = vi.fn();
 vi.mock('solid-js/web', async () => {
@@ -25,9 +25,6 @@ vi.mock('solid-js/web', async () => {
     getRequestEvent: (...args: unknown[]) => mockGetRequestEvent(...args),
   };
 });
-
-import { SentrySpan } from '@sentry/core';
-import { withServerActionInstrumentation } from '../../src/server';
 
 describe('withServerActionInstrumentation', () => {
   function createMockNodeClient(): NodeClient {
@@ -54,9 +51,7 @@ describe('withServerActionInstrumentation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
-    getCurrentScope().setClient(undefined);
-    getCurrentScope().clear();
-    getIsolationScope().clear();
+    SentryCore.getMainCarrier().__SENTRY__ = undefined;
   });
 
   afterEach(() => {
@@ -75,7 +70,9 @@ describe('withServerActionInstrumentation', () => {
     await expect(res).rejects.toThrow();
 
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
-    expect(mockCaptureException).toHaveBeenCalledWith(error, { mechanism: { handled: false, type: 'solidstart' } });
+    expect(mockCaptureException).toHaveBeenCalledWith(error, {
+      mechanism: { handled: false, type: 'auto.function.solidstart' },
+    });
   });
 
   it("doesn't call captureException for thrown redirects", async () => {
@@ -101,10 +98,9 @@ describe('withServerActionInstrumentation', () => {
     await serverActionGetPrefecture();
     expect(spanStartMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        op: 'function.server_action',
-        description: 'getPrefecture',
-        data: expect.objectContaining({
-          [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'function.server_action',
+        name: 'getPrefecture',
+        attributes: expect.objectContaining({
+          [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'function',
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.solidstart',
         }),
@@ -127,8 +123,12 @@ describe('withServerActionInstrumentation', () => {
   });
 
   it('sets a server action name on the active span', async () => {
-    const span = new SentrySpan();
-    span.setAttribute('http.target', '/_server');
+    const span = new SentryCore.SentrySpan({
+      attributes: {
+        'http.target': '/_server',
+        [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'http.server',
+      },
+    });
     mockGetActiveSpan.mockReturnValue(span);
     const mockSpanSetAttribute = vi.spyOn(span, 'setAttribute');
 
@@ -140,13 +140,54 @@ describe('withServerActionInstrumentation', () => {
 
     await getPrefecture();
 
-    expect(mockGetActiveSpan).to.toHaveBeenCalledTimes(1);
+    expect(mockGetActiveSpan).to.toHaveBeenCalledTimes(2);
     expect(mockSpanSetAttribute).to.toHaveBeenCalledWith('http.route', 'getPrefecture');
-    expect(mockSpanSetAttribute).to.toHaveBeenCalledWith(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'component');
+    expect(mockSpanSetAttribute).to.toHaveBeenCalledWith(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'route');
+  });
+
+  // `@sentry/node`'s HTTP spans only carry `url.path`, so gating on `http.target` alone silently
+  // skipped the rename.
+  it('sets a server action name on the active span when the path is on `url.path`', async () => {
+    const span = new SentryCore.SentrySpan({
+      attributes: {
+        'url.path': '/_server',
+        [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'http.server',
+      },
+    });
+    mockGetActiveSpan.mockReturnValue(span);
+    const mockSpanSetAttribute = vi.spyOn(span, 'setAttribute');
+
+    const getPrefecture = async function load() {
+      return withServerActionInstrumentation('getPrefecture', () => {
+        return { prefecture: 'Kagoshima' };
+      });
+    };
+
+    await getPrefecture();
+
+    expect(mockSpanSetAttribute).to.toHaveBeenCalledWith('http.route', 'getPrefecture');
+    expect(mockSpanSetAttribute).to.toHaveBeenCalledWith(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'route');
+  });
+
+  it('does not set a server action name if the active span had a non `/_server` `url.path`', async () => {
+    const span = new SentryCore.SentrySpan();
+    span.setAttribute('url.path', '/users/5');
+    mockGetActiveSpan.mockReturnValue(span);
+    const mockSpanSetAttribute = vi.spyOn(span, 'setAttribute');
+
+    const getPrefecture = async function load() {
+      return withServerActionInstrumentation('getPrefecture', () => {
+        return { prefecture: 'Kagoshima' };
+      });
+    };
+
+    await getPrefecture();
+
+    expect(mockSpanSetAttribute).not.toHaveBeenCalledWith('http.route', 'getPrefecture');
   });
 
   it('does not set a server action name if the active span had a non `/_server` target', async () => {
-    const span = new SentrySpan();
+    const span = new SentryCore.SentrySpan();
     span.setAttribute('http.target', '/users/5');
     mockGetActiveSpan.mockReturnValue(span);
     const mockSpanSetAttribute = vi.spyOn(span, 'setAttribute');

@@ -1,20 +1,37 @@
-import * as http from 'http';
-import { createGunzip } from 'zlib';
-import { createTransport } from '@sentry/core';
-import { addItemToEnvelope, createAttachmentEnvelopeItem, createEnvelope, serializeEnvelope } from '@sentry/core';
 import type { EventEnvelope, EventItem } from '@sentry/core';
-
+import {
+  addItemToEnvelope,
+  createAttachmentEnvelopeItem,
+  createEnvelope,
+  createTransport,
+  serializeEnvelope,
+} from '@sentry/core';
+import { EventEmitter } from 'node:events';
+import * as http from 'http';
+import type { ClientRequest } from 'node:http';
+import * as nodeHttp from 'node:http';
+import { Writable } from 'node:stream';
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
+import { createGunzip } from 'zlib';
+import * as httpProxyAgent from '../../src/proxy';
 import { makeNodeTransport } from '../../src/transports';
+import type { HTTPModule, HTTPModuleRequestIncomingMessage } from '../../src/transports/http-module';
 
-jest.mock('@sentry/core', () => {
-  const actualCore = jest.requireActual('@sentry/core');
+vi.mock('@sentry/core', async () => {
+  const actualCore = await vi.importActual('@sentry/core');
   return {
     ...actualCore,
-    createTransport: jest.fn().mockImplementation(actualCore.createTransport),
+    createTransport: vi.fn().mockImplementation(actualCore.createTransport),
   };
 });
 
-import * as httpProxyAgent from '../../src/proxy';
+vi.mock('node:http', async () => {
+  const original = await vi.importActual('node:http');
+  return {
+    ...original,
+    request: original.request,
+  };
+});
 
 const SUCCESS = 200;
 const RATE_LIMIT = 429;
@@ -49,7 +66,7 @@ function setupTestServer(
     res.end();
 
     // also terminate socket because keepalive hangs connection a bit
-    // eslint-disable-next-line deprecation/deprecation
+    // eslint-disable-next-line typescript/no-deprecated
     res.connection?.end();
   });
 
@@ -77,18 +94,67 @@ const defaultOptions = {
   recordDroppedEvent: () => undefined,
 };
 
+interface MockHttpRequestBehavior {
+  reusedSocket?: boolean;
+  errorCode?: string;
+  statusCode?: number;
+}
+
+function createMockHttpModule(behaviors: MockHttpRequestBehavior[]): {
+  httpModule: HTTPModule;
+  getRequestCount: () => number;
+} {
+  let requestCount = 0;
+
+  return {
+    getRequestCount: () => requestCount,
+    httpModule: {
+      request(_options, callback) {
+        const behavior = behaviors[requestCount] ?? {};
+        requestCount += 1;
+
+        const req = new Writable({
+          write(_chunk, _encoding, cb) {
+            cb();
+          },
+        });
+        Object.defineProperty(req, 'reusedSocket', { value: behavior.reusedSocket ?? false });
+
+        queueMicrotask(() => {
+          if (behavior.errorCode) {
+            req.emit('error', Object.assign(new Error(behavior.errorCode), { code: behavior.errorCode }));
+            return;
+          }
+
+          const res = new EventEmitter() as EventEmitter & HTTPModuleRequestIncomingMessage;
+          res.headers = {};
+          res.statusCode = behavior.statusCode ?? SUCCESS;
+          res.setEncoding = () => undefined;
+          callback?.(res);
+          res.emit('end');
+        });
+
+        return req as unknown as ClientRequest;
+      },
+    },
+  };
+}
+
 // empty function to keep test output clean
-const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-afterEach(done => {
-  jest.clearAllMocks();
+afterEach(
+  () =>
+    new Promise<void>(done => {
+      vi.clearAllMocks();
 
-  if (testServer && testServer.listening) {
-    testServer.close(done);
-  } else {
-    done();
-  }
-});
+      if (testServer?.listening) {
+        testServer.close(() => done());
+      } else {
+        done();
+      }
+    }),
+);
 
 describe('makeNewHttpTransport()', () => {
   describe('.send()', () => {
@@ -102,7 +168,7 @@ describe('makeNewHttpTransport()', () => {
       await transport.send(EVENT_ENVELOPE);
     });
 
-    it('allows overriding keepAlive', async () => {
+    it('uses keepAlive by default', async () => {
       await setupTestServer({ statusCode: SUCCESS }, req => {
         expect(req.headers).toEqual(
           expect.objectContaining({
@@ -112,8 +178,70 @@ describe('makeNewHttpTransport()', () => {
         );
       });
 
-      const transport = makeNodeTransport({ keepAlive: true, ...defaultOptions });
+      const transport = makeNodeTransport(defaultOptions);
       await transport.send(EVENT_ENVELOPE);
+    });
+
+    it('allows disabling keepAlive', () => {
+      const AgentSpy = vi.spyOn(nodeHttp, 'Agent');
+
+      try {
+        makeNodeTransport({ keepAlive: false, ...defaultOptions });
+
+        expect(AgentSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ keepAlive: false, maxSockets: 30, timeout: 2000 }),
+        );
+      } finally {
+        AgentSpy.mockRestore();
+      }
+    });
+
+    it('retries once when a reused keepAlive socket resets with ECONNRESET', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([
+        { reusedSocket: true, errorCode: 'ECONNRESET' },
+        { statusCode: SUCCESS },
+      ]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).resolves.toEqual({
+        statusCode: SUCCESS,
+        headers: {
+          'retry-after': null,
+          'x-sentry-rate-limits': null,
+        },
+      });
+      expect(getRequestCount()).toBe(2);
+    });
+
+    it('rejects if the retry also fails with ECONNRESET', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([
+        { reusedSocket: true, errorCode: 'ECONNRESET' },
+        { reusedSocket: true, errorCode: 'ECONNRESET' },
+      ]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).rejects.toHaveProperty('code', 'ECONNRESET');
+      expect(getRequestCount()).toBe(2);
+    });
+
+    it('does not retry ECONNRESET when the socket was not reused', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([{ reusedSocket: false, errorCode: 'ECONNRESET' }]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).rejects.toHaveProperty('code', 'ECONNRESET');
+      expect(getRequestCount()).toBe(1);
+    });
+
+    it('does not retry a reused socket on a non-ECONNRESET error', async () => {
+      const { httpModule, getRequestCount } = createMockHttpModule([{ reusedSocket: true, errorCode: 'ECONNREFUSED' }]);
+
+      const transport = makeNodeTransport({ ...defaultOptions, httpModule });
+
+      await expect(transport.send(EVENT_ENVELOPE)).rejects.toHaveProperty('code', 'ECONNREFUSED');
+      expect(getRequestCount()).toBe(1);
     });
 
     it('should correctly send user-provided headers to server', async () => {
@@ -206,7 +334,7 @@ describe('makeNewHttpTransport()', () => {
   });
 
   describe('proxy', () => {
-    const proxyAgentSpy = jest
+    const proxyAgentSpy = vi
       .spyOn(httpProxyAgent, 'HttpsProxyAgent')
       // @ts-expect-error using http agent as https proxy agent
       .mockImplementation(() => new http.Agent({ keepAlive: false, maxSockets: 30, timeout: 2000 }));
@@ -299,7 +427,7 @@ describe('makeNewHttpTransport()', () => {
       });
 
       makeNodeTransport(defaultOptions);
-      const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
       const executorResult = registeredRequestExecutor({
         body: serializeEnvelope(EVENT_ENVELOPE),
@@ -319,7 +447,7 @@ describe('makeNewHttpTransport()', () => {
       });
 
       makeNodeTransport(defaultOptions);
-      const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
       const executorResult = registeredRequestExecutor({
         body: serializeEnvelope(EVENT_ENVELOPE),
@@ -347,7 +475,7 @@ describe('makeNewHttpTransport()', () => {
       });
 
       makeNodeTransport(defaultOptions);
-      const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
       const executorResult = registeredRequestExecutor({
         body: serializeEnvelope(EVENT_ENVELOPE),
@@ -375,7 +503,7 @@ describe('makeNewHttpTransport()', () => {
       });
 
       makeNodeTransport(defaultOptions);
-      const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+      const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
       const executorResult = registeredRequestExecutor({
         body: serializeEnvelope(EVENT_ENVELOPE),
@@ -395,7 +523,7 @@ describe('makeNewHttpTransport()', () => {
   });
 
   it('should create a noop transport if an invalid url is passed', async () => {
-    const requestSpy = jest.spyOn(http, 'request');
+    const requestSpy = vi.spyOn(http, 'request');
     const transport = makeNodeTransport({ ...defaultOptions, url: 'foo' });
     await transport.send(EVENT_ENVELOPE);
     expect(requestSpy).not.toHaveBeenCalled();

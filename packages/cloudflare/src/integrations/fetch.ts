@@ -7,7 +7,6 @@ import type {
   Span,
 } from '@sentry/core';
 import {
-  LRUMap,
   addBreadcrumb,
   addFetchInstrumentationHandler,
   defineIntegration,
@@ -15,10 +14,11 @@ import {
   getClient,
   instrumentFetchRequest,
   isSentryRequestUrl,
+  LRUMap,
   stringMatchesSomePattern,
 } from '@sentry/core';
 
-const INTEGRATION_NAME = 'Fetch';
+const INTEGRATION_NAME = 'Fetch' as const;
 
 const HAS_CLIENT_MAP = new WeakMap<Client, boolean>();
 
@@ -90,6 +90,7 @@ const _fetchIntegration = ((options: Partial<Options> = {}) => {
     setupOnce() {
       addFetchInstrumentationHandler(handlerData => {
         const client = getClient();
+        const { propagateTraceparent } = client?.getOptions() || {};
         if (!client || !HAS_CLIENT_MAP.get(client)) {
           return;
         }
@@ -98,12 +99,15 @@ const _fetchIntegration = ((options: Partial<Options> = {}) => {
           return;
         }
 
-        instrumentFetchRequest(handlerData, _shouldCreateSpan, _shouldAttachTraceData, spans, 'auto.http.fetch');
+        instrumentFetchRequest(handlerData, _shouldCreateSpan, _shouldAttachTraceData, spans, {
+          spanOrigin: 'auto.http.fetch',
+          propagateTraceparent,
+        });
 
         if (breadcrumbs) {
           createBreadcrumb(handlerData);
         }
-      }, true);
+      });
     },
     setup(client) {
       HAS_CLIENT_MAP.set(client, true);
@@ -151,7 +155,7 @@ function createBreadcrumb(handlerData: HandlerDataFetch): void {
 
     breadcrumbData.request_body_size = handlerData.fetchData.request_body_size;
     breadcrumbData.response_body_size = handlerData.fetchData.response_body_size;
-    breadcrumbData.status_code = response && response.status;
+    breadcrumbData.status_code = response?.status;
 
     const hint: FetchBreadcrumbHint = {
       input: handlerData.args,

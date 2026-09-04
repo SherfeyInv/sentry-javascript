@@ -1,27 +1,23 @@
 import type { Integration, Options } from '@sentry/core';
 import {
+  applySdkMetadata,
   consoleSandbox,
-  dropUndefinedKeys,
-  endSession,
+  conversationIdIntegration,
+  debug,
+  envToBool,
+  eventFiltersIntegration,
   functionToStringIntegration,
   getCurrentScope,
   getIntegrationsToSetup,
-  getIsolationScope,
-  hasTracingEnabled,
-  inboundFiltersIntegration,
+  hasSpansEnabled,
   linkedErrorsIntegration,
-  logger,
   propagationContextFromHeaders,
   requestDataIntegration,
   stackParserFromStackParserOptions,
-  startSession,
 } from '@sentry/core';
-import {
-  enhanceDscWithOpenTelemetryRootSpanName,
-  openTelemetrySetupCheck,
-  setOpenTelemetryContextAsyncContextStrategy,
-  setupEventContextTrace,
-} from '@sentry/opentelemetry';
+import { isMainThread, parentPort } from 'node:worker_threads';
+import { detectOrchestrionSetup } from '@sentry/server-utils/orchestrion';
+import { registerDiagnosticsChannelInjection } from '@sentry/server-utils/orchestrion/register';
 import { DEBUG_BUILD } from '../debug-build';
 import { childProcessIntegration } from '../integrations/childProcess';
 import { consoleIntegration } from '../integrations/console';
@@ -33,30 +29,31 @@ import { modulesIntegration } from '../integrations/modules';
 import { nativeNodeFetchIntegration } from '../integrations/node-fetch';
 import { onUncaughtExceptionIntegration } from '../integrations/onuncaughtexception';
 import { onUnhandledRejectionIntegration } from '../integrations/onunhandledrejection';
+import { processSessionIntegration } from '../integrations/processSession';
 import { INTEGRATION_NAME as SPOTLIGHT_INTEGRATION_NAME, spotlightIntegration } from '../integrations/spotlight';
+import { systemErrorIntegration } from '../integrations/systemError';
 import { getAutoPerformanceIntegrations } from '../integrations/tracing';
+import { workerThreadsIntegration } from '../integrations/workerThreads';
 import { makeNodeTransport } from '../transports';
 import type { NodeClientOptions, NodeOptions } from '../types';
-import { isCjs } from '../utils/commonjs';
-import { envToBool } from '../utils/envToBool';
+import { getEntryPointType } from '../utils/entry-point';
+import { getSpotlightConfig } from '../utils/spotlight';
 import { defaultStackParser, getSentryRelease } from './api';
 import { NodeClient } from './client';
-import { initOpenTelemetry, maybeInitializeEsmLoader } from './initOtel';
-
-function getCjsOnlyIntegrations(): Integration[] {
-  return isCjs() ? [modulesIntegration()] : [];
-}
+import { initOpenTelemetry } from './initOtel';
 
 /**
- * Get default integrations, excluding performance.
+ * Get the base default integrations shared by all Node SDK default-integration sets.
  */
-export function getDefaultIntegrationsWithoutPerformance(): Integration[] {
+function getBaseDefaultIntegrations(): Integration[] {
   return [
     // Common
-    inboundFiltersIntegration(),
+    eventFiltersIntegration(),
     functionToStringIntegration(),
     linkedErrorsIntegration(),
     requestDataIntegration(),
+    systemErrorIntegration(),
+    conversationIdIntegration(),
     // Native Wrappers
     consoleIntegration(),
     httpIntegration(),
@@ -69,8 +66,17 @@ export function getDefaultIntegrationsWithoutPerformance(): Integration[] {
     localVariablesIntegration(),
     nodeContextIntegration(),
     childProcessIntegration(),
-    ...getCjsOnlyIntegrations(),
+    workerThreadsIntegration(),
+    processSessionIntegration(),
+    modulesIntegration(),
   ];
+}
+
+/**
+ * Get default integrations, excluding performance.
+ */
+export function getDefaultIntegrationsWithoutPerformance(): Integration[] {
+  return getBaseDefaultIntegrations();
 }
 
 /** Get the default integrations for the Node SDK. */
@@ -81,18 +87,8 @@ export function getDefaultIntegrations(options: Options): Integration[] {
     // Note that this means that without tracing enabled, e.g. `expressIntegration()` will not be added
     // This means that generally request isolation will work (because that is done by httpIntegration)
     // But `transactionName` will not be set automatically
-    ...(shouldAddPerformanceIntegrations(options) ? getAutoPerformanceIntegrations() : []),
+    ...(hasSpansEnabled(options) ? getAutoPerformanceIntegrations() : []),
   ];
-}
-
-function shouldAddPerformanceIntegrations(options: Options): boolean {
-  if (!hasTracingEnabled(options)) {
-    return false;
-  }
-
-  // We want to ensure `tracesSampleRate` is not just undefined/null here
-  // eslint-disable-next-line deprecation/deprecation
-  return options.enableTracing || options.tracesSampleRate != null || 'tracesSampler' in options;
 }
 
 /**
@@ -105,24 +101,45 @@ export function init(options: NodeOptions | undefined = {}): NodeClient | undefi
 /**
  * Initialize Sentry for Node, without any integrations added by default.
  */
-export function initWithoutDefaultIntegrations(options: NodeOptions | undefined = {}): NodeClient {
+export function initWithoutDefaultIntegrations(options: NodeOptions | undefined = {}): NodeClient | undefined {
   return _init(options, () => []);
 }
 
 /**
- * Initialize Sentry for Node, without performance instrumentation.
+ * Internal initialization function.
  */
 function _init(
-  _options: NodeOptions | undefined = {},
+  options: NodeOptions | undefined = {},
   getDefaultIntegrationsImpl: (options: Options) => Integration[],
-): NodeClient {
-  const options = getClientOptions(_options, getDefaultIntegrationsImpl);
+): NodeClient | undefined {
+  // Node re-runs `--require` preloads (though not `--import` ones) on the module loader thread it
+  // spawns for `Module.register()`, which `init()` itself triggers (channel injection, the ESM
+  // loader hook). So a `--require`d instrument file re-enters `init()` there, on a thread that
+  // never runs app code. It is recognizable as the only thread without a `parentPort`:
+  // user-created workers always have one and are legitimately instrumented.
+  if (!isMainThread && !parentPort) {
+    return undefined;
+  }
 
-  if (options.debug === true) {
+  if (getEntryPointType() === 'require') {
+    consoleSandbox(() => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[Sentry] Initializing the SDK via the Node `--require` flag is no longer supported, because Node re-runs `--require` preloads on its module loader thread. Use `--import` instead: `node --import ./instrument.js app.js`',
+      );
+    });
+  }
+
+  applySdkMetadata(options, 'node');
+
+  // Enable debug logging before channel-injection registration below, so its failure modes (e.g. no
+  // available Node hook API, dep-resolution errors) actually surface. `getClientOptions` resolves
+  // `debug` the same way for the client; resolving it here as well keeps the two in agreement.
+  if (envToBool(options.debug ?? process.env.SENTRY_DEBUG)) {
     if (DEBUG_BUILD) {
-      logger.enable();
+      debug.enable();
     } else {
-      // use `console.warn` rather than `logger.warn` since by non-debug bundles have all `logger.x` statements stripped
+      // use `console.warn` rather than `debug.warn` since non-debug bundles have all `debug.x` statements stripped
       consoleSandbox(() => {
         // eslint-disable-next-line no-console
         console.warn('[Sentry] Cannot initialize SDK with `debug` option using a non-debug bundle.');
@@ -130,79 +147,80 @@ function _init(
     }
   }
 
-  if (!isCjs() && options.registerEsmLoaderHooks !== false) {
-    maybeInitializeEsmLoader(options.registerEsmLoaderHooks === true ? undefined : options.registerEsmLoaderHooks);
+  // Resolve the tracing-affecting options (e.g. `SENTRY_TRACES_SAMPLE_RATE`) up front so that both
+  // the span-enablement gate below and default-integration selection see the final values. Without
+  // this, enabling tracing purely via env would leave `hasSpansEnabled` false at this point and skip
+  // the performance integrations. `getClientOptions` resolves the remaining options later.
+  const optionsWithResolvedTracing = {
+    ...options,
+    tracesSampleRate: getTracesSampleRate(options.tracesSampleRate),
+  };
+
+  // Gate channel-based (orchestrion diagnostics-channel) instrumentation on span recording: the
+  // channel integrations only produce spans, so with tracing off there are no subscribers and
+  // injecting the module hooks would be pointless work. Install the hooks as early as possible,
+  // before the app imports its instrumented modules.
+  const useChannelInjection = hasSpansEnabled(optionsWithResolvedTracing);
+  if (useChannelInjection) {
+    registerDiagnosticsChannelInjection();
   }
 
-  setOpenTelemetryContextAsyncContextStrategy();
+  // Only use Node SDK defaults if none provided.
+  const defaultIntegrations = options.defaultIntegrations ?? getDefaultIntegrationsImpl(optionsWithResolvedTracing);
+
+  const clientOptions = getClientOptions({ ...options, defaultIntegrations }, getDefaultIntegrationsImpl);
 
   const scope = getCurrentScope();
-  scope.update(options.initialScope);
+  scope.update(clientOptions.initialScope);
 
-  if (options.spotlight && !options.integrations.some(({ name }) => name === SPOTLIGHT_INTEGRATION_NAME)) {
-    options.integrations.push(
+  if (clientOptions.spotlight && !clientOptions.integrations.some(({ name }) => name === SPOTLIGHT_INTEGRATION_NAME)) {
+    clientOptions.integrations.push(
       spotlightIntegration({
-        sidecarUrl: typeof options.spotlight === 'string' ? options.spotlight : undefined,
+        sidecarUrl: typeof clientOptions.spotlight === 'string' ? clientOptions.spotlight : undefined,
       }),
     );
   }
 
-  const client = new NodeClient(options);
+  const client = new NodeClient(clientOptions);
   // The client is on the current scope, from where it generally is inherited
   getCurrentScope().setClient(client);
 
   client.init();
 
-  logger.log(`Running in ${isCjs() ? 'CommonJS' : 'ESM'} mode.`);
-
-  trackSessionForProcess();
+  /*! rollup-include-cjs-only */
+  debug.log(`SDK initialized from CommonJS`);
+  /*! rollup-include-cjs-only-end */
+  /*! rollup-include-esm-only */
+  debug.log(`SDK initialized from ESM`);
+  /*! rollup-include-esm-only-end */
 
   client.startClientReportTracking();
 
   updateScopeFromEnvVariables();
 
-  // If users opt-out of this, they _have_ to set up OpenTelemetry themselves
-  // There is no way to use this SDK without OpenTelemetry!
-  if (!options.skipOpenTelemetrySetup) {
-    initOpenTelemetry(client);
-    validateOpenTelemetrySetup();
+  // Ensure we flush events when vercel functions are ended
+  // See: https://vercel.com/docs/functions/functions-api-reference#sigterm-signal
+  if (process.env.VERCEL) {
+    process.on('SIGTERM', async () => {
+      // We have 500ms for processing here, so we try to make sure to have enough time to send the events
+      await client.flush(200);
+    });
   }
 
-  enhanceDscWithOpenTelemetryRootSpanName(client);
-  setupEventContextTrace(client);
+  // Add Node SDK specific OpenTelemetry setup. `setupEventContextTrace` reads the active span from the
+  // OpenTelemetry context, so it only belongs here: without a Sentry tracer provider a foreign OTel
+  // span could otherwise override the Sentry trace on error events.
+  if (clientOptions.enableOpenTelemetrySetup) {
+    initOpenTelemetry(client);
+  }
+
+  // Warn about missing or doubled channel injection. Runs after the client
+  // is created so the debug logger is enabled and the warning is emitted.
+  if (useChannelInjection) {
+    detectOrchestrionSetup();
+  }
 
   return client;
-}
-
-/**
- * Validate that your OpenTelemetry setup is correct.
- */
-export function validateOpenTelemetrySetup(): void {
-  if (!DEBUG_BUILD) {
-    return;
-  }
-
-  const setup = openTelemetrySetupCheck();
-
-  const required: ReturnType<typeof openTelemetrySetupCheck> = ['SentryContextManager', 'SentryPropagator'];
-
-  if (hasTracingEnabled()) {
-    required.push('SentrySpanProcessor');
-  }
-
-  for (const k of required) {
-    if (!setup.includes(k)) {
-      logger.error(
-        `You have to set up the ${k}. Without this, the OpenTelemetry & Sentry integration will not work properly.`,
-      );
-    }
-  }
-
-  if (!setup.includes('SentrySampler')) {
-    logger.warn(
-      'You have to set up the SentrySampler. Without this, the OpenTelemetry & Sentry integration may still work, but sample rates set for the Sentry SDK will not be respected. If you use a custom sampler, make sure to use `wrapSamplingDecision`.',
-    );
-  }
 }
 
 function getClientOptions(
@@ -211,59 +229,40 @@ function getClientOptions(
 ): NodeClientOptions {
   const release = getRelease(options.release);
 
-  const autoSessionTracking =
-    typeof release !== 'string'
-      ? false
-      : // eslint-disable-next-line deprecation/deprecation
-        options.autoSessionTracking === undefined
-        ? true
-        : // eslint-disable-next-line deprecation/deprecation
-          options.autoSessionTracking;
-
-  if (options.spotlight == null) {
-    const spotlightEnv = envToBool(process.env.SENTRY_SPOTLIGHT, { strict: true });
-    if (spotlightEnv == null) {
-      options.spotlight = process.env.SENTRY_SPOTLIGHT;
-    } else {
-      options.spotlight = spotlightEnv;
-    }
-  }
+  const spotlight = getSpotlightConfig(options.spotlight);
 
   const tracesSampleRate = getTracesSampleRate(options.tracesSampleRate);
-
-  const baseOptions = dropUndefinedKeys({
-    transport: makeNodeTransport,
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.SENTRY_ENVIRONMENT,
-    sendClientReports: true,
-  });
-
-  const overwriteOptions = dropUndefinedKeys({
-    release,
-    autoSessionTracking,
-    tracesSampleRate,
-  });
+  const traceLifecycle = getTraceLifecycle(options.traceLifecycle);
 
   const mergedOptions = {
-    ...baseOptions,
     ...options,
-    ...overwriteOptions,
-  };
-
-  if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = getDefaultIntegrationsImpl(mergedOptions);
-  }
-
-  const clientOptions: NodeClientOptions = {
-    ...mergedOptions,
+    dsn: options.dsn ?? process.env.SENTRY_DSN,
+    environment: options.environment ?? process.env.SENTRY_ENVIRONMENT,
+    sendClientReports: options.sendClientReports ?? true,
+    transport: options.transport ?? makeNodeTransport,
     stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
-    integrations: getIntegrationsToSetup({
-      defaultIntegrations: options.defaultIntegrations,
-      integrations: options.integrations,
-    }),
+    release,
+    tracesSampleRate,
+    spotlight,
+    traceLifecycle,
+    // Most Node-based SDKs default to running without a Sentry OpenTelemetry tracer provider. SDKs
+    // that need OTel spans surfaced in Sentry (nextjs, sveltekit) opt back in by passing `true`.
+    enableOpenTelemetrySetup: options.enableOpenTelemetrySetup ?? false,
+    debug: envToBool(options.debug ?? process.env.SENTRY_DEBUG),
   };
 
-  return clientOptions;
+  const integrations = options.integrations;
+  const defaultIntegrations = options.defaultIntegrations ?? getDefaultIntegrationsImpl(mergedOptions);
+
+  const resolvedIntegrations = getIntegrationsToSetup({
+    defaultIntegrations,
+    integrations,
+  });
+
+  return {
+    ...mergedOptions,
+    integrations: resolvedIntegrations,
+  };
 }
 
 function getRelease(release: NodeOptions['release']): string | undefined {
@@ -293,6 +292,20 @@ function getTracesSampleRate(tracesSampleRate: NodeOptions['tracesSampleRate']):
   return isFinite(parsed) ? parsed : undefined;
 }
 
+function getTraceLifecycle(traceLifecycle: NodeOptions['traceLifecycle']): 'stream' | 'static' {
+  if (traceLifecycle !== undefined) {
+    return traceLifecycle;
+  }
+
+  const lifecycleFromEnv = process.env.SENTRY_TRACE_LIFECYCLE;
+
+  if (lifecycleFromEnv === 'stream' || lifecycleFromEnv === 'static') {
+    return lifecycleFromEnv;
+  }
+
+  return 'stream';
+}
+
 /**
  * Update scope and propagation context based on environmental variables.
  *
@@ -306,29 +319,4 @@ function updateScopeFromEnvVariables(): void {
     const propagationContext = propagationContextFromHeaders(sentryTraceEnv, baggageEnv);
     getCurrentScope().setPropagationContext(propagationContext);
   }
-}
-
-/**
- * Start a session for this process.
- */
-// TODO(v9): This is still extremely funky because it's a session on the scope and therefore weirdly mutable by the user.
-// Strawman proposal for v9: Either create a processSessionIntegration() or add functionality to the onunhandledexception/rejection integrations.
-function trackSessionForProcess(): void {
-  startSession();
-
-  // Emitted in the case of healthy sessions, error of `mechanism.handled: true` and unhandledrejections because
-  // The 'beforeExit' event is not emitted for conditions causing explicit termination,
-  // such as calling process.exit() or uncaught exceptions.
-  // Ref: https://nodejs.org/api/process.html#process_event_beforeexit
-  process.on('beforeExit', () => {
-    const session = getIsolationScope().getSession();
-
-    // Only call endSession, if the Session exists on Scope and SessionStatus is not a
-    // Terminal Status i.e. Exited or Crashed because
-    // "When a session is moved away from ok it must not be updated anymore."
-    // Ref: https://develop.sentry.dev/sdk/sessions/
-    if (session && session.status !== 'ok') {
-      endSession();
-    }
-  });
 }

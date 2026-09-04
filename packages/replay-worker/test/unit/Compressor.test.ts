@@ -1,7 +1,5 @@
-import { describe, expect, it } from 'vitest';
-
 import { decompressSync, strFromU8 } from 'fflate';
-
+import { describe, expect, it } from 'vitest';
 import { Compressor } from '../../src/Compressor';
 
 describe('Compressor', () => {
@@ -32,7 +30,7 @@ describe('Compressor', () => {
     const compressor = new Compressor();
 
     // @ts-expect-error ignoring type for test
-    expect(() => void compressor.addEvent(undefined)).toThrow();
+    expect(() => compressor.addEvent(undefined)).toThrow();
 
     const compressed = compressor.finish();
 

@@ -1,8 +1,8 @@
 export type {
   Breadcrumb,
   BreadcrumbHint,
-  // eslint-disable-next-line deprecation/deprecation
-  Request,
+  Context,
+  Contexts,
   RequestEventData,
   SdkInfo,
   Event,
@@ -15,11 +15,14 @@ export type {
   Thread,
   User,
   Session,
-} from '@sentry/core';
+  ReportDialogOptions,
+  CaptureContext,
+  ExclusiveEventHintOrCaptureContext,
+  Log,
+  LogSeverityLevel,
+} from '@sentry/core/browser';
 
 export type { BrowserOptions } from './client';
-
-export type { ReportDialogOptions } from './sdk';
 
 export {
   addEventProcessor,
@@ -33,16 +36,16 @@ export {
   createTransport,
   lastEventId,
   flush,
-  // eslint-disable-next-line deprecation/deprecation
-  getCurrentHub,
   getClient,
   isInitialized,
+  isEnabled,
   getCurrentScope,
   getIsolationScope,
   getGlobalScope,
   setCurrentClient,
   Scope,
   continueTrace,
+  getTraceData,
   suppressTracing,
   SDK_VERSION,
   setContext,
@@ -50,32 +53,40 @@ export {
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
+  setConversationId,
   withScope,
   withIsolationScope,
   functionToStringIntegration,
-  inboundFiltersIntegration,
+  eventFiltersIntegration,
   dedupeIntegration,
   parameterize,
   startSession,
   captureSession,
   endSession,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
   updateSpanName,
-} from '@sentry/core';
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
+  withStreamedSpan,
+} from '@sentry/core/browser';
 
 export {
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE,
-} from '@sentry/core';
+} from '@sentry/core/browser';
 
 export { WINDOW } from './helpers';
 export { BrowserClient } from './client';
 export { makeFetchTransport } from './transports/fetch';
+export { uiProfiler } from './profiling';
 export {
   defaultStackParser,
   defaultStackLineParsers,
@@ -87,18 +98,14 @@ export {
 } from './stack-parsers';
 export { eventFromException, eventFromMessage, exceptionFromError } from './eventbuilder';
 export { createUserFeedbackEnvelope } from './userfeedback';
-export {
-  getDefaultIntegrations,
-  forceLoad,
-  init,
-  onLoad,
-  showReportDialog,
-} from './sdk';
+export { getDefaultIntegrations, forceLoad, init, onLoad } from './sdk';
+export { showReportDialog } from './report-dialog';
 
 export { breadcrumbsIntegration } from './integrations/breadcrumbs';
 export { globalHandlersIntegration } from './integrations/globalhandlers';
 export { httpContextIntegration } from './integrations/httpcontext';
 export { linkedErrorsIntegration } from './integrations/linkederrors';
 export { browserApiErrorsIntegration } from './integrations/browserapierrors';
+export { browserSessionIntegration } from './integrations/browsersession';
 
 export { lazyLoadIntegration } from './utils/lazyLoadIntegration';

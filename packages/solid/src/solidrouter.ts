@@ -1,31 +1,49 @@
 import {
   browserTracingIntegration,
+  getAbsoluteUrl,
   getActiveSpan,
   getRootSpan,
   spanToJSON,
   startBrowserTracingNavigationSpan,
 } from '@sentry/browser';
 import {
+  PARAMS_KEY_BASE,
+  URL_FULL,
+  URL_PATH,
+  URL_PATH_PARAMETER_KEY_BASE,
+  URL_TEMPLATE,
+} from '@sentry/conventions/attributes';
+import type { Client, Integration, Span } from '@sentry/core';
+import {
+  getClient,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  getClient,
+  filterCollectedUrl,
 } from '@sentry/core';
-import type { Client, Integration, Span } from '@sentry/core';
 import type {
   BeforeLeaveEventArgs,
   HashRouter,
   MemoryRouter,
-  RouteSectionProps,
   Router as BaseRouter,
+  RouteSectionProps,
   StaticRouter,
 } from '@solidjs/router';
-import { useBeforeLeave, useLocation } from '@solidjs/router';
-import { createEffect, mergeProps, splitProps } from 'solid-js';
+import { useBeforeLeave, useCurrentMatches, useLocation } from '@solidjs/router';
 import type { Component, JSX, ParentProps } from 'solid-js';
+import { createEffect, mergeProps, splitProps } from 'solid-js';
 import { createComponent } from 'solid-js/web';
 
 const CLIENTS_WITH_INSTRUMENT_NAVIGATION = new WeakSet<Client>();
+
+function locationToSpanUrlAttributes(pathname: string, search: string = '', hash: string = ''): Record<string, string> {
+  const pathWithSearch = `${pathname}${search}${hash}`;
+
+  return {
+    [URL_PATH]: pathname,
+    [URL_FULL]: filterCollectedUrl(getAbsoluteUrl(pathWithSearch)),
+  };
+}
 
 function handleNavigation(location: string): void {
   const client = getClient();
@@ -37,17 +55,23 @@ function handleNavigation(location: string): void {
   // To avoid increasing the api surface with internal properties, we look at
   // the sdk metadata.
   const metaData = client.getSdkMetadata();
-  const { name } = (metaData && metaData.sdk) || {};
-  const framework = name && name.includes('solidstart') ? 'solidstart' : 'solid';
+  const { name } = metaData?.sdk || {};
+  const framework = name?.includes('solidstart') ? 'solidstart' : 'solid';
 
-  startBrowserTracingNavigationSpan(client, {
-    name: location,
-    attributes: {
-      [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
-      [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: `auto.navigation.${framework}.solidrouter`,
-      [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+  const isBackNavigation = location === '-1';
+
+  startBrowserTracingNavigationSpan(
+    client,
+    {
+      name: location,
+      attributes: {
+        [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
+        [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: `auto.navigation.${framework}.solidrouter`,
+        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+      },
     },
-  });
+    isBackNavigation ? undefined : { url: getAbsoluteUrl(location) },
+  );
 }
 
 function getActiveRootSpan(): Span | undefined {
@@ -66,31 +90,66 @@ function SentryDefaultRoot(props: ParentProps): JSX.Element {
  */
 function withSentryRouterRoot(Root: Component<RouteSectionProps>): Component<RouteSectionProps> {
   const SentryRouterRoot = (props: RouteSectionProps): JSX.Element => {
-    // TODO: This is a rudimentary first version of handling navigation spans
-    // It does not
-    // - use query params
-    // - parameterize the route
+    // Tracks the target of a pending navigation, so the effect can skip
+    // stale updates during <Navigate> redirects where the location signal
+    // hasn't caught up to the navigation span yet.
+    let pendingNavigationTarget: string | undefined;
 
     useBeforeLeave(({ to }: BeforeLeaveEventArgs) => {
-      // `to` could be `-1` if the browser back-button was used
-      handleNavigation(to.toString());
+      const target = to.toString();
+      pendingNavigationTarget = target;
+      handleNavigation(target);
     });
 
     const location = useLocation();
+    const matches = useCurrentMatches();
+
     createEffect(() => {
       const name = location.pathname;
       const rootSpan = getActiveRootSpan();
+      if (!rootSpan) {
+        return;
+      }
 
-      if (rootSpan) {
-        const { op, description } = spanToJSON(rootSpan);
+      // During <Navigate> redirects, the effect can fire before the router
+      // transition completes. In that case, location.pathname still points
+      // to the old route while the active span is already the navigation span.
+      // Skip the update to avoid overwriting the span with stale route data.
+      // `-1` is solid router's representation of a browser back-button
+      // navigation, where we don't know the target URL upfront.
+      if (pendingNavigationTarget && pendingNavigationTarget !== '-1' && name !== pendingNavigationTarget) {
+        return;
+      }
+      pendingNavigationTarget = undefined;
 
-        // We only need to update navigation spans that have been created by
-        // a browser back-button navigation (stored as `-1` by solid router)
-        // everything else was already instrumented correctly in `useBeforeLeave`
-        if (op === 'navigation' && description === '-1') {
-          rootSpan.updateName(name);
-          rootSpan.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'url');
+      const currentMatches = matches();
+      const lastMatch = currentMatches[currentMatches.length - 1];
+
+      const urlAttributes = locationToSpanUrlAttributes(name, location.search, location.hash);
+
+      if (lastMatch) {
+        const parametrizedRoute = lastMatch.route.pattern || name;
+        rootSpan.updateName(parametrizedRoute);
+        rootSpan.setAttributes({
+          [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+          [URL_TEMPLATE]: parametrizedRoute,
+          ...urlAttributes,
+        });
+
+        const params = lastMatch.params;
+        for (const [key, value] of Object.entries(params)) {
+          if (value !== undefined) {
+            rootSpan.setAttribute(`${URL_PATH_PARAMETER_KEY_BASE}.${key}`, value);
+            rootSpan.setAttribute(`${PARAMS_KEY_BASE}.${key}`, value);
+          }
         }
+      } else {
+        // No matched route - update back-button navigations and set source to url
+        const { attributes, name: spanName } = spanToJSON(rootSpan);
+        if (attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP] === 'navigation' && spanName === '-1') {
+          rootSpan.updateName(name);
+        }
+        rootSpan.setAttributes({ [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url', ...urlAttributes });
       }
     });
 

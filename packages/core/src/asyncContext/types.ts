@@ -2,13 +2,24 @@ import type { Scope } from '../scope';
 import type { getTraceData } from '../utils/traceData';
 import type {
   continueTrace,
-  startInactiveSpan,
-  startSpan,
-  startSpanManual,
+  isTracingSuppressed,
+  startNewTrace,
   suppressTracing,
   withActiveSpan,
 } from './../tracing/trace';
 import type { getActiveSpan } from './../utils/spanUtils';
+
+/*
+ * @private Private API with no semver guarantees!
+ *
+ * A binding object used to enable context propagation for a tracing channel against a span
+ */
+export interface TracingChannelBinding {
+  /**
+   * The ALS instance that will be bound to the channel.
+   */
+  asyncLocalStorage: NonNullable<unknown>;
+}
 
 /**
  * @private Private API with no semver guarantees!
@@ -49,15 +60,6 @@ export interface AsyncContextStrategy {
   // OPTIONAL: Custom tracing methods
   // These are used so that we can provide OTEL-based implementations
 
-  /** Start an active span. */
-  startSpan?: typeof startSpan;
-
-  /** Start an inactive span. */
-  startInactiveSpan?: typeof startInactiveSpan;
-
-  /** Start an active manual span. */
-  startSpanManual?: typeof startSpanManual;
-
   /** Get the currently active span. */
   getActiveSpan?: typeof getActiveSpan;
 
@@ -66,6 +68,9 @@ export interface AsyncContextStrategy {
 
   /** Suppress tracing in the given callback, ensuring no spans are generated inside of it.  */
   suppressTracing?: typeof suppressTracing;
+
+  /** If tracing is suppressed in the given scope.  */
+  isTracingSuppressed?: typeof isTracingSuppressed;
 
   /** Get trace data as serialized string values for propagation via `sentry-trace` and `baggage`. */
   getTraceData?: typeof getTraceData;
@@ -76,4 +81,10 @@ export interface AsyncContextStrategy {
    * and `<meta name="baggage">` HTML tags.
    */
   continueTrace?: typeof continueTrace;
+
+  /** Start a new trace, ensuring all spans in the callback share the same traceId. */
+  startNewTrace?: typeof startNewTrace;
+
+  /** Get the runtime store required to bind tracing channels to an active span. */
+  getTracingChannelBinding?: () => TracingChannelBinding | undefined;
 }

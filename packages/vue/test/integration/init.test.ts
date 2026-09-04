@@ -2,11 +2,9 @@
  * @vitest-environment jsdom
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { createApp } from 'vue';
-
 import type { Client } from '@sentry/core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createApp } from 'vue';
 import type { Options } from '../../src/types';
 import * as Sentry from './../../src';
 
@@ -96,6 +94,7 @@ describe('Sentry.init', () => {
     });
 
     Sentry.init({
+      traceLifecycle: 'static',
       dsn: PUBLIC_DSN,
       defaultIntegrations: false,
       integrations: [],
@@ -119,5 +118,6 @@ function runInit(options: Partial<Options>): Client | undefined {
     defaultIntegrations: false,
     integrations: [integration],
     ...options,
+    traceLifecycle: 'static',
   });
 }

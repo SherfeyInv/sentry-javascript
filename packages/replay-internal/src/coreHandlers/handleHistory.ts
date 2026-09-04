@@ -1,5 +1,4 @@
 import type { HandlerDataHistory } from '@sentry/core';
-
 import type { HistoryData, ReplayContainer, ReplayPerformanceEntry } from '../types';
 import { createPerformanceSpans } from '../util/createPerformanceSpans';
 
@@ -39,6 +38,7 @@ export function handleHistorySpanListener(replay: ReplayContainer): (handlerData
     replay.triggerUserActivity();
 
     replay.addUpdate(() => {
+      // oxlint-disable-next-line typescript/no-floating-promises
       createPerformanceSpans(replay, [result]);
       // Returning false to flush
       return false;

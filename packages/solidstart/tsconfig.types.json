@@ -5,7 +5,8 @@
     "declaration": true,
     "declarationMap": true,
     "emitDeclarationOnly": true,
-    "outDir": "build/types"
+    "outDir": "build/types",
+    "rootDir": "./src"
   },
 
   // These are built separately in tsconfig.solidrouter-types.json
@@ -14,6 +15,6 @@
     "src/client/solidrouter.ts",
     "src/solidrouter.server.ts",
     "src/server/solidrouter.ts",
-    "src/solidrouter.ts",
+    "src/solidrouter.ts"
   ]
 }

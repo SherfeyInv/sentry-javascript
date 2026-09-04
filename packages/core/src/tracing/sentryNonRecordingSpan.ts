@@ -1,14 +1,25 @@
+import type { EventDropReason } from '../types/clientreport';
 import type {
   SentrySpanArguments,
   Span,
-  SpanAttributeValue,
   SpanAttributes,
+  SpanAttributeValue,
   SpanContextData,
-  SpanStatus,
   SpanTimeInput,
-} from '../types-hoist';
-import { generateSpanId, generateTraceId } from '../utils-hoist/propagationContext';
+} from '../types/span';
+import type { SpanStatus } from '../types/spanStatus';
+import { addNonEnumerableProperty } from '../utils/object';
+import { generateSpanId, generateTraceId } from '../utils/propagationContext';
 import { TRACE_FLAG_NONE } from '../utils/spanUtils';
+
+interface SentryNonRecordingSpanArguments extends SentrySpanArguments {
+  dropReason?: EventDropReason;
+}
+
+// Brand used to detect non-recording spans via {@link spanIsNonRecordingSpan} without `instanceof`,
+// which is brittle when `@sentry/core` is duplicated across packages. We use `Symbol.for` so the key
+// is shared across copies of the module, and so user payloads (e.g. JSON) cannot spoof the marker.
+const NON_RECORDING_SPAN_FIELD = Symbol.for('sentry.nonRecordingSpan');
 
 /**
  * A Sentry Span that is non-recording, meaning it will not be sent to Sentry.
@@ -17,9 +28,18 @@ export class SentryNonRecordingSpan implements Span {
   private _traceId: string;
   private _spanId: string;
 
-  public constructor(spanContext: SentrySpanArguments = {}) {
+  /**
+   * Reason why this span was dropped, if applicable ('ignored' or 'sample_rate').
+   * Used to propagate the correct client report outcome to descendant spans
+   * when span streaming is enabled.
+   */
+  public dropReason?: EventDropReason;
+
+  public constructor(spanContext: SentryNonRecordingSpanArguments = {}) {
     this._traceId = spanContext.traceId || generateTraceId();
     this._spanId = spanContext.spanId || generateSpanId();
+    this.dropReason = spanContext.dropReason;
+    addNonEnumerableProperty(this, NON_RECORDING_SPAN_FIELD, true);
   }
 
   /** @inheritdoc */
@@ -32,7 +52,6 @@ export class SentryNonRecordingSpan implements Span {
   }
 
   /** @inheritdoc */
-  // eslint-disable-next-line @typescript-eslint/no-empty-function
   public end(_timestamp?: SpanTimeInput): void {}
 
   /** @inheritdoc */
@@ -69,24 +88,12 @@ export class SentryNonRecordingSpan implements Span {
     return this;
   }
 
-  /**
-   * This should generally not be used,
-   * but we need it for being compliant with the OTEL Span interface.
-   *
-   * @hidden
-   * @internal
-   */
+  /** @inheritDoc */
   public addLink(_link: unknown): this {
     return this;
   }
 
-  /**
-   * This should generally not be used,
-   * but we need it for being compliant with the OTEL Span interface.
-   *
-   * @hidden
-   * @internal
-   */
+  /** @inheritDoc */
   public addLinks(_links: unknown[]): this {
     return this;
   }
@@ -98,7 +105,14 @@ export class SentryNonRecordingSpan implements Span {
    * @hidden
    * @internal
    */
-  public recordException(_exception: unknown, _time?: number | undefined): void {
+  public recordException(_exception: unknown, _time?: SpanTimeInput | undefined): void {
     // noop
   }
+}
+
+/**
+ * Whether the given span is a {@link SentryNonRecordingSpan}.
+ */
+export function spanIsNonRecordingSpan(span: Span | undefined): span is SentryNonRecordingSpan {
+  return !!span && (span as { [NON_RECORDING_SPAN_FIELD]?: boolean })[NON_RECORDING_SPAN_FIELD] === true;
 }

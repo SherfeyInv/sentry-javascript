@@ -1,70 +1,76 @@
 export { httpIntegration } from './integrations/http';
 export { nativeNodeFetchIntegration } from './integrations/node-fetch';
 export { fsIntegration } from './integrations/fs';
-
-export { consoleIntegration } from './integrations/console';
-export { nodeContextIntegration } from './integrations/context';
-export { contextLinesIntegration } from './integrations/contextlines';
-export { localVariablesIntegration } from './integrations/local-variables';
-export { modulesIntegration } from './integrations/modules';
-export { onUncaughtExceptionIntegration } from './integrations/onuncaughtexception';
-export { onUnhandledRejectionIntegration } from './integrations/onunhandledrejection';
-export { anrIntegration, disableAnrDetectionForCallback } from './integrations/anr';
-
-export { expressIntegration, expressErrorHandler, setupExpressErrorHandler } from './integrations/tracing/express';
+export { expressErrorHandler, setupExpressErrorHandler } from './integrations/tracing/express';
 export { fastifyIntegration, setupFastifyErrorHandler } from './integrations/tracing/fastify';
-export { graphqlIntegration } from './integrations/tracing/graphql';
-export { kafkaIntegration } from './integrations/tracing/kafka';
-export { lruMemoizerIntegration } from './integrations/tracing/lrumemoizer';
-export { mongoIntegration } from './integrations/tracing/mongo';
-export { mongooseIntegration } from './integrations/tracing/mongoose';
-export { mysqlIntegration } from './integrations/tracing/mysql';
-export { mysql2Integration } from './integrations/tracing/mysql2';
-export { redisIntegration } from './integrations/tracing/redis';
-export { postgresIntegration } from './integrations/tracing/postgres';
-export { prismaIntegration } from './integrations/tracing/prisma';
-export { hapiIntegration, setupHapiErrorHandler } from './integrations/tracing/hapi';
-export { koaIntegration, setupKoaErrorHandler } from './integrations/tracing/koa';
-export { connectIntegration, setupConnectErrorHandler } from './integrations/tracing/connect';
-export { spotlightIntegration } from './integrations/spotlight';
-export { knexIntegration } from './integrations/tracing/knex';
-export { tediousIntegration } from './integrations/tracing/tedious';
-export { genericPoolIntegration } from './integrations/tracing/genericPool';
-export { dataloaderIntegration } from './integrations/tracing/dataloader';
-export { amqplibIntegration } from './integrations/tracing/amqplib';
-export { childProcessIntegration } from './integrations/childProcess';
-
-export { SentryContextManager } from './otel/contextManager';
-export { generateInstrumentOnce } from './otel/instrument';
+export {
+  amqplibIntegration,
+  anthropicAIIntegration,
+  dataloaderIntegration,
+  expressIntegration,
+  firebaseIntegration,
+  genericPoolIntegration,
+  googleGenAIIntegration,
+  graphqlIntegration,
+  hapiIntegration,
+  kafkaIntegration,
+  knexIntegration,
+  koaIntegration,
+  langChainIntegration,
+  langGraphIntegration,
+  lruMemoizerIntegration,
+  mongoIntegration,
+  mongooseIntegration,
+  mysqlIntegration,
+  mysql2Integration,
+  openAIIntegration,
+  postgresIntegration,
+  postgresJsIntegration,
+  redisIntegration,
+  tediousIntegration,
+  vercelAIIntegration,
+} from '@sentry/server-utils/orchestrion';
+export {
+  otlpIntegration,
+  getOtlpTracesEndpoint,
+  prismaIntegration,
+  instrumentOpenAiClient,
+  instrumentAnthropicAiClient,
+  instrumentGoogleGenAIClient,
+  createLangChainCallbackHandler,
+  instrumentLangChainEmbeddings,
+  instrumentStateGraph,
+  instrumentStateGraphCompile,
+} from '@sentry/server-utils';
+export { setupHapiErrorHandler } from './integrations/tracing/hapi';
+export { setupKoaErrorHandler } from './integrations/tracing/koa';
+export {
+  launchDarklyIntegration,
+  buildLaunchDarklyFlagUsedHandler,
+  openFeatureIntegration,
+  OpenFeatureIntegrationHook,
+  statsigIntegration,
+  unleashIntegration,
+  growthbookIntegration,
+} from './integrations/featureFlagShims';
 
 export {
   init,
   getDefaultIntegrations,
   getDefaultIntegrationsWithoutPerformance,
   initWithoutDefaultIntegrations,
-  validateOpenTelemetrySetup,
 } from './sdk';
-export { initOpenTelemetry, preloadOpenTelemetry } from './sdk/initOtel';
+export { initOpenTelemetry } from './sdk/initOtel';
 export { getAutoPerformanceIntegrations } from './integrations/tracing';
-export { getSentryRelease, defaultStackParser } from './sdk/api';
-export { createGetModuleFromFilename } from './utils/module';
-export { makeNodeTransport } from './transports';
-export { NodeClient } from './sdk/client';
-export { cron } from './cron';
 
 export type { NodeOptions } from './types';
 
-// eslint-disable-next-line deprecation/deprecation
-export { addRequestDataToEvent, DEFAULT_USER_INCLUDES, extractRequestData } from '@sentry/core';
-
-export {
-  // This needs exporting so the NodeClient can be used without calling init
-  setOpenTelemetryContextAsyncContextStrategy as setNodeAsyncContextStrategy,
-} from '@sentry/opentelemetry';
+export { setOpenTelemetryContextAsyncContextStrategy } from '@sentry/opentelemetry';
 
 export {
   addBreadcrumb,
   isInitialized,
+  isEnabled,
   getGlobalScope,
   lastEventId,
   close,
@@ -77,7 +83,7 @@ export {
   withMonitor,
   requestDataIntegration,
   functionToStringIntegration,
-  inboundFiltersIntegration,
+  eventFiltersIntegration,
   linkedErrorsIntegration,
   addEventProcessor,
   setContext,
@@ -85,7 +91,10 @@ export {
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
+  setConversationId,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
@@ -96,12 +105,12 @@ export {
   getSpanDescendants,
   parameterize,
   getClient,
-  // eslint-disable-next-line deprecation/deprecation
-  getCurrentHub,
   getCurrentScope,
   getIsolationScope,
   getTraceData,
   getTraceMetaTags,
+  httpHeadersToSpanAttributes,
+  winterCGHeadersToDict,
   continueTrace,
   withScope,
   withIsolationScope,
@@ -121,25 +130,32 @@ export {
   startSpanManual,
   startInactiveSpan,
   startNewTrace,
+  bindScopeToEmitter,
   suppressTracing,
   getActiveSpan,
   withActiveSpan,
   getRootSpan,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
   trpcMiddleware,
   updateSpanName,
+  supabaseIntegration,
+  instrumentSupabaseClient,
   zodErrorsIntegration,
   profiler,
+  consoleLoggingIntegration,
+  createConsolaReporter,
+  wrapMcpServerWithSentry,
+  featureFlagsIntegration,
+  spanStreamingIntegration,
 } from '@sentry/core';
 
 export type {
   Breadcrumb,
   BreadcrumbHint,
   PolymorphicRequest,
-  // eslint-disable-next-line deprecation/deprecation
-  Request,
   RequestEventData,
   SdkInfo,
   Event,
@@ -153,4 +169,49 @@ export type {
   Thread,
   User,
   Span,
+  Metric,
+  Log,
+  LogSeverityLevel,
+  FeatureFlagsIntegration,
+  ExclusiveEventHintOrCaptureContext,
+  CaptureContext,
 } from '@sentry/core';
+
+export {
+  metrics,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
+  withStreamedSpan,
+} from '@sentry/core';
+export * as logger from './logs/exports';
+
+export { childProcessIntegration } from './integrations/childProcess';
+export { consoleIntegration } from './integrations/console';
+export { nodeContextIntegration } from './integrations/context';
+export { contextLinesIntegration } from './integrations/contextlines';
+export { localVariablesIntegration } from './integrations/local-variables';
+export { modulesIntegration } from './integrations/modules';
+export {
+  _INTERNAL_normalizeCollectionInterval,
+  nodeRuntimeMetricsIntegration,
+  type NodeRuntimeMetricsOptions,
+} from './integrations/nodeRuntimeMetrics';
+export { onUncaughtExceptionIntegration } from './integrations/onuncaughtexception';
+export { onUnhandledRejectionIntegration } from './integrations/onunhandledrejection';
+export { pinoIntegration } from './integrations/pino';
+export { spotlightIntegration } from './integrations/spotlight';
+export { systemErrorIntegration } from './integrations/systemError';
+export { createSentryWinstonTransport } from './integrations/winston';
+export { workerThreadsIntegration } from './integrations/workerThreads';
+export { cron } from './cron';
+export { NODE_VERSION } from './nodeVersion';
+export { defaultStackParser, getSentryRelease } from './sdk/api';
+export { makeNodeTransport } from './transports';
+export { createGetModuleFromFilename } from './utils/module';
+
+export { httpServerIntegration } from './integrations/http/httpServerIntegration';
+export { httpServerSpansIntegration } from './integrations/http/httpServerSpansIntegration';
+export { processSessionIntegration } from './integrations/processSession';
+export { NodeClient } from './sdk/client';
+// eslint-disable-next-line typescript/no-deprecated
+export { anrIntegration, disableAnrDetectionForCallback } from './integrations/anr';

@@ -1,17 +1,15 @@
+import { feedbackAsyncIntegration } from './feedbackAsync';
+import { feedbackSyncIntegration } from './feedbackSync';
+
 export * from './exports';
 
 export { reportingObserverIntegration } from './integrations/reportingobserver';
 export { httpClientIntegration } from './integrations/httpclient';
 export { contextLinesIntegration } from './integrations/contextlines';
+export { graphqlClientIntegration } from './integrations/graphqlClient';
+export { viewHierarchyIntegration } from './integrations/view-hierarchy';
 
-export {
-  captureConsoleIntegration,
-  extraErrorDataIntegration,
-  rewriteFramesIntegration,
-  captureFeedback,
-} from '@sentry/core';
-
-export { replayIntegration, getReplay } from '@sentry-internal/replay';
+export { replayIntegration, getReplay } from '@sentry/replay';
 export type {
   ReplayEventType,
   ReplayEventWithTime,
@@ -22,25 +20,36 @@ export type {
   ReplayFrameEvent,
   ReplaySpanFrame,
   ReplaySpanFrameEvent,
-} from '@sentry-internal/replay';
+} from '@sentry/replay';
 
-export { replayCanvasIntegration } from '@sentry-internal/replay-canvas';
-
-import { feedbackAsyncIntegration } from './feedbackAsync';
-import { feedbackSyncIntegration } from './feedbackSync';
+export { replayCanvasIntegration } from '@sentry/replay-canvas';
 export { feedbackAsyncIntegration, feedbackSyncIntegration, feedbackSyncIntegration as feedbackIntegration };
-export { getFeedback, sendFeedback } from '@sentry-internal/feedback';
+export { getFeedback, sendFeedback } from '@sentry/feedback';
 
 export { defaultRequestInstrumentationOptions, instrumentOutgoingRequests } from './tracing/request';
 export {
   browserTracingIntegration,
+  isBotUserAgent,
   startBrowserTracingNavigationSpan,
   startBrowserTracingPageLoadSpan,
 } from './tracing/browserTracingIntegration';
+export { elementTimingIntegration, getAbsoluteUrl } from '@sentry/browser-utils';
+export { normalizeStringifyValue } from './normalizeStringifyValue';
+export { reportPageLoaded } from './tracing/reportPageLoaded';
+export { setActiveSpanInBrowser } from './tracing/setActiveSpan';
+export { spanStreamingIntegration } from './integrations/spanstreaming';
+export { fetchStreamPerformanceIntegration } from './integrations/fetchStreamPerformance';
+export { webVitalsIntegration } from './integrations/webVitals';
+export { userTimingIntegration } from './integrations/usertiming';
+export { bfcacheIntegration } from './integrations/bfcache';
+
 export type { RequestInstrumentationOptions } from './tracing/request';
 export {
-  // eslint-disable-next-line deprecation/deprecation
-  addTracingExtensions,
+  captureConsoleIntegration,
+  extraErrorDataIntegration,
+  rewriteFramesIntegration,
+  consoleLoggingIntegration,
+  createConsolaReporter,
   registerSpanErrorInstrumentation,
   getActiveSpan,
   getRootSpan,
@@ -49,23 +58,31 @@ export {
   startSpanManual,
   withActiveSpan,
   startNewTrace,
+  bindScopeToEmitter,
   getSpanDescendants,
   setMeasurement,
   getSpanStatusFromHttpCode,
   setHttpStatus,
   makeMultiplexedTransport,
+  MULTIPLEXED_TRANSPORT_EXTRA_KEY,
   moduleMetadataIntegration,
+  supabaseIntegration,
+  instrumentSupabaseClient,
   zodErrorsIntegration,
   thirdPartyErrorFilterIntegration,
-} from '@sentry/core';
-export type { Span } from '@sentry/core';
+  featureFlagsIntegration,
+  logger,
+  metrics,
+} from '@sentry/core/browser';
+export type { Span, FeatureFlagsIntegration } from '@sentry/core/browser';
 export { makeBrowserOfflineTransport } from './transports/offline';
 export { browserProfilingIntegration } from './profiling/integration';
 export { spotlightBrowserIntegration } from './integrations/spotlight';
-export { browserSessionIntegration } from './integrations/browsersession';
-export {
-  featureFlagsIntegration,
-  type FeatureFlagsIntegration,
-} from './integrations/featureFlags';
+export { cultureContextIntegration } from './integrations/culturecontext';
 export { launchDarklyIntegration, buildLaunchDarklyFlagUsedHandler } from './integrations/featureFlags/launchdarkly';
 export { openFeatureIntegration, OpenFeatureIntegrationHook } from './integrations/featureFlags/openfeature';
+export { unleashIntegration } from './integrations/featureFlags/unleash';
+export { growthbookIntegration } from './integrations/featureFlags/growthbook';
+export { statsigIntegration } from './integrations/featureFlags/statsig';
+export { diagnoseSdkConnectivity } from './diagnose-sdk';
+export { webWorkerIntegration, registerWebWorker } from './integrations/webWorker';

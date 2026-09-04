@@ -14,9 +14,9 @@ test('Captures a pageload transaction', async ({ page }) => {
       deviceMemory: expect.any(String),
       effectiveConnectionType: expect.any(String),
       hardwareConcurrency: expect.any(String),
-      'lcp.element': 'body > div#root > input#exception-button[type="button"]',
-      'lcp.id': 'exception-button',
-      'lcp.size': 1650,
+      'lcp.element': expect.any(String),
+      'lcp.id': expect.any(String),
+      'lcp.size': expect.any(Number),
       'sentry.idle_span_finish_reason': 'idleTimeout',
       'sentry.op': 'pageload',
       'sentry.origin': 'auto.pageload.react.reactrouter_v6',
@@ -26,11 +26,15 @@ test('Captures a pageload transaction', async ({ page }) => {
       'performance.activationStart': expect.any(Number),
       'lcp.renderTime': expect.any(Number),
       'lcp.loadTime': expect.any(Number),
+      'url.template': '/',
+      'url.full': 'http://localhost:3030/',
+      'url.path': '/',
     },
     op: 'pageload',
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     origin: 'auto.pageload.react.reactrouter_v6',
+    status: 'ok',
   });
 
   expect(transactionEvent).toEqual(
@@ -46,16 +50,17 @@ test('Captures a pageload transaction', async ({ page }) => {
   expect(transactionEvent.spans).toContainEqual({
     data: {
       'sentry.origin': 'auto.ui.browser.metrics',
-      'sentry.op': 'browser.domContentLoadedEvent',
+      'sentry.op': 'browser.dom_content_loaded_event',
     },
     description: page.url(),
-    op: 'browser.domContentLoadedEvent',
+    op: 'browser.dom_content_loaded_event',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),
     timestamp: expect.any(Number),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     origin: 'auto.ui.browser.metrics',
+    status: 'ok',
   });
   expect(transactionEvent.spans).toContainEqual({
     data: {
@@ -70,6 +75,7 @@ test('Captures a pageload transaction', async ({ page }) => {
     timestamp: expect.any(Number),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     origin: 'auto.ui.browser.metrics',
+    status: 'ok',
   });
   expect(transactionEvent.spans).toContainEqual({
     data: {
@@ -84,6 +90,7 @@ test('Captures a pageload transaction', async ({ page }) => {
     timestamp: expect.any(Number),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     origin: 'auto.ui.browser.metrics',
+    status: 'ok',
   });
   expect(transactionEvent.spans).toContainEqual({
     data: {
@@ -98,6 +105,7 @@ test('Captures a pageload transaction', async ({ page }) => {
     timestamp: expect.any(Number),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     origin: 'auto.ui.browser.metrics',
+    status: 'ok',
   });
 });
 
@@ -121,11 +129,25 @@ test('Captures a navigation transaction', async ({ page }) => {
       'sentry.origin': 'auto.navigation.react.reactrouter_v6',
       'sentry.sample_rate': 1,
       'sentry.source': 'route',
+      'url.template': '/user/:id',
+      'url.path': '/',
+      'url.full': expect.stringMatching(/^http:\/\/localhost:3030\/#\/user\/5$/),
     }),
+    links: [
+      {
+        attributes: {
+          'sentry.link.type': 'previous_trace',
+        },
+        sampled: true,
+        span_id: expect.stringMatching(/[a-f0-9]{16}/),
+        trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+      },
+    ],
     op: 'navigation',
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     origin: 'auto.navigation.react.reactrouter_v6',
+    status: 'ok',
   });
 
   expect(transactionEvent).toEqual(
@@ -138,5 +160,343 @@ test('Captures a navigation transaction', async ({ page }) => {
     }),
   );
 
-  expect(transactionEvent.spans).toEqual([]);
+  // Filter out favicon spans which may or may not be present depending on the browser version
+  const spans = (transactionEvent.spans || []).filter(span => !span.description?.includes('favicon'));
+  expect(spans).toEqual([]);
+});
+
+test('Captures a parameterized path pageload transaction', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'pageload';
+  });
+
+  await page.goto('/#/v2/post/1');
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v2/post/:post',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v2/post/:post',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v2/post/1',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path pageload transaction for nested route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'pageload';
+  });
+
+  await page.goto('/#/v2/post/1/featured');
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v2/post/:post/featured',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v2/post/:post/featured',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v2/post/1/featured',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path pageload transaction for deeply nested route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'pageload';
+  });
+
+  await page.goto('/#/v1/post/1/edit');
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v1/post/:post/edit',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v1/post/:post/edit',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v1/post/1/edit',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path pageload transaction for nested route with absolute path', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'pageload';
+  });
+
+  await page.goto('/#/v2/post/1/related');
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v2/post/:post/related',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v2/post/:post/related',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v2/post/1/related',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path navigation transaction', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'navigation';
+  });
+
+  await page.goto('/');
+  const linkElement = page.locator('id=navigation-post-1');
+  await linkElement.click();
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v2/post/:post',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v2/post/:post',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v2/post/1',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path navigation transaction for nested route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'navigation';
+  });
+
+  await page.goto('/');
+  const linkElement = page.locator('id=navigation-post-1-featured');
+  await linkElement.click();
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v2/post/:post/featured',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v2/post/:post/featured',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v2/post/1/featured',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path navigation transaction for deeply nested route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'navigation';
+  });
+
+  await page.goto('/');
+  const linkElement = page.locator('id=navigation-post-1-edit');
+  await linkElement.click();
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v1/post/:post/edit',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v1/post/:post/edit',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v1/post/1/edit',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path navigation transaction for nested route with absolute path', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'navigation';
+  });
+
+  await page.goto('/');
+  const linkElement = page.locator('id=navigation-post-1-related');
+  await linkElement.click();
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/v2/post/:post/related',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/v2/post/:post/related',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/v2/post/1/related',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path pageload transaction for group route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'pageload';
+  });
+
+  await page.goto('/#/group/1');
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/group/:group/:user?',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/group/:group/:user?',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/group/1',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path navigation transaction for group route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'navigation';
+  });
+
+  await page.goto('/');
+  const linkElement = page.locator('id=navigation-group-1');
+  await linkElement.click();
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/group/:group/:user?',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/group/:group/:user?',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/group/1',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path pageload transaction for nested group route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'pageload';
+  });
+
+  await page.goto('/#/group/1/5');
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/group/:group/:user?',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/group/:group/:user?',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/group/1/5',
+        },
+      },
+    },
+  });
+});
+
+test('Captures a parameterized path navigation transaction for nested group route', async ({ page }) => {
+  const transactionEventPromise = waitForTransaction('react-create-hash-router', event => {
+    return event.contexts?.trace?.op === 'navigation';
+  });
+
+  await page.goto('/');
+  const linkElement = page.locator('id=navigation-group-1-user-5');
+  await linkElement.click();
+
+  const transactionEvent = await transactionEventPromise;
+
+  expect(transactionEvent).toMatchObject({
+    transaction: '/group/:group/:user?',
+    type: 'transaction',
+    transaction_info: {
+      source: 'route',
+    },
+    contexts: {
+      trace: {
+        data: {
+          'url.template': '/group/:group/:user?',
+          'url.path': '/',
+          'url.full': 'http://localhost:3030/#/group/1/5',
+        },
+      },
+    },
+  });
 });

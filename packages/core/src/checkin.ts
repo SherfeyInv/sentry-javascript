@@ -1,14 +1,10 @@
-import type {
-  CheckInEnvelope,
-  CheckInItem,
-  DsnComponents,
-  DynamicSamplingContext,
-  SdkMetadata,
-  SerializedCheckIn,
-} from './types-hoist';
-import { dsnToString } from './utils-hoist/dsn';
-import { createEnvelope } from './utils-hoist/envelope';
-import { dropUndefinedKeys } from './utils-hoist/object';
+import type { SerializedCheckIn } from './types/checkin';
+import type { DsnComponents } from './types/dsn';
+import type { CheckInEnvelope, CheckInItem, DynamicSamplingContext } from './types/envelope';
+import type { SdkMetadata } from './types/sdkmetadata';
+import { dsnToString } from './utils/dsn';
+import { createEnvelope } from './utils/envelope';
+import { safeDateNow } from './utils/randomSafeContext';
 
 /**
  * Create envelope from check in item.
@@ -21,10 +17,10 @@ export function createCheckInEnvelope(
   dsn?: DsnComponents,
 ): CheckInEnvelope {
   const headers: CheckInEnvelope[0] = {
-    sent_at: new Date().toISOString(),
+    sent_at: new Date(safeDateNow()).toISOString(),
   };
 
-  if (metadata && metadata.sdk) {
+  if (metadata?.sdk) {
     headers.sdk = {
       name: metadata.sdk.name,
       version: metadata.sdk.version,
@@ -36,7 +32,7 @@ export function createCheckInEnvelope(
   }
 
   if (dynamicSamplingContext) {
-    headers.trace = dropUndefinedKeys(dynamicSamplingContext) as DynamicSamplingContext;
+    headers.trace = dynamicSamplingContext as DynamicSamplingContext;
   }
 
   const item = createCheckInEnvelopeItem(checkIn);

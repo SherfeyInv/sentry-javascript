@@ -1,20 +1,26 @@
-import { setCurrentClient, spanToJSON, startInactiveSpan, startSpan } from '../../../src';
-import type { HandlerDataError, HandlerDataUnhandledRejection } from '../../../src/types-hoist';
-
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  SEMANTIC_ATTRIBUTE_SENTRY_STATUS_MESSAGE,
+  setCurrentClient,
+  spanToJSON,
+  startInactiveSpan,
+  startSpan,
+} from '../../../src';
+import * as globalErrorModule from '../../../src/instrument/globalError';
+import * as globalUnhandledRejectionModule from '../../../src/instrument/globalUnhandledRejection';
 import { _resetErrorsInstrumented, registerSpanErrorInstrumentation } from '../../../src/tracing/errors';
-import * as globalErrorModule from '../../../src/utils-hoist/instrument/globalError';
-import * as globalUnhandledRejectionModule from '../../../src/utils-hoist/instrument/globalUnhandledRejection';
-import { TestClient, getDefaultTestClientOptions } from '../../mocks/client';
+import type { HandlerDataError, HandlerDataUnhandledRejection } from '../../../src/types/instrument';
+import { getDefaultTestClientOptions, TestClient } from '../../mocks/client';
 
 let mockErrorCallback: (data: HandlerDataError) => void = () => {};
 let mockUnhandledRejectionCallback: (data: HandlerDataUnhandledRejection) => void = () => {};
 
-const mockAddGlobalErrorInstrumentationHandler = jest
+const mockAddGlobalErrorInstrumentationHandler = vi
   .spyOn(globalErrorModule, 'addGlobalErrorInstrumentationHandler')
   .mockImplementation(callback => {
     mockErrorCallback = callback;
   });
-const mockAddGlobalUnhandledRejectionInstrumentationHandler = jest
+const mockAddGlobalUnhandledRejectionInstrumentationHandler = vi
   .spyOn(globalUnhandledRejectionModule, 'addGlobalUnhandledRejectionInstrumentationHandler')
   .mockImplementation(callback => {
     mockUnhandledRejectionCallback = callback;
@@ -24,7 +30,7 @@ describe('registerErrorHandlers()', () => {
   beforeEach(() => {
     mockAddGlobalErrorInstrumentationHandler.mockClear();
     mockAddGlobalUnhandledRejectionInstrumentationHandler.mockClear();
-    const options = getDefaultTestClientOptions({ enableTracing: true });
+    const options = getDefaultTestClientOptions({ tracesSampleRate: 1 });
     const client = new TestClient(options);
     setCurrentClient(client);
     client.init();
@@ -43,13 +49,13 @@ describe('registerErrorHandlers()', () => {
     registerSpanErrorInstrumentation();
 
     const transaction = startInactiveSpan({ name: 'test' })!;
-    expect(spanToJSON(transaction).status).toBe(undefined);
+    expect(spanToJSON(transaction).status).toBe('ok');
 
     mockErrorCallback({} as HandlerDataError);
-    expect(spanToJSON(transaction).status).toBe(undefined);
+    expect(spanToJSON(transaction).status).toBe('ok');
 
     mockUnhandledRejectionCallback({});
-    expect(spanToJSON(transaction).status).toBe(undefined);
+    expect(spanToJSON(transaction).status).toBe('ok');
 
     transaction.end();
   });
@@ -59,7 +65,9 @@ describe('registerErrorHandlers()', () => {
 
     startSpan({ name: 'test' }, span => {
       mockErrorCallback({} as HandlerDataError);
-      expect(spanToJSON(span).status).toBe('internal_error');
+      const { status, attributes } = spanToJSON(span);
+      expect(status).toBe('error');
+      expect(attributes[SEMANTIC_ATTRIBUTE_SENTRY_STATUS_MESSAGE]).toBe('internal_error');
     });
   });
 
@@ -68,7 +76,9 @@ describe('registerErrorHandlers()', () => {
 
     startSpan({ name: 'test' }, span => {
       mockUnhandledRejectionCallback({});
-      expect(spanToJSON(span).status).toBe('internal_error');
+      const { status, attributes } = spanToJSON(span);
+      expect(status).toBe('error');
+      expect(attributes[SEMANTIC_ATTRIBUTE_SENTRY_STATUS_MESSAGE]).toBe('internal_error');
     });
   });
 });

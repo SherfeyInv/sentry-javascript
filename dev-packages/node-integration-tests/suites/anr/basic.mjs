@@ -1,7 +1,5 @@
-import * as assert from 'assert';
-import * as crypto from 'crypto';
-
 import * as Sentry from '@sentry/node';
+import { waitForDebuggerReady } from '@sentry-internal/test-utils';
 
 global._sentryDebugIds = { [new Error().stack]: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaa' };
 
@@ -10,9 +8,9 @@ setTimeout(() => {
 }, 10000);
 
 Sentry.init({
+  traceLifecycle: 'static',
   dsn: process.env.SENTRY_DSN,
   release: '1.0',
-  autoSessionTracking: false,
   integrations: [Sentry.anrIntegration({ captureStackTrace: true, anrThreshold: 100 })],
 });
 
@@ -20,18 +18,23 @@ Sentry.setUser({ email: 'person@home.com' });
 Sentry.addBreadcrumb({ message: 'important message!' });
 
 function longWork() {
-  for (let i = 0; i < 20; i++) {
-    const salt = crypto.randomBytes(128).toString('base64');
-    const hash = crypto.pbkdf2Sync('myPassword', salt, 10000, 512, 'sha512');
-    assert.ok(hash);
+  // Busy-block the event loop with pure-JS work. The ANR worker samples the main thread via the
+  // inspector, which can only pause at a JS safepoint; inside a native call like `crypto.pbkdf2Sync`
+  // the pause resolves only after the call returns, so the sample can miss `longWork` and land in
+  // timer internals instead. Pure-JS work keeps `longWork` on the sampled stack for the whole block.
+  const start = Date.now();
+  let n = 1;
+  while (Date.now() - start < 1000) {
+    n = (n * 1103515245 + 12345) % 2147483648;
   }
+  return n;
 }
 
-setTimeout(() => {
+waitForDebuggerReady(() => {
   longWork();
-}, 1000);
 
-// Ensure we only send one event even with multiple blocking events
-setTimeout(() => {
-  longWork();
-}, 4000);
+  // Ensure we only send one event even with multiple blocking events
+  setTimeout(() => {
+    longWork();
+  }, 2000);
+});

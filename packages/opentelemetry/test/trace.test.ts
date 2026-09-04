@@ -1,44 +1,34 @@
-/* eslint-disable deprecation/deprecation */
+/* eslint-disable typescript/no-deprecated */
 import type { Span, TimeInput } from '@opentelemetry/api';
-import { ROOT_CONTEXT } from '@opentelemetry/api';
-import { SpanKind } from '@opentelemetry/api';
-import { TraceFlags, context, trace } from '@opentelemetry/api';
-import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
-import { Span as SpanClass } from '@opentelemetry/sdk-trace-base';
+import { context, ROOT_CONTEXT, trace, TraceFlags } from '@opentelemetry/api';
+import { SENTRY_KIND } from '@sentry/conventions/attributes';
+import type { Event, Scope } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
+  getCapturedScopesOnSpan,
   getClient,
   getCurrentScope,
   getDynamicSamplingContextFromClient,
   getDynamicSamplingContextFromSpan,
   getRootSpan,
-  spanIsSampled,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   spanToJSON,
-  suppressTracing,
+  startInactiveSpan,
+  startSpan,
+  startSpanManual,
   withScope,
 } from '@sentry/core';
-import type { Event, Scope } from '@sentry/core';
-
-import { SEMATTRS_HTTP_METHOD } from '@opentelemetry/semantic-conventions';
-import { continueTrace, startInactiveSpan, startSpan, startSpanManual } from '../src/trace';
-import type { AbstractSpan } from '../src/types';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getActiveSpan } from '../src/utils/getActiveSpan';
-import { getSamplingDecision } from '../src/utils/getSamplingDecision';
-import { getSpanKind } from '../src/utils/getSpanKind';
 import { makeTraceState } from '../src/utils/makeTraceState';
-import { spanHasAttributes, spanHasName } from '../src/utils/spanTypes';
-import { cleanupOtel, mockSdkInit } from './helpers/mockSdkInit';
+import { isSpan } from './helpers/isSpan';
+import { mockSdkInit } from './helpers/mockSdkInit';
 
 describe('trace', () => {
   beforeEach(() => {
-    mockSdkInit({ enableTracing: true });
-  });
-
-  afterEach(() => {
-    cleanupOtel();
+    mockSdkInit({ tracesSampleRate: 1 });
   });
 
   describe('startSpan', () => {
@@ -222,7 +212,9 @@ describe('trace', () => {
         span => {
           expect(span).toBeDefined();
           expect(getSpanAttributes(span)).toEqual({
+            [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'manual',
             [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
+            [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
           });
         },
       );
@@ -254,10 +246,10 @@ describe('trace', () => {
       startSpan(
         {
           name: 'outer',
-          kind: SpanKind.CLIENT,
           attributes: {
             test1: 'test 1',
             test2: 2,
+            [SENTRY_KIND]: 'client',
           },
           startTime: date,
         },
@@ -266,11 +258,13 @@ describe('trace', () => {
           expect(getSpanName(span)).toEqual('outer');
           expect(getSpanStartTime(span)).toEqual(date);
           expect(getSpanAttributes(span)).toEqual({
+            [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'manual',
             [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
+            [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
             test1: 'test 1',
             test2: 2,
+            [SENTRY_KIND]: 'client',
           });
-          expect(getSpanKind(span)).toEqual(SpanKind.CLIENT);
         },
       );
     });
@@ -290,24 +284,46 @@ describe('trace', () => {
       let manualScope: Scope;
       let parentSpan: Span;
 
+      // "hack" to create a manual scope with a parent span
       startSpanManual({ name: 'detached' }, span => {
         parentSpan = span;
         manualScope = getCurrentScope();
         manualScope.setTag('manual', 'tag');
       });
 
+      expect(manualScope!.getScopeData().tags).toEqual({ manual: 'tag' });
+      expect(getCurrentScope()).not.toBe(manualScope!);
+
       getCurrentScope().setTag('outer', 'tag');
 
       startSpan({ name: 'GET users/[id]', scope: manualScope! }, span => {
+        // the current scope in the callback is a fork of the manual scope
         expect(getCurrentScope()).not.toBe(initialScope);
+        expect(getCurrentScope()).not.toBe(manualScope);
+        expect(getCurrentScope().getScopeData().tags).toEqual({ manual: 'tag' });
 
-        expect(getCurrentScope()).toEqual(manualScope);
+        // getActiveSpan returns the correct span
         expect(getActiveSpan()).toBe(span);
 
+        // span hierarchy is correct
         expect(getSpanParentSpanId(span)).toBe(parentSpan.spanContext().spanId);
+
+        // scope data modifications are isolated between original and forked manual scope
+        getCurrentScope().setTag('inner', 'tag');
+        manualScope!.setTag('manual-scope-inner', 'tag');
+
+        expect(getCurrentScope().getScopeData().tags).toEqual({ manual: 'tag', inner: 'tag' });
+        expect(manualScope!.getScopeData().tags).toEqual({ manual: 'tag', 'manual-scope-inner': 'tag' });
       });
 
+      // manualScope modifications remain set outside the callback
+      expect(manualScope!.getScopeData().tags).toEqual({ manual: 'tag', 'manual-scope-inner': 'tag' });
+
+      // current scope is reset back to initial scope
       expect(getCurrentScope()).toBe(initialScope);
+      expect(getCurrentScope().getScopeData().tags).toEqual({ outer: 'tag' });
+
+      // although the manual span is still running, it's no longer active due to being outside of the callback
       expect(getActiveSpan()).toBe(undefined);
     });
 
@@ -332,6 +348,64 @@ describe('trace', () => {
           expect(spanToJSON(span).parent_span_id).toBe(undefined);
         });
       });
+    });
+
+    it('allows to add span links', () => {
+      const rawSpan1 = startInactiveSpan({ name: 'pageload_span' });
+
+      expect(spanToJSON(rawSpan1).links).toBeUndefined();
+
+      const span1JSON = spanToJSON(rawSpan1);
+
+      startSpan({ name: '/users/:id' }, rawSpan2 => {
+        rawSpan2.addLink({
+          context: rawSpan1.spanContext(),
+          attributes: {
+            'sentry.link.type': 'previous_trace',
+          },
+        });
+
+        const span2LinkJSON = spanToJSON(rawSpan2).links?.[0];
+
+        expect(span2LinkJSON?.attributes?.['sentry.link.type']).toBe('previous_trace');
+
+        expect(span2LinkJSON?.trace_id).toEqual(rawSpan1.spanContext().traceId);
+        expect(span2LinkJSON?.trace_id).toBe(span1JSON.trace_id);
+
+        expect(span2LinkJSON?.span_id).toEqual(rawSpan1.spanContext().spanId);
+        expect(span2LinkJSON?.span_id).toBe(span1JSON.span_id);
+      });
+    });
+
+    it('allows to pass span links in span options', () => {
+      const rawSpan1 = startInactiveSpan({ name: 'pageload_span' });
+
+      expect(spanToJSON(rawSpan1).links).toBeUndefined();
+
+      const span1JSON = spanToJSON(rawSpan1);
+
+      startSpan(
+        {
+          name: '/users/:id',
+          links: [
+            {
+              context: rawSpan1.spanContext(),
+              attributes: { 'sentry.link.type': 'previous_trace' },
+            },
+          ],
+        },
+        rawSpan2 => {
+          const span2LinkJSON = spanToJSON(rawSpan2).links?.[0];
+
+          expect(span2LinkJSON?.attributes?.['sentry.link.type']).toBe('previous_trace');
+
+          expect(span2LinkJSON?.trace_id).toEqual(rawSpan1.spanContext().traceId);
+          expect(span2LinkJSON?.trace_id).toBe(span1JSON.trace_id);
+
+          expect(span2LinkJSON?.span_id).toEqual(rawSpan1.spanContext().spanId);
+          expect(span2LinkJSON?.span_id).toBe(span1JSON.span_id);
+        },
+      );
     });
 
     it('allows to force a transaction with forceTransaction=true', async () => {
@@ -385,9 +459,9 @@ describe('trace', () => {
 
       expect(outerTransaction?.contexts?.trace).toEqual({
         data: {
-          'sentry.source': 'custom',
           'sentry.sample_rate': 1,
           'sentry.origin': 'manual',
+          'sentry.source': 'custom',
         },
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: expect.stringMatching(/[a-f0-9]{32}/),
@@ -404,14 +478,14 @@ describe('trace', () => {
           sample_rate: '1',
           transaction: 'outer transaction',
           sampled: 'true',
+          sample_rand: expect.any(String),
         },
       });
 
       expect(innerTransaction?.contexts?.trace).toEqual({
         data: {
-          'sentry.source': 'custom',
           'sentry.origin': 'manual',
-          'sentry.sample_rate': 1,
+          'sentry.source': 'custom',
         },
         parent_span_id: innerParentSpanId,
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -429,6 +503,7 @@ describe('trace', () => {
           sample_rate: '1',
           transaction: 'outer transaction',
           sampled: 'true',
+          sample_rand: expect.any(String),
         },
       });
     });
@@ -436,15 +511,23 @@ describe('trace', () => {
     // TODO: propagation scope is not picked up by spans...
 
     describe('onlyIfParent', () => {
-      it('does not create a span if there is no parent', () => {
+      it('does not create a span and records no_parent_span client report if there is no parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
         const span = startSpan({ name: 'test span', onlyIfParent: true }, span => {
           return span;
         });
 
-        expect(span).not.toBeInstanceOf(SpanClass);
+        expect(span.isRecording()).toBe(false);
+        expect(spyOnDroppedEvent).toHaveBeenCalledWith('no_parent_span', 'span');
+        expect(spyOnDroppedEvent).toHaveBeenCalledTimes(1);
       });
 
       it('creates a span if there is a parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
         const span = startSpan({ name: 'parent span' }, () => {
           const span = startSpan({ name: 'test span', onlyIfParent: true }, span => {
             return span;
@@ -453,7 +536,34 @@ describe('trace', () => {
           return span;
         });
 
-        expect(span).toBeInstanceOf(SpanClass);
+        expect(isSpan(span)).toBe(true);
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
+      });
+
+      it('does not record no_parent_span client report when onlyIfParent is not set', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
+        context.with(ROOT_CONTEXT, () => {
+          startSpan({ name: 'root span without onlyIfParent' }, span => {
+            return span;
+          });
+        });
+
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
+      });
+
+      it('does not record no_parent_span client report when onlyIfParent is false even without a parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
+        context.with(ROOT_CONTEXT, () => {
+          startSpan({ name: 'root span', onlyIfParent: false }, span => {
+            return span;
+          });
+        });
+
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
       });
     });
   });
@@ -499,7 +609,9 @@ describe('trace', () => {
 
       expect(span).toBeDefined();
       expect(getSpanAttributes(span)).toEqual({
+        [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'manual',
         [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
+        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
       });
 
       const span2 = startInactiveSpan({
@@ -525,10 +637,10 @@ describe('trace', () => {
 
       const span = startInactiveSpan({
         name: 'outer',
-        kind: SpanKind.CLIENT,
         attributes: {
           test1: 'test 1',
           test2: 2,
+          [SENTRY_KIND]: 'client',
         },
         startTime: date,
       });
@@ -537,11 +649,13 @@ describe('trace', () => {
       expect(getSpanName(span)).toEqual('outer');
       expect(getSpanStartTime(span)).toEqual(date);
       expect(getSpanAttributes(span)).toEqual({
+        [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'manual',
         [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
+        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
         test1: 'test 1',
         test2: 2,
+        [SENTRY_KIND]: 'client',
       });
-      expect(getSpanKind(span)).toEqual(SpanKind.CLIENT);
     });
 
     it('allows to pass a startTime in seconds', () => {
@@ -594,6 +708,37 @@ describe('trace', () => {
       });
     });
 
+    it('allows to pass span links in span options', () => {
+      const rawSpan1 = startInactiveSpan({ name: 'pageload_span' });
+
+      expect(spanToJSON(rawSpan1).links).toBeUndefined();
+
+      const rawSpan2 = startInactiveSpan({
+        name: 'GET users/[id]',
+        links: [
+          {
+            context: rawSpan1.spanContext(),
+            attributes: { 'sentry.link.type': 'previous_trace' },
+          },
+        ],
+      });
+
+      const span1JSON = spanToJSON(rawSpan1);
+      const span2JSON = spanToJSON(rawSpan2);
+      const span2LinkJSON = span2JSON.links?.[0];
+
+      expect(span2LinkJSON?.attributes?.['sentry.link.type']).toBe('previous_trace');
+
+      expect(span2LinkJSON?.trace_id).toEqual(rawSpan1.spanContext().traceId);
+      expect(span2LinkJSON?.trace_id).toBe(span1JSON.trace_id);
+
+      expect(span2LinkJSON?.span_id).toEqual(rawSpan1.spanContext().spanId);
+      expect(span2LinkJSON?.span_id).toBe(span1JSON.span_id);
+
+      // sampling decision is inherited
+      expect(span2LinkJSON?.sampled).toBe(Boolean(spanToJSON(rawSpan1).attributes['sentry.sample_rate']));
+    });
+
     it('allows to force a transaction with forceTransaction=true', async () => {
       const client = getClient()!;
       const transactionEvents: Event[] = [];
@@ -642,9 +787,9 @@ describe('trace', () => {
 
       expect(outerTransaction?.contexts?.trace).toEqual({
         data: {
-          'sentry.source': 'custom',
           'sentry.sample_rate': 1,
           'sentry.origin': 'manual',
+          'sentry.source': 'custom',
         },
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: expect.stringMatching(/[a-f0-9]{32}/),
@@ -661,14 +806,14 @@ describe('trace', () => {
           sample_rate: '1',
           transaction: 'outer transaction',
           sampled: 'true',
+          sample_rand: expect.any(String),
         },
       });
 
       expect(innerTransaction?.contexts?.trace).toEqual({
         data: {
-          'sentry.source': 'custom',
           'sentry.origin': 'manual',
-          'sentry.sample_rate': 1,
+          'sentry.source': 'custom',
         },
         parent_span_id: innerParentSpanId,
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -686,30 +831,64 @@ describe('trace', () => {
           sample_rate: '1',
           transaction: 'outer transaction',
           sampled: 'true',
+          sample_rand: expect.any(String),
         },
       });
     });
 
     describe('onlyIfParent', () => {
-      it('does not create a span if there is no parent', () => {
+      it('does not create a span and records no_parent_span client report if there is no parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
         const span = startInactiveSpan({ name: 'test span', onlyIfParent: true });
 
-        expect(span).not.toBeInstanceOf(SpanClass);
+        expect(span.isRecording()).toBe(false);
+        expect(spyOnDroppedEvent).toHaveBeenCalledWith('no_parent_span', 'span');
+        expect(spyOnDroppedEvent).toHaveBeenCalledTimes(1);
       });
 
       it('creates a span if there is a parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
         const span = startSpan({ name: 'parent span' }, () => {
           const span = startInactiveSpan({ name: 'test span', onlyIfParent: true });
 
           return span;
         });
 
-        expect(span).toBeInstanceOf(SpanClass);
+        expect(isSpan(span)).toBe(true);
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
+      });
+
+      it('does not record no_parent_span client report when onlyIfParent is not set', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
+        context.with(ROOT_CONTEXT, () => {
+          const span = startInactiveSpan({ name: 'root span without onlyIfParent' });
+          span.end();
+        });
+
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
+      });
+
+      it('does not record no_parent_span client report when onlyIfParent is false even without a parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
+        context.with(ROOT_CONTEXT, () => {
+          const span = startInactiveSpan({ name: 'root span', onlyIfParent: false });
+          span.end();
+        });
+
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
       });
     });
 
-    it('includes the scope at the time the span was started when finished', async () => {
-      const beforeSendTransaction = jest.fn(event => event);
+    it('includes the scope the span was started on when finished', async () => {
+      const beforeSendTransaction = vi.fn(event => event);
 
       const client = getClient()!;
 
@@ -723,6 +902,8 @@ describe('trace', () => {
       withScope(scope => {
         scope.setTag('scope', 1);
         span = startInactiveSpan({ name: 'my-span' });
+        // The span captures the scope it was started on, so later mutations of that scope
+        // are reflected on the transaction.
         scope.setTag('scope_after_span', 2);
       });
 
@@ -734,16 +915,10 @@ describe('trace', () => {
       await client.flush();
 
       expect(beforeSendTransaction).toHaveBeenCalledTimes(1);
-      expect(beforeSendTransaction).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tags: expect.objectContaining({
-            outer: 'foo',
-            scope: 1,
-            scope_after_span: 2,
-          }),
-        }),
-        expect.anything(),
-      );
+      const transactionEvent = beforeSendTransaction.mock.calls[0]![0];
+      // The span-start scope is captured: `outer`, `scope: 1`, and `scope_after_span` (set on the
+      // same scope after span start), but not `scope: 2` (a different scope active at `end()`).
+      expect(transactionEvent.tags).toEqual({ outer: 'foo', scope: 1, scope_after_span: 2 });
     });
   });
 
@@ -795,10 +970,10 @@ describe('trace', () => {
       startSpanManual(
         {
           name: 'outer',
-          kind: SpanKind.CLIENT,
           attributes: {
             test1: 'test 1',
             test2: 2,
+            [SENTRY_KIND]: 'client',
           },
           startTime: date,
         },
@@ -807,11 +982,13 @@ describe('trace', () => {
           expect(getSpanName(span)).toEqual('outer');
           expect(getSpanStartTime(span)).toEqual(date);
           expect(getSpanAttributes(span)).toEqual({
+            [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'manual',
             [SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE]: 1,
+            [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'custom',
             test1: 'test 1',
             test2: 2,
+            [SENTRY_KIND]: 'client',
           });
-          expect(getSpanKind(span)).toEqual(SpanKind.CLIENT);
         },
       );
     });
@@ -882,6 +1059,64 @@ describe('trace', () => {
       });
     });
 
+    it('allows to add span links', () => {
+      const rawSpan1 = startInactiveSpan({ name: 'pageload_span' });
+
+      expect(spanToJSON(rawSpan1).links).toBeUndefined();
+
+      const span1JSON = spanToJSON(rawSpan1);
+
+      startSpanManual({ name: '/users/:id' }, rawSpan2 => {
+        rawSpan2.addLink({
+          context: rawSpan1.spanContext(),
+          attributes: {
+            'sentry.link.type': 'previous_trace',
+          },
+        });
+
+        const span2LinkJSON = spanToJSON(rawSpan2).links?.[0];
+
+        expect(span2LinkJSON?.attributes?.['sentry.link.type']).toBe('previous_trace');
+
+        expect(span2LinkJSON?.trace_id).toEqual(rawSpan1.spanContext().traceId);
+        expect(span2LinkJSON?.trace_id).toBe(span1JSON.trace_id);
+
+        expect(span2LinkJSON?.span_id).toEqual(rawSpan1.spanContext().spanId);
+        expect(span2LinkJSON?.span_id).toBe(span1JSON.span_id);
+      });
+    });
+
+    it('allows to pass span links in span options', () => {
+      const rawSpan1 = startInactiveSpan({ name: 'pageload_span' });
+
+      expect(spanToJSON(rawSpan1).links).toBeUndefined();
+
+      const span1JSON = spanToJSON(rawSpan1);
+
+      startSpanManual(
+        {
+          name: '/users/:id',
+          links: [
+            {
+              context: rawSpan1.spanContext(),
+              attributes: { 'sentry.link.type': 'previous_trace' },
+            },
+          ],
+        },
+        rawSpan2 => {
+          const span2LinkJSON = spanToJSON(rawSpan2).links?.[0];
+
+          expect(span2LinkJSON?.attributes?.['sentry.link.type']).toBe('previous_trace');
+
+          expect(span2LinkJSON?.trace_id).toEqual(rawSpan1.spanContext().traceId);
+          expect(span2LinkJSON?.trace_id).toBe(span1JSON.trace_id);
+
+          expect(span2LinkJSON?.span_id).toEqual(rawSpan1.spanContext().spanId);
+          expect(span2LinkJSON?.span_id).toBe(span1JSON.span_id);
+        },
+      );
+    });
+
     it('allows to force a transaction with forceTransaction=true', async () => {
       const client = getClient()!;
       const transactionEvents: Event[] = [];
@@ -937,9 +1172,9 @@ describe('trace', () => {
 
       expect(outerTransaction?.contexts?.trace).toEqual({
         data: {
-          'sentry.source': 'custom',
           'sentry.sample_rate': 1,
           'sentry.origin': 'manual',
+          'sentry.source': 'custom',
         },
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
         trace_id: expect.stringMatching(/[a-f0-9]{32}/),
@@ -956,14 +1191,14 @@ describe('trace', () => {
           sample_rate: '1',
           transaction: 'outer transaction',
           sampled: 'true',
+          sample_rand: expect.any(String),
         },
       });
 
       expect(innerTransaction?.contexts?.trace).toEqual({
         data: {
-          'sentry.source': 'custom',
           'sentry.origin': 'manual',
-          'sentry.sample_rate': 1,
+          'sentry.source': 'custom',
         },
         parent_span_id: innerParentSpanId,
         span_id: expect.stringMatching(/[a-f0-9]{16}/),
@@ -981,20 +1216,29 @@ describe('trace', () => {
           sample_rate: '1',
           transaction: 'outer transaction',
           sampled: 'true',
+          sample_rand: expect.any(String),
         },
       });
     });
 
     describe('onlyIfParent', () => {
-      it('does not create a span if there is no parent', () => {
+      it('does not create a span and records no_parent_span client report if there is no parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
         const span = startSpanManual({ name: 'test span', onlyIfParent: true }, span => {
           return span;
         });
 
-        expect(span).not.toBeInstanceOf(SpanClass);
+        expect(span.isRecording()).toBe(false);
+        expect(spyOnDroppedEvent).toHaveBeenCalledWith('no_parent_span', 'span');
+        expect(spyOnDroppedEvent).toHaveBeenCalledTimes(1);
       });
 
       it('creates a span if there is a parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
         const span = startSpan({ name: 'parent span' }, () => {
           const span = startSpanManual({ name: 'test span', onlyIfParent: true }, span => {
             return span;
@@ -1003,7 +1247,36 @@ describe('trace', () => {
           return span;
         });
 
-        expect(span).toBeInstanceOf(SpanClass);
+        expect(isSpan(span)).toBe(true);
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
+      });
+
+      it('does not record no_parent_span client report when onlyIfParent is not set', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
+        context.with(ROOT_CONTEXT, () => {
+          startSpanManual({ name: 'root span without onlyIfParent' }, span => {
+            span.end();
+            return span;
+          });
+        });
+
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
+      });
+
+      it('does not record no_parent_span client report when onlyIfParent is false even without a parent', () => {
+        const client = getClient()!;
+        const spyOnDroppedEvent = vi.spyOn(client, 'recordDroppedEvent');
+
+        context.with(ROOT_CONTEXT, () => {
+          startSpanManual({ name: 'root span', onlyIfParent: false }, span => {
+            span.end();
+            return span;
+          });
+        });
+
+        expect(spyOnDroppedEvent).not.toHaveBeenCalledWith('no_parent_span', 'span');
       });
     });
   });
@@ -1018,7 +1291,9 @@ describe('trace', () => {
         const traceId = spanToJSON(span).trace_id;
         expect(traceId).toMatch(/[a-f0-9]{32}/);
         expect(spanToJSON(span).parent_span_id).toBe(undefined);
-        expect(spanToJSON(span).trace_id).not.toEqual(propagationContext.traceId);
+        // A root span without a parent continues the current scope's propagation context trace,
+        // matching the core SDK behavior.
+        expect(spanToJSON(span).trace_id).toEqual(propagationContext.traceId);
 
         expect(getDynamicSamplingContextFromSpan(span)).toEqual({
           trace_id: traceId,
@@ -1027,12 +1302,12 @@ describe('trace', () => {
           sample_rate: '1',
           sampled: 'true',
           transaction: 'test span',
+          sample_rand: expect.any(String),
         });
       });
     });
 
-    // Note: This _should_ never happen, when we have an incoming trace, we should always have a parent span
-    it('starts new trace, ignoring parentSpanId, if there is no parent', () => {
+    it('continues the scope propagation context, including parentSpanId, if there is no active span', () => {
       withScope(scope => {
         const propagationContext = scope.getPropagationContext();
         propagationContext.parentSpanId = '1121201211212012';
@@ -1041,8 +1316,10 @@ describe('trace', () => {
         expect(span).toBeDefined();
         const traceId = spanToJSON(span).trace_id;
         expect(traceId).toMatch(/[a-f0-9]{32}/);
-        expect(spanToJSON(span).parent_span_id).toBe(undefined);
-        expect(spanToJSON(span).trace_id).not.toEqual(propagationContext.traceId);
+        // The root span continues the scope's trace and inherits the propagation context's
+        // parentSpanId as its parent, matching the core SDK behavior.
+        expect(spanToJSON(span).parent_span_id).toBe('1121201211212012');
+        expect(spanToJSON(span).trace_id).toEqual(propagationContext.traceId);
 
         expect(getDynamicSamplingContextFromSpan(span)).toEqual({
           environment: 'production',
@@ -1051,6 +1328,7 @@ describe('trace', () => {
           sample_rate: '1',
           sampled: 'true',
           transaction: 'test span',
+          sample_rand: expect.any(String),
         });
       });
     });
@@ -1071,6 +1349,7 @@ describe('trace', () => {
             transaction: 'parent span',
             sampled: 'true',
             sample_rate: '1',
+            sample_rand: expect.any(String),
           });
         });
       });
@@ -1134,15 +1413,26 @@ describe('trace', () => {
       });
     });
   });
+
+  describe('scope passing', () => {
+    it('handles active span when passing scopes to withScope', () => {
+      const [scope, span] = startSpan({ name: 'outer' }, span => {
+        return [getCurrentScope(), span];
+      });
+
+      const spanOnScope = withScope(scope, () => {
+        return getActiveSpan();
+      });
+
+      expect(spanOnScope).toBeDefined();
+      expect(spanOnScope).toBe(span);
+    });
+  });
 });
 
 describe('trace (tracing disabled)', () => {
   beforeEach(() => {
-    mockSdkInit({ enableTracing: false });
-  });
-
-  afterEach(() => {
-    cleanupOtel();
+    mockSdkInit({ tracesSampleRate: 0 });
   });
 
   it('startSpan calls callback without span', () => {
@@ -1164,14 +1454,54 @@ describe('trace (tracing disabled)', () => {
   });
 });
 
-describe('trace (sampling)', () => {
-  afterEach(() => {
-    cleanupOtel();
-    jest.clearAllMocks();
+describe('trace (spans disabled)', () => {
+  beforeEach(() => {
+    // Initialize SDK without any tracing configuration (no tracesSampleRate or tracesSampler)
+    mockSdkInit({ tracesSampleRate: undefined, tracesSampler: undefined });
   });
 
+  it('startSpan creates non-recording spans when hasSpansEnabled() === false', () => {
+    const val = startSpan({ name: 'outer' }, outerSpan => {
+      expect(outerSpan).toBeDefined();
+      expect(outerSpan.isRecording()).toBe(false);
+
+      // Nested spans should also be non-recording
+      return startSpan({ name: 'inner' }, innerSpan => {
+        expect(innerSpan).toBeDefined();
+        expect(innerSpan.isRecording()).toBe(false);
+        return 'test value';
+      });
+    });
+
+    expect(val).toEqual('test value');
+  });
+
+  it('startSpanManual creates non-recording spans when hasSpansEnabled() === false', () => {
+    const val = startSpanManual({ name: 'outer' }, outerSpan => {
+      expect(outerSpan).toBeDefined();
+      expect(outerSpan.isRecording()).toBe(false);
+
+      return startSpanManual({ name: 'inner' }, innerSpan => {
+        expect(innerSpan).toBeDefined();
+        expect(innerSpan.isRecording()).toBe(false);
+        return 'test value';
+      });
+    });
+
+    expect(val).toEqual('test value');
+  });
+
+  it('startInactiveSpan returns non-recording spans when hasSpansEnabled() === false', () => {
+    const span = startInactiveSpan({ name: 'test' });
+
+    expect(span).toBeDefined();
+    expect(span.isRecording()).toBe(false);
+  });
+});
+
+describe('trace (sampling)', () => {
   it('samples with a tracesSampleRate, when Math.random() > tracesSampleRate', () => {
-    jest.spyOn(Math, 'random').mockImplementation(() => 0.6);
+    vi.spyOn(Math, 'random').mockImplementation(() => 0.6);
 
     mockSdkInit({ tracesSampleRate: 0.5 });
 
@@ -1187,7 +1517,7 @@ describe('trace (sampling)', () => {
   });
 
   it('samples with a tracesSampleRate, when Math.random() < tracesSampleRate', () => {
-    jest.spyOn(Math, 'random').mockImplementation(() => 0.4);
+    vi.spyOn(Math, 'random').mockImplementation(() => 0.4);
 
     mockSdkInit({ tracesSampleRate: 0.5 });
 
@@ -1206,7 +1536,7 @@ describe('trace (sampling)', () => {
   });
 
   it('positive parent sampling takes precedence over tracesSampleRate', () => {
-    jest.spyOn(Math, 'random').mockImplementation(() => 0.6);
+    vi.spyOn(Math, 'random').mockImplementation(() => 0.6);
 
     mockSdkInit({ tracesSampleRate: 1 });
 
@@ -1230,7 +1560,7 @@ describe('trace (sampling)', () => {
   });
 
   it('negative parent sampling takes precedence over tracesSampleRate', () => {
-    jest.spyOn(Math, 'random').mockImplementation(() => 0.6);
+    vi.spyOn(Math, 'random').mockImplementation(() => 0.6);
 
     mockSdkInit({ tracesSampleRate: 0.5 });
 
@@ -1252,7 +1582,7 @@ describe('trace (sampling)', () => {
   });
 
   it('positive remote parent sampling takes precedence over tracesSampleRate', () => {
-    jest.spyOn(Math, 'random').mockImplementation(() => 0.6);
+    vi.spyOn(Math, 'random').mockImplementation(() => 0.6);
 
     mockSdkInit({ tracesSampleRate: 0.5 });
 
@@ -1267,7 +1597,6 @@ describe('trace (sampling)', () => {
       traceFlags: TraceFlags.SAMPLED,
     };
 
-    // We simulate the correct context we'd normally get from the SentryPropagator
     context.with(trace.setSpanContext(ROOT_CONTEXT, spanContext), () => {
       // This will def. be sampled because of the tracesSampleRate
       startSpan({ name: 'outer' }, outerSpan => {
@@ -1278,8 +1607,33 @@ describe('trace (sampling)', () => {
     });
   });
 
+  it('keeps the remote parent propagation on the scope captured by the span', () => {
+    mockSdkInit({ tracesSampleRate: 1 });
+
+    const traceId = 'd4cda95b652f4a1592b449d5929fda1b';
+    const parentSpanId = '6e0c63257de34c92';
+
+    const spanContext = {
+      traceId,
+      spanId: parentSpanId,
+      sampled: true,
+      isRemote: true,
+      traceFlags: TraceFlags.SAMPLED,
+    };
+
+    context.with(trace.setSpanContext(ROOT_CONTEXT, spanContext), () => {
+      startSpan({ name: 'outer' }, outerSpan => {
+        const capturedScope = getCapturedScopesOnSpan(outerSpan).scope;
+        const propagationContext = capturedScope?.getPropagationContext();
+        expect(propagationContext?.traceId).toBe(traceId);
+        expect(propagationContext?.parentSpanId).toBe(parentSpanId);
+        expect(propagationContext?.sampled).toBe(true);
+      });
+    });
+  });
+
   it('negative remote parent sampling takes precedence over tracesSampleRate', () => {
-    jest.spyOn(Math, 'random').mockImplementation(() => 0.6);
+    vi.spyOn(Math, 'random').mockImplementation(() => 0.6);
 
     mockSdkInit({ tracesSampleRate: 0.5 });
 
@@ -1294,7 +1648,6 @@ describe('trace (sampling)', () => {
       traceFlags: TraceFlags.NONE,
     };
 
-    // We simulate the correct context we'd normally get from the SentryPropagator
     context.with(trace.setSpanContext(ROOT_CONTEXT, spanContext), () => {
       // This will def. be sampled because of the tracesSampleRate
       startSpan({ name: 'outer' }, outerSpan => {
@@ -1307,7 +1660,7 @@ describe('trace (sampling)', () => {
   it('samples with a tracesSampler returning a boolean', () => {
     let tracesSamplerResponse: boolean = true;
 
-    const tracesSampler = jest.fn(() => {
+    const tracesSampler = vi.fn(() => {
       return tracesSamplerResponse;
     });
 
@@ -1322,7 +1675,7 @@ describe('trace (sampling)', () => {
       parentSampled: undefined,
       name: 'outer',
       attributes: {},
-      transactionContext: { name: 'outer', parentSampled: undefined },
+      inheritOrSampleWith: expect.any(Function),
     });
 
     // Now return `false`, it should not sample
@@ -1336,21 +1689,34 @@ describe('trace (sampling)', () => {
       });
     });
 
-    expect(tracesSampler).toHaveBeenCalledTimes(3);
-    expect(tracesSampler).toHaveBeenLastCalledWith({
-      parentSampled: false,
+    expect(tracesSampler).toHaveBeenCalledTimes(2);
+    expect(tracesSampler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSampled: undefined,
+        name: 'outer',
+        attributes: {},
+      }),
+    );
+    expect(tracesSampler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSampled: undefined,
+        name: 'outer2',
+        attributes: {},
+      }),
+    );
+
+    // Only root spans should go through the sampler
+    expect(tracesSampler).not.toHaveBeenLastCalledWith({
       name: 'inner2',
-      attributes: {},
-      transactionContext: { name: 'inner2', parentSampled: false },
     });
   });
 
   it('samples with a tracesSampler returning a number', () => {
-    jest.spyOn(Math, 'random').mockImplementation(() => 0.6);
+    vi.spyOn(Math, 'random').mockImplementation(() => 0.6);
 
     let tracesSamplerResponse: number = 1;
 
-    const tracesSampler = jest.fn(() => {
+    const tracesSampler = vi.fn(() => {
       return tracesSamplerResponse;
     });
 
@@ -1370,13 +1736,15 @@ describe('trace (sampling)', () => {
     expect(tracesSampler).toHaveBeenCalledTimes(1);
     expect(tracesSampler).toHaveBeenLastCalledWith({
       parentSampled: undefined,
+      parentSampleRate: undefined,
+      normalizedRequest: undefined,
       name: 'outer',
       attributes: {
         attr1: 'yes',
         attr2: 1,
         'sentry.op': 'test.op',
       },
-      transactionContext: { name: 'outer', parentSampled: undefined },
+      inheritOrSampleWith: expect.any(Function),
     });
 
     // Now return `0`, it should not sample
@@ -1390,13 +1758,21 @@ describe('trace (sampling)', () => {
       });
     });
 
-    expect(tracesSampler).toHaveBeenCalledTimes(3);
-    expect(tracesSampler).toHaveBeenLastCalledWith({
-      parentSampled: false,
-      name: 'inner2',
-      attributes: {},
-      transactionContext: { name: 'inner2', parentSampled: false },
-    });
+    expect(tracesSampler).toHaveBeenCalledTimes(2);
+    expect(tracesSampler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSampled: undefined,
+        name: 'outer2',
+        attributes: {},
+      }),
+    );
+
+    // Only root spans should be passed to tracesSampler
+    expect(tracesSampler).not.toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: 'inner2',
+      }),
+    );
 
     // Now return `0.4`, it should not sample
     tracesSamplerResponse = 0.4;
@@ -1405,17 +1781,17 @@ describe('trace (sampling)', () => {
       expect(outerSpan.isRecording()).toBe(false);
     });
 
-    expect(tracesSampler).toHaveBeenCalledTimes(4);
+    expect(tracesSampler).toHaveBeenCalledTimes(3);
     expect(tracesSampler).toHaveBeenLastCalledWith({
       parentSampled: undefined,
       name: 'outer3',
       attributes: {},
-      transactionContext: { name: 'outer3', parentSampled: undefined },
+      inheritOrSampleWith: expect.any(Function),
     });
   });
 
   it('samples with a tracesSampler even if parent is remotely sampled', () => {
-    const tracesSampler = jest.fn(() => {
+    const tracesSampler = vi.fn(() => {
       return false;
     });
 
@@ -1431,7 +1807,6 @@ describe('trace (sampling)', () => {
       traceFlags: TraceFlags.SAMPLED,
     };
 
-    // We simulate the correct context we'd normally get from the SentryPropagator
     context.with(trace.setSpanContext(ROOT_CONTEXT, spanContext), () => {
       // This will def. be sampled because of the tracesSampleRate
       startSpan({ name: 'outer' }, outerSpan => {
@@ -1444,10 +1819,7 @@ describe('trace (sampling)', () => {
       parentSampled: true,
       name: 'outer',
       attributes: {},
-      transactionContext: {
-        name: 'outer',
-        parentSampled: true,
-      },
+      inheritOrSampleWith: expect.any(Function),
     });
   });
 
@@ -1473,258 +1845,121 @@ describe('trace (sampling)', () => {
   });
 });
 
-describe('HTTP methods (sampling)', () => {
+describe('span.end() timestamp conversion', () => {
   beforeEach(() => {
-    mockSdkInit({ enableTracing: true });
+    mockSdkInit({ tracesSampleRate: 1 });
   });
 
-  afterEach(() => {
-    cleanupOtel();
+  it('converts seconds to milliseconds for startInactiveSpan', () => {
+    // +10s buffer (see startInactiveSpan test above): avoids OTel's endTime-before-startTime clamp.
+    const nowSec = Math.floor(Date.now() / 1000) + 10;
+    const span = startInactiveSpan({ name: 'test' });
+    span.end(nowSec);
+
+    const endTime = getSpanEndTime(span);
+    // ensureTimestampInMilliseconds converts seconds (< 9999999999) to ms by * 1000
+    // OTel then converts ms to HrTime [seconds, nanoseconds]
+    expect(endTime![0]).toBe(nowSec);
+    expect(endTime![1]).toBe(0);
   });
 
-  it('does sample when HTTP method is other than OPTIONS or HEAD', () => {
-    const spanGET = startSpanManual({ name: 'test span', attributes: { [SEMATTRS_HTTP_METHOD]: 'GET' } }, span => {
-      return span;
-    });
-    expect(spanIsSampled(spanGET)).toBe(true);
-    expect(getSamplingDecision(spanGET.spanContext())).toBe(true);
+  it('keeps milliseconds as-is for startInactiveSpan', () => {
+    // Timestamp already in milliseconds (> 9999999999 threshold)
+    const nowMs = Date.now() + 1000;
+    const nowSec = Math.floor(nowMs / 1000);
+    const span = startInactiveSpan({ name: 'test' });
+    span.end(nowMs);
 
-    const spanPOST = startSpanManual({ name: 'test span', attributes: { [SEMATTRS_HTTP_METHOD]: 'POST' } }, span => {
-      return span;
-    });
-    expect(spanIsSampled(spanPOST)).toBe(true);
-    expect(getSamplingDecision(spanPOST.spanContext())).toBe(true);
-
-    const spanPUT = startSpanManual({ name: 'test span', attributes: { [SEMATTRS_HTTP_METHOD]: 'PUT' } }, span => {
-      return span;
-    });
-    expect(spanIsSampled(spanPUT)).toBe(true);
-    expect(getSamplingDecision(spanPUT.spanContext())).toBe(true);
-
-    const spanDELETE = startSpanManual(
-      { name: 'test span', attributes: { [SEMATTRS_HTTP_METHOD]: 'DELETE' } },
-      span => {
-        return span;
-      },
-    );
-    expect(spanIsSampled(spanDELETE)).toBe(true);
-    expect(getSamplingDecision(spanDELETE.spanContext())).toBe(true);
+    const endTime = getSpanEndTime(span);
+    expect(endTime![0]).toBe(nowSec);
   });
 
-  it('does not sample when HTTP method is OPTIONS', () => {
-    const span = startSpanManual({ name: 'test span', attributes: { [SEMATTRS_HTTP_METHOD]: 'OPTIONS' } }, span => {
-      return span;
-    });
-    expect(spanIsSampled(span)).toBe(false);
-    expect(getSamplingDecision(span.spanContext())).toBe(false);
+  it('handles Date input for startInactiveSpan', () => {
+    const nowMs = Date.now() + 1000;
+    const nowSec = Math.floor(nowMs / 1000);
+    const span = startInactiveSpan({ name: 'test' });
+    span.end(new Date(nowMs));
+
+    const endTime = getSpanEndTime(span);
+    expect(endTime![0]).toBe(nowSec);
   });
 
-  it('does not sample when HTTP method is HEAD', () => {
-    const span = startSpanManual({ name: 'test span', attributes: { [SEMATTRS_HTTP_METHOD]: 'HEAD' } }, span => {
-      return span;
-    });
-    expect(spanIsSampled(span)).toBe(false);
-    expect(getSamplingDecision(span.spanContext())).toBe(false);
-  });
-});
+  it('handles no-arg end for startInactiveSpan', () => {
+    const span = startInactiveSpan({ name: 'test' });
+    span.end();
 
-describe('continueTrace', () => {
-  beforeEach(() => {
-    mockSdkInit({ enableTracing: true });
+    const endTime = getSpanEndTime(span);
+    expect(endTime).toBeDefined();
+    expect(endTime![0]).not.toBe(0);
   });
 
-  afterEach(() => {
-    cleanupOtel();
-  });
+  // +10s buffer: if the wallclock rolls past the next-second boundary between computing
+  // nowSec and creating the span, `endTime = [nowSec, 0]` is < startTime, OTel clamps
+  // endTime to startTime, and `endTime[1]` ends up at the startTime's nanos rather than 0.
+  describe('span.end() timestamp conversion', () => {
+    it('handles HrTime input for startInactiveSpan', () => {
+      const nowSec = Math.floor(Date.now() / 1000) + 10;
+      const span = startInactiveSpan({ name: 'test' });
+      span.end([nowSec, 500000000] as [number, number]);
 
-  it('works without trace & baggage data', () => {
-    const scope = continueTrace({ sentryTrace: undefined, baggage: undefined }, () => {
-      const span = getActiveSpan()!;
-      expect(span).toBeUndefined();
-      return getCurrentScope();
+      const endTime = getSpanEndTime(span);
+      expect(endTime![0]).toBe(nowSec);
+      expect(endTime![1]).toBe(500000000);
     });
 
-    expect(scope.getPropagationContext()).toEqual({
-      sampled: undefined,
-      spanId: expect.any(String),
-      traceId: expect.any(String),
+    it('converts seconds to milliseconds for startSpanManual callback span', () => {
+      const nowSec = Math.floor(Date.now() / 1000) + 10;
+      startSpanManual({ name: 'test' }, span => {
+        span.end(nowSec);
+
+        const endTime = getSpanEndTime(span);
+        expect(endTime![0]).toBe(nowSec);
+        expect(endTime![1]).toBe(0);
+      });
     });
 
-    expect(scope.getScopeData().sdkProcessingMetadata).toEqual({});
-  });
-
-  it('works with trace data', () => {
-    const scope = continueTrace(
-      {
-        sentryTrace: '12312012123120121231201212312012-1121201211212012-0',
-        baggage: undefined,
-      },
-      () => {
-        const span = getActiveSpan()!;
-        expect(span).toBeDefined();
-        expect(spanToJSON(span)).toEqual({
-          span_id: '1121201211212012',
-          trace_id: '12312012123120121231201212312012',
-          data: {},
-          start_timestamp: 0,
-        });
-        expect(getSamplingDecision(span.spanContext())).toBe(false);
-        expect(spanIsSampled(span)).toBe(false);
-
-        return getCurrentScope();
-      },
-    );
-
-    expect(scope.getPropagationContext()).toEqual({
-      spanId: expect.any(String),
-      traceId: expect.any(String),
-    });
-
-    expect(scope.getScopeData().sdkProcessingMetadata).toEqual({});
-  });
-
-  it('works with trace & baggage data', () => {
-    const scope = continueTrace(
-      {
-        sentryTrace: '12312012123120121231201212312012-1121201211212012-1',
-        baggage: 'sentry-version=1.0,sentry-environment=production',
-      },
-      () => {
-        const span = getActiveSpan()!;
-        expect(span).toBeDefined();
-        expect(spanToJSON(span)).toEqual({
-          span_id: '1121201211212012',
-          trace_id: '12312012123120121231201212312012',
-          data: {},
-          start_timestamp: 0,
-        });
-        expect(getSamplingDecision(span.spanContext())).toBe(true);
-        expect(spanIsSampled(span)).toBe(true);
-
-        return getCurrentScope();
-      },
-    );
-
-    expect(scope.getPropagationContext()).toEqual({
-      spanId: expect.any(String),
-      traceId: expect.any(String),
-    });
-
-    expect(scope.getScopeData().sdkProcessingMetadata).toEqual({});
-  });
-
-  it('works with trace & 3rd party baggage data', () => {
-    const scope = continueTrace(
-      {
-        sentryTrace: '12312012123120121231201212312012-1121201211212012-1',
-        baggage: 'sentry-version=1.0,sentry-environment=production,dogs=great,cats=boring',
-      },
-      () => {
-        const span = getActiveSpan()!;
-        expect(span).toBeDefined();
-        expect(spanToJSON(span)).toEqual({
-          span_id: '1121201211212012',
-          trace_id: '12312012123120121231201212312012',
-          data: {},
-          start_timestamp: 0,
-        });
-        expect(getSamplingDecision(span.spanContext())).toBe(true);
-        expect(spanIsSampled(span)).toBe(true);
-
-        return getCurrentScope();
-      },
-    );
-
-    expect(scope.getPropagationContext()).toEqual({
-      spanId: expect.any(String),
-      traceId: expect.any(String),
-    });
-    expect(scope.getScopeData().sdkProcessingMetadata).toEqual({});
-  });
-
-  it('returns response of callback', () => {
-    const result = continueTrace(
-      {
-        sentryTrace: '12312012123120121231201212312012-1121201211212012-0',
-        baggage: undefined,
-      },
-      () => {
-        return 'aha';
-      },
-    );
-
-    expect(result).toEqual('aha');
-  });
-});
-
-describe('suppressTracing', () => {
-  beforeEach(() => {
-    mockSdkInit({ enableTracing: true });
-  });
-
-  afterEach(() => {
-    cleanupOtel();
-  });
-
-  it('works for a root span', () => {
-    const span = suppressTracing(() => {
-      return startInactiveSpan({ name: 'span' });
-    });
-
-    expect(span.isRecording()).toBe(false);
-    expect(spanIsSampled(span)).toBe(false);
-  });
-
-  it('works for a child span', () => {
-    startSpan({ name: 'outer' }, span => {
-      expect(span.isRecording()).toBe(true);
-      expect(spanIsSampled(span)).toBe(true);
-
-      const child1 = startInactiveSpan({ name: 'inner1' });
-
-      expect(child1.isRecording()).toBe(true);
-      expect(spanIsSampled(child1)).toBe(true);
-
-      const child2 = suppressTracing(() => {
-        return startInactiveSpan({ name: 'span' });
+    it('converts seconds to milliseconds for startSpan child span', () => {
+      const nowSec = Math.floor(Date.now() / 1000) + 10;
+      let capturedEndTime: [number, number] | undefined;
+      startSpan({ name: 'outer' }, () => {
+        const innerSpan = startInactiveSpan({ name: 'inner' });
+        innerSpan.end(nowSec);
+        capturedEndTime = getSpanEndTime(innerSpan);
       });
 
-      expect(child2.isRecording()).toBe(false);
-      expect(spanIsSampled(child2)).toBe(false);
-    });
-  });
-
-  it('works for a child span with forceTransaction=true', () => {
-    startSpan({ name: 'outer' }, span => {
-      expect(span.isRecording()).toBe(true);
-      expect(spanIsSampled(span)).toBe(true);
-
-      const child = suppressTracing(() => {
-        return startInactiveSpan({ name: 'span', forceTransaction: true });
-      });
-
-      expect(child.isRecording()).toBe(false);
-      expect(spanIsSampled(child)).toBe(false);
+      expect(capturedEndTime![0]).toBe(nowSec);
+      expect(capturedEndTime![1]).toBe(0);
     });
   });
 });
 
-function getSpanName(span: AbstractSpan): string | undefined {
-  return spanHasName(span) ? span.name : undefined;
+function getSpanName(span: Span): string | undefined {
+  return spanToJSON(span).name;
 }
 
-function getSpanEndTime(span: AbstractSpan): [number, number] | undefined {
-  return (span as ReadableSpan).endTime;
+// Native Sentry spans store timestamps in seconds; the tests assert HrTime `[seconds, nanoseconds]`.
+// Convert via milliseconds (like OTel's `numberToHrtime`) so the nanosecond part stays exact —
+// converting straight from a fractional-seconds double loses precision.
+function hrTimeFromSeconds(seconds: number): [number, number] {
+  const ms = seconds * 1000;
+  const sec = Math.trunc(ms / 1000);
+  return [sec, Math.round((ms - sec * 1000) * 1e6)];
 }
 
-function getSpanStartTime(span: AbstractSpan): [number, number] | undefined {
-  return (span as ReadableSpan).startTime;
+function getSpanEndTime(span: Span): [number, number] | undefined {
+  const endTimestamp = spanToJSON(span).end_timestamp;
+  return typeof endTimestamp === 'number' ? hrTimeFromSeconds(endTimestamp) : [0, 0];
 }
 
-function getSpanAttributes(span: AbstractSpan): Record<string, unknown> | undefined {
-  return spanHasAttributes(span) ? span.attributes : undefined;
+function getSpanStartTime(span: Span): [number, number] | undefined {
+  const startTimestamp = spanToJSON(span).start_timestamp;
+  return typeof startTimestamp === 'number' ? hrTimeFromSeconds(startTimestamp) : undefined;
 }
 
-function getSpanParentSpanId(span: AbstractSpan): string | undefined {
-  return (span as ReadableSpan).parentSpanId;
+function getSpanAttributes(span: Span): Record<string, unknown> | undefined {
+  return spanToJSON(span).attributes;
+}
+
+function getSpanParentSpanId(span: Span): string | undefined {
+  return spanToJSON(span).parent_span_id;
 }

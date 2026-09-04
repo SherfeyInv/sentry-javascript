@@ -1,6 +1,6 @@
 type ClassOption = string | RegExp;
 
-/** Duplicate this from @sentry-internal/rrweb so we can export this as well. */
+/** Duplicate this from @sentry/rrweb so we can export this as well. */
 export const ReplayEventTypeDomContentLoaded = 0;
 export const ReplayEventTypeLoad = 1;
 export const ReplayEventTypeFullSnapshot = 2;
@@ -43,6 +43,7 @@ export type RrwebRecordOptions = {
   maskTextSelector?: string;
   blockSelector?: string;
   maskInputOptions?: Record<string, boolean>;
+  recordCrossOriginIframes?: boolean;
 } & Record<string, unknown>;
 
 export interface CanvasManagerInterface {
@@ -68,7 +69,9 @@ export interface CanvasManagerOptions {
     type: string;
     quality: number;
   }>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mutationCb: (p: any) => void;
   win: typeof globalThis & Window;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mirror: any;
 }

@@ -1,7 +1,5 @@
+import type { WrappedFunction } from '@sentry/core/browser';
 import { describe, expect, it, vi } from 'vitest';
-
-import type { WrappedFunction } from '@sentry/core';
-
 import { wrap } from '../src/helpers';
 
 describe('internal wrap()', () => {
@@ -74,6 +72,22 @@ describe('internal wrap()', () => {
 
     expect(wrapped).toHaveProperty('__sentry_original__');
     expect(wrapped.__sentry_original__).toBe(fn);
+  });
+
+  it('ignores __sentry_wrapped__ inherited from Function.prototype', () => {
+    // Wrapping Function.prototype puts __sentry_wrapped__ on it, which every
+    // function then inherits. wrap() must only trust own wrapper metadata.
+    const prototypeWrapper = wrap(Function.prototype as () => unknown);
+    try {
+      const fresh = vi.fn(() => 'fresh');
+      const wrapped = wrap(fresh);
+
+      expect(wrapped).not.toBe(prototypeWrapper);
+      wrapped();
+      expect(fresh).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (Function.prototype as unknown as { __sentry_wrapped__?: unknown }).__sentry_wrapped__;
+    }
   });
 
   it('keeps original functions properties', () => {

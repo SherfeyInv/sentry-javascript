@@ -4,12 +4,23 @@
  * For more information, see https://remix.run/file-conventions/entry.client
  */
 
+// Extend the Window interface to include ENV
+declare global {
+  interface Window {
+    ENV: {
+      SENTRY_DSN: string;
+      [key: string]: unknown;
+    };
+  }
+}
+
 import { RemixBrowser, useLocation, useMatches } from '@remix-run/react';
 import * as Sentry from '@sentry/remix';
 import { StrictMode, startTransition, useEffect } from 'react';
 import { hydrateRoot } from 'react-dom/client';
 
 Sentry.init({
+  traceLifecycle: 'static',
   environment: 'qa', // dynamic sampling bias to keep transactions
   dsn: window.ENV.SENTRY_DSN,
   integrations: [

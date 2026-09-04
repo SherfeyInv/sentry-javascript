@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test';
-
 import { sentryTest } from '../../../utils/fixtures';
 import { getCustomRecordingEvents, shouldSkipReplayTest, waitForReplayRequest } from '../../../utils/replayHelpers';
 
@@ -38,9 +37,9 @@ sentryTest('should capture console messages in replay', async ({ getLocalTestUrl
         timestamp: expect.any(Number),
         type: 'default',
         category: 'console',
-        data: { arguments: ['Test log', '[HTMLElement: HTMLBodyElement]'], logger: 'console' },
+        data: { arguments: ['Test log', '[HTMLElement: body]'], logger: 'console' },
         level: 'log',
-        message: 'Test log [object HTMLBodyElement]',
+        message: 'Test log [HTMLElement: body]',
       },
     ]),
   );

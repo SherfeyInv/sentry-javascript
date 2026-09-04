@@ -1,106 +1,35 @@
+import type { BuildTimeOptionsBase } from '@sentry/core';
 import type { init as initNode } from '@sentry/node';
-import type { SentryRollupPluginOptions } from '@sentry/rollup-plugin';
-import type { SentryVitePluginOptions } from '@sentry/vite-plugin';
 import type { init as initVue } from '@sentry/vue';
 
-// Omitting 'app' as the Nuxt SDK will add the app instance in the client plugin (users do not have to provide this)
+// Omitting Vue 'app' as the Nuxt SDK will add the app instance in the client plugin (users do not have to provide this)
+// Adding `& object` helps TS with inferring that this is not `undefined` but an object type
 export type SentryNuxtClientOptions = Omit<Parameters<typeof initVue>[0] & object, 'app'>;
-export type SentryNuxtServerOptions = Omit<Parameters<typeof initNode>[0] & object, 'app'>;
-
-type SourceMapsOptions = {
+export type SentryNuxtServerOptions = Parameters<typeof initNode>[0] & {
   /**
-   * If this flag is `true`, and an auth token is detected, the Sentry SDK will
-   * automatically generate and upload source maps to Sentry during a production build.
+   * Enables the Sentry error handler for the Nitro error hook.
+   *
+   * When enabled, exceptions are automatically sent to Sentry with additional data such as the transaction name and Nitro error context.
+   * It's recommended to keep this enabled unless you need to implement a custom error handler.
+   *
+   * If you need a custom implementation, disable this option and refer to the default handler as a reference:
+   * https://github.com/getsentry/sentry-javascript/blob/da8ba8d77a28b43da5014acc8dd98906d2180cc1/packages/nuxt/src/runtime/plugins/sentry.server.ts#L20-L46
    *
    * @default true
    */
-  enabled?: boolean;
-
-  /**
-   * The auth token to use when uploading source maps to Sentry.
-   *
-   * Instead of specifying this option, you can also set the `SENTRY_AUTH_TOKEN` environment variable.
-   *
-   * To create an auth token, follow this guide:
-   * @see https://docs.sentry.io/product/accounts/auth-tokens/#organization-auth-tokens
-   */
-  authToken?: string;
-
-  /**
-   * The organization slug of your Sentry organization.
-   * Instead of specifying this option, you can also set the `SENTRY_ORG` environment variable.
-   */
-  org?: string;
-
-  /**
-   * The project slug of your Sentry project.
-   * Instead of specifying this option, you can also set the `SENTRY_PROJECT` environment variable.
-   */
-  project?: string;
-
-  /**
-   * If this flag is `true`, the Sentry plugin will collect some telemetry data and send it to Sentry.
-   * It will not collect any sensitive or user-specific data.
-   *
-   * @default true
-   */
-  telemetry?: boolean;
-
-  /**
-   * Options related to sourcemaps
-   */
-  sourcemaps?: {
-    /**
-     * A glob or an array of globs that specify the build artifacts and source maps that will be uploaded to Sentry.
-     *
-     * If this option is not specified, sensible defaults based on your adapter and nuxt.config.js
-     * setup will be used. Use this option to override these defaults, for instance if you have a
-     * customized build setup that diverges from Nuxt's defaults.
-     *
-     * The globbing patterns must follow the implementation of the `glob` package.
-     * @see https://www.npmjs.com/package/glob#glob-primer
-     */
-    assets?: string | Array<string>;
-
-    /**
-     * A glob or an array of globs that specifies which build artifacts should not be uploaded to Sentry.
-     *
-     * @default [] - By default no files are ignored. Thus, all files matching the `assets` glob
-     * or the default value for `assets` are uploaded.
-     *
-     * The globbing patterns follow the implementation of the glob package. (https://www.npmjs.com/package/glob)
-     */
-    ignore?: string | Array<string>;
-
-    /**
-     * A glob or an array of globs that specifies the build artifacts that should be deleted after the artifact
-     * upload to Sentry has been completed.
-     *
-     * @default [] - By default no files are deleted.
-     *
-     * The globbing patterns follow the implementation of the glob package. (https://www.npmjs.com/package/glob)
-     */
-    filesToDeleteAfterUpload?: string | Array<string>;
-  };
+  enableNitroErrorHandler?: boolean;
 };
 
 /**
  *  Build options for the Sentry module. These options are used during build-time by the Sentry SDK.
  */
-export type SentryNuxtModuleOptions = {
+export type SentryNuxtModuleOptions = BuildTimeOptionsBase & {
   /**
-   * Options for the Sentry Vite plugin to customize the source maps upload process.
+   * Enable the Sentry Nuxt Module.
    *
-   * These options are always read from the `sentry` module options in the `nuxt.config.(js|ts).
-   * Do not define them in the `sentry.client.config.(js|ts)` or `sentry.server.config.(js|ts)` files.
+   * @default true
    */
-  sourceMapsUploadOptions?: SourceMapsOptions;
-
-  /**
-   * Enable debug functionality of the SDK during build-time.
-   * Enabling this will give you, for example, logs about source maps.
-   */
-  debug?: boolean;
+  enabled?: boolean;
 
   /**
    *
@@ -131,6 +60,24 @@ export type SentryNuxtModuleOptions = {
   autoInjectServerSentry?: 'top-level-import' | 'experimental_dynamic-import';
 
   /**
+   * Provide the resolved path to a custom Sentry client config file.
+   *
+   * If not provided, the default location (`<projectRoot>/sentry.(client|server).config.(js|ts)`) will be used to look up the config file.
+   * If there is no file at the default location either, the SDK won't be initialized.
+   *
+   * Resolves the full path to a file or directory, respecting Nuxt alias and extensions options.
+   * @example
+   *
+   * ```ts
+   * sentry: {
+   *   configDir: '~/sentry-config',
+   *   // Sentry will search for `<rootDir>/<srcDir>/sentry-config/sentry.(client|server).config.(js|ts)` files.
+   * }
+   * ```
+   */
+  configDir?: string;
+
+  /**
    * When `autoInjectServerSentry` is set to `"experimental_dynamic-import"`, the SDK will wrap your Nitro server entrypoint
    * with a dynamic `import()` to ensure all dependencies can be properly instrumented. Any previous exports from the entrypoint are still exported.
    * Most exports of the server entrypoint are serverless functions and those are wrapped by Sentry. Other exports stay as-is.
@@ -142,12 +89,4 @@ export type SentryNuxtModuleOptions = {
    * @default ['default', 'handler', 'server']
    */
   experimental_entrypointWrappedFunctions?: string[];
-
-  /**
-   * Options to be passed directly to the Sentry Rollup Plugin (`@sentry/rollup-plugin`) and Sentry Vite Plugin (`@sentry/vite-plugin`) that ship with the Sentry Nuxt SDK.
-   * You can use this option to override any options the SDK passes to the Vite (for Nuxt) and Rollup (for Nitro) plugin.
-   *
-   * Please note that this option is unstable and may change in a breaking way in any release.
-   */
-  unstable_sentryBundlerPluginOptions?: SentryRollupPluginOptions & SentryVitePluginOptions;
 };

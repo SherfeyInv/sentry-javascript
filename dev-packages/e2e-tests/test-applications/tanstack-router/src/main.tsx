@@ -1,5 +1,13 @@
 import * as Sentry from '@sentry/react';
-import { Link, Outlet, RouterProvider, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
+import {
+  Link,
+  Outlet,
+  RouterProvider,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  redirect,
+} from '@tanstack/react-router';
 import { StrictMode } from 'react';
 import ReactDOM from 'react-dom/client';
 
@@ -18,6 +26,11 @@ const rootRoute = createRootRoute({
         <li>
           <Link to="/posts/$postId" params={{ postId: '2' }} id="nav-link">
             Post 2
+          </Link>
+        </li>
+        <li>
+          <Link to="/redirect" id="redirect-link">
+            Redirect
           </Link>
         </li>
       </ul>
@@ -41,7 +54,7 @@ const indexRoute = createRoute({
 
 const postsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: 'posts/',
+  path: 'posts',
 });
 
 const postIdRoute = createRoute({
@@ -49,6 +62,11 @@ const postIdRoute = createRoute({
   path: '$postId',
   shouldReload() {
     return true;
+  },
+  beforeLoad: ({ params }) => {
+    if (params.postId === '999') {
+      throw redirect({ to: '/posts/$postId', params: { postId: '2' }, replace: true });
+    }
   },
   loader: ({ params }) => {
     return Sentry.startSpan({ name: `loading-post-${params.postId}` }, async () => {
@@ -61,13 +79,22 @@ const postIdRoute = createRoute({
   },
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, postsRoute.addChildren([postIdRoute])]);
+const redirectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'redirect',
+  beforeLoad: () => {
+    throw redirect({ to: '/posts/$postId', params: { postId: '1' }, replace: true });
+  },
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, redirectRoute, postsRoute.addChildren([postIdRoute])]);
 
 const router = createRouter({ routeTree });
 
 declare const __APP_DSN__: string;
 
 Sentry.init({
+  traceLifecycle: 'static',
   environment: 'qa', // dynamic sampling bias to keep transactions
   dsn: __APP_DSN__,
   integrations: [Sentry.tanstackRouterBrowserTracingIntegration(router)],

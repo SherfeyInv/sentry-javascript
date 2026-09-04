@@ -1,38 +1,44 @@
-import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
+import { afterAll, describe, expect } from 'vitest';
+import { cleanupChildProcesses, createCjsTests } from '../../../utils/runner';
 
-afterAll(() => {
-  cleanupChildProcesses();
-});
+describe('express span isolationScope', () => {
+  afterAll(() => {
+    cleanupChildProcesses();
+  });
 
-test('correctly applies isolation scope to span', done => {
-  createRunner(__dirname, 'server.ts')
-    .expect({
-      transaction: {
-        transaction: 'GET /test/isolationScope',
-        breadcrumbs: [
-          {
-            category: 'console',
-            level: 'log',
-            message: expect.stringMatching(/\{"port":(\d+)\}/),
-            timestamp: expect.any(Number),
+  createCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('correctly applies isolation scope to span', async () => {
+      const runner = createRunner()
+        .expect({
+          transaction: {
+            transaction: 'GET /test/isolationScope',
+            breadcrumbs: [
+              {
+                category: 'console',
+                level: 'log',
+                message: expect.stringMatching(/\{"port":(\d+)\}/),
+                timestamp: expect.any(Number),
+              },
+              {
+                category: 'console',
+                level: 'log',
+                message: 'This is a test log.',
+                timestamp: expect.any(Number),
+              },
+              {
+                message: 'manual breadcrumb',
+                timestamp: expect.any(Number),
+              },
+            ],
+            tags: {
+              global: 'tag',
+              'isolation-scope': 'tag',
+            },
           },
-          {
-            category: 'console',
-            level: 'log',
-            message: 'This is a test log.',
-            timestamp: expect.any(Number),
-          },
-          {
-            message: 'manual breadcrumb',
-            timestamp: expect.any(Number),
-          },
-        ],
-        tags: {
-          global: 'tag',
-          'isolation-scope': 'tag',
-        },
-      },
-    })
-    .start(done)
-    .makeRequest('get', '/test/isolationScope');
+        })
+        .start();
+      runner.makeRequest('get', '/test/isolationScope');
+      await runner.completed();
+    });
+  });
 });

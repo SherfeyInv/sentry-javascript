@@ -1,23 +1,24 @@
-import * as domain from 'domain';
+import { FAAS_TRIGGER, SENTRY_OP } from '@sentry/conventions/attributes';
+import { FAAS_FUNCTION_GCP_SPAN_OP } from '@sentry/conventions/op';
 import { SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE } from '@sentry/core';
-
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { wrapCloudEventFunction } from '../../src/gcpfunction/cloud_events';
 import type { CloudEventFunction, CloudEventFunctionWithCallback } from '../../src/gcpfunction/general';
 
-const mockStartSpanManual = jest.fn((...spanArgs) => ({ ...spanArgs }));
-const mockFlush = jest.fn((...args) => Promise.resolve(args));
-const mockCaptureException = jest.fn();
+const mockStartSpanManual = vi.fn((...spanArgs) => ({ ...spanArgs }));
+const mockFlush = vi.fn((...args) => Promise.resolve(args));
+const mockCaptureException = vi.fn();
 
 const mockScope = {
-  setContext: jest.fn(),
+  setContext: vi.fn(),
 };
 
 const mockSpan = {
-  end: jest.fn(),
+  end: vi.fn(),
 };
 
-jest.mock('@sentry/node', () => {
-  const original = jest.requireActual('@sentry/node');
+vi.mock('@sentry/node', async () => {
+  const original = await vi.importActual('@sentry/node');
   return {
     ...original,
     startSpanManual: (...args: unknown[]) => {
@@ -39,26 +40,28 @@ jest.mock('@sentry/node', () => {
 
 describe('wrapCloudEventFunction', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   function handleCloudEvent(fn: CloudEventFunctionWithCallback): Promise<any> {
     return new Promise((resolve, reject) => {
-      // eslint-disable-next-line deprecation/deprecation
-      const d = domain.create();
       const context = {
+        id: 'test-event-id',
+        specversion: '1.0',
         type: 'event.type',
       };
-      d.on('error', reject);
-      d.run(() =>
-        process.nextTick(fn, context, (err: any, result: any) => {
+
+      try {
+        fn(context, (err: any, result: any) => {
           if (err != null || err != undefined) {
             reject(err);
           } else {
             resolve(result);
           }
-        }),
-      );
+        });
+      } catch (error) {
+        reject(error);
+      }
     });
   }
 
@@ -72,8 +75,9 @@ describe('wrapCloudEventFunction', () => {
 
       const fakeTransactionContext = {
         name: 'event.type',
-        op: 'function.gcp.cloud_event',
         attributes: {
+          [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+          [FAAS_TRIGGER]: 'cloud_event',
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_cloud_event',
         },
@@ -97,8 +101,9 @@ describe('wrapCloudEventFunction', () => {
 
         const fakeTransactionContext = {
           name: 'event.type',
-          op: 'function.gcp.cloud_event',
           attributes: {
+            [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+            [FAAS_TRIGGER]: 'cloud_event',
             [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_cloud_event',
           },
@@ -123,8 +128,9 @@ describe('wrapCloudEventFunction', () => {
 
         const fakeTransactionContext = {
           name: 'event.type',
-          op: 'function.gcp.cloud_event',
           attributes: {
+            [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+            [FAAS_TRIGGER]: 'cloud_event',
             [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_cloud_event',
           },
@@ -132,6 +138,19 @@ describe('wrapCloudEventFunction', () => {
 
         expect(mockStartSpanManual).toBeCalledWith(fakeTransactionContext, expect.any(Function));
         expect(mockCaptureException).toBeCalledWith(error, expect.any(Function));
+
+        const scopeFunction = mockCaptureException.mock.calls[0][1];
+        const event: Event = { exception: { values: [{}] } };
+        let evtProcessor: ((e: Event) => Event) | undefined = undefined;
+        scopeFunction({ addEventProcessor: vi.fn().mockImplementation(proc => (evtProcessor = proc)) });
+
+        expect(evtProcessor).toBeInstanceOf(Function);
+        // @ts-expect-error just mocking around...
+        expect(evtProcessor(event).exception.values[0]?.mechanism).toEqual({
+          handled: false,
+          type: 'auto.function.serverless.gcp_cloud_event',
+        });
+
         expect(mockSpan.end).toBeCalled();
         expect(mockFlush).toBeCalled();
       });
@@ -147,8 +166,9 @@ describe('wrapCloudEventFunction', () => {
 
       const fakeTransactionContext = {
         name: 'event.type',
-        op: 'function.gcp.cloud_event',
         attributes: {
+          [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+          [FAAS_TRIGGER]: 'cloud_event',
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_cloud_event',
         },
@@ -156,6 +176,19 @@ describe('wrapCloudEventFunction', () => {
 
       expect(mockStartSpanManual).toBeCalledWith(fakeTransactionContext, expect.any(Function));
       expect(mockCaptureException).toBeCalledWith(error, expect.any(Function));
+
+      const scopeFunction = mockCaptureException.mock.calls[0][1];
+      const event: Event = { exception: { values: [{}] } };
+      let evtProcessor: ((e: Event) => Event) | undefined = undefined;
+      scopeFunction({ addEventProcessor: vi.fn().mockImplementation(proc => (evtProcessor = proc)) });
+
+      expect(evtProcessor).toBeInstanceOf(Function);
+      // @ts-expect-error just mocking around...
+      expect(evtProcessor(event).exception.values[0]?.mechanism).toEqual({
+        handled: false,
+        type: 'auto.function.serverless.gcp_cloud_event',
+      });
+
       expect(mockSpan.end).toBeCalled();
       expect(mockFlush).toBeCalled();
     });
@@ -171,8 +204,9 @@ describe('wrapCloudEventFunction', () => {
 
       const fakeTransactionContext = {
         name: 'event.type',
-        op: 'function.gcp.cloud_event',
         attributes: {
+          [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+          [FAAS_TRIGGER]: 'cloud_event',
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_cloud_event',
         },
@@ -193,8 +227,9 @@ describe('wrapCloudEventFunction', () => {
 
       const fakeTransactionContext = {
         name: 'event.type',
-        op: 'function.gcp.cloud_event',
         attributes: {
+          [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+          [FAAS_TRIGGER]: 'cloud_event',
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_cloud_event',
         },
@@ -202,6 +237,19 @@ describe('wrapCloudEventFunction', () => {
 
       expect(mockStartSpanManual).toBeCalledWith(fakeTransactionContext, expect.any(Function));
       expect(mockCaptureException).toBeCalledWith(error, expect.any(Function));
+
+      const scopeFunction = mockCaptureException.mock.calls[0][1];
+      const event: Event = { exception: { values: [{}] } };
+      let evtProcessor: ((e: Event) => Event) | undefined = undefined;
+      scopeFunction({ addEventProcessor: vi.fn().mockImplementation(proc => (evtProcessor = proc)) });
+
+      expect(evtProcessor).toBeInstanceOf(Function);
+      // @ts-expect-error just mocking around...
+      expect(evtProcessor(event).exception.values[0]?.mechanism).toEqual({
+        handled: false,
+        type: 'auto.function.serverless.gcp_cloud_event',
+      });
+
       expect(mockSpan.end).toBeCalled();
       expect(mockFlush).toBeCalled();
     });
@@ -216,8 +264,9 @@ describe('wrapCloudEventFunction', () => {
 
       const fakeTransactionContext = {
         name: 'event.type',
-        op: 'function.gcp.cloud_event',
         attributes: {
+          [SENTRY_OP]: FAAS_FUNCTION_GCP_SPAN_OP,
+          [FAAS_TRIGGER]: 'cloud_event',
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'component',
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.function.serverless.gcp_cloud_event',
         },
@@ -225,6 +274,18 @@ describe('wrapCloudEventFunction', () => {
 
       expect(mockStartSpanManual).toBeCalledWith(fakeTransactionContext, expect.any(Function));
       expect(mockCaptureException).toBeCalledWith(error, expect.any(Function));
+
+      const scopeFunction = mockCaptureException.mock.calls[0][1];
+      const event: Event = { exception: { values: [{}] } };
+      let evtProcessor: ((e: Event) => Event) | undefined = undefined;
+      scopeFunction({ addEventProcessor: vi.fn().mockImplementation(proc => (evtProcessor = proc)) });
+
+      expect(evtProcessor).toBeInstanceOf(Function);
+      // @ts-expect-error just mocking around...
+      expect(evtProcessor(event).exception.values[0]?.mechanism).toEqual({
+        handled: false,
+        type: 'auto.function.serverless.gcp_cloud_event',
+      });
     });
   });
 
@@ -232,6 +293,10 @@ describe('wrapCloudEventFunction', () => {
     const handler: CloudEventFunction = _context => 42;
     const wrappedHandler = wrapCloudEventFunction(handler);
     await handleCloudEvent(wrappedHandler);
-    expect(mockScope.setContext).toBeCalledWith('gcp.function.context', { type: 'event.type' });
+    expect(mockScope.setContext).toBeCalledWith('gcp.function.context', {
+      id: 'test-event-id',
+      specversion: '1.0',
+      type: 'event.type',
+    });
   });
 });

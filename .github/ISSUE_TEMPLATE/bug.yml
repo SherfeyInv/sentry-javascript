@@ -1,6 +1,6 @@
 name: 🐞 Bug Report
 description: Tell us about something that's not working the way we (probably) intend.
-type: 'bug'
+labels: ['Bug']
 body:
   - type: checkboxes
     attributes:
@@ -32,24 +32,36 @@ body:
       options:
         - '@sentry/browser'
         - '@sentry/node'
+        - '@sentry/node - express'
+        - '@sentry/node - fastify'
+        - '@sentry/node - koa'
+        - '@sentry/node - hapi'
+        - '@sentry/node - connect'
+        - '@sentry/node-native'
         - '@sentry/angular'
         - '@sentry/astro'
         - '@sentry/aws-serverless'
         - '@sentry/bun'
         - '@sentry/cloudflare'
+        - '@sentry/cloudflare - hono'
         - '@sentry/deno'
+        - '@sentry/effect'
+        - '@sentry/elysia'
         - '@sentry/ember'
         - '@sentry/gatsby'
         - '@sentry/google-cloud-serverless'
         - '@sentry/nestjs'
         - '@sentry/nextjs'
+        - '@sentry/nitro'
         - '@sentry/nuxt'
         - '@sentry/react'
+        - '@sentry/react-router'
         - '@sentry/remix'
         - '@sentry/solid'
         - '@sentry/solidstart'
         - '@sentry/svelte'
         - '@sentry/sveltekit'
+        - '@sentry/tanstackstart-react'
         - '@sentry/vue'
         - '@sentry/wasm'
         - Sentry Browser Loader
@@ -85,9 +97,9 @@ body:
     attributes:
       label: Reproduction Example/SDK Setup
       description:
-        To ensure that we can help you as fast as possible, please share a link to a reproduction example (GitHub repo or online code editor).
-        This enables us to quickly understand and address your issue.
-        If you do not post a link, kindly paste your `Sentry.init` code, so we can see how you set up Sentry.
+        To ensure that we can help you as fast as possible, please share a link to a reproduction example (GitHub repo
+        or online code editor). This enables us to quickly understand and address your issue. If you do not post a link,
+        kindly paste your `Sentry.init` code, so we can see how you set up Sentry.
       placeholder: |-
         https://some-JS-online-code-editor.com/my-example
 
@@ -123,7 +135,18 @@ body:
       description: Logs? Screenshots? Yes, please.
     validations:
       required: true
-  - type: markdown
+  - type: textarea
+    id: additional
     attributes:
-      value: |-
-        ## Thanks 🙏
+      label: Additional Context
+      description: Add any other context here.
+    validations:
+      required: false
+  - type: dropdown
+    attributes:
+      label: 'Priority'
+      description: Please keep the pre-filled option, which helps us manage issue prioritization.
+      default: 0
+      options:
+        - <sub>React with 👍 to help prioritize this issue. Please use comments to provide useful context, avoiding `+1`
+          or `me too`, to help us triage it.</sub>

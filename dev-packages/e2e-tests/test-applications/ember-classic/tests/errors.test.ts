@@ -19,7 +19,7 @@ test('sends an error', async ({ page }) => {
           type: 'TypeError',
           value: 'this.nonExistentFunction is not a function',
           mechanism: {
-            type: 'instrument',
+            type: 'auto.browser.browserapierrors.addEventListener',
             handled: false,
           },
         },
@@ -31,7 +31,7 @@ test('sends an error', async ({ page }) => {
 
 test('assigns the correct transaction value after a navigation', async ({ page }) => {
   const pageloadTxnPromise = waitForTransaction('ember-classic', async transactionEvent => {
-    return !!transactionEvent?.transaction && transactionEvent.contexts?.trace?.op === 'pageload';
+    return !!transactionEvent.transaction && transactionEvent.contexts?.trace?.op === 'pageload';
   });
 
   const errorPromise = waitForError('ember-classic', async errorEvent => {
@@ -55,7 +55,7 @@ test('assigns the correct transaction value after a navigation', async ({ page }
           type: 'TypeError',
           value: 'this.nonExistentFunction is not a function',
           mechanism: {
-            type: 'instrument',
+            type: 'auto.browser.browserapierrors.addEventListener',
             handled: false,
           },
         },

@@ -1,6 +1,5 @@
 import * as Sentry from '@sentry/react';
 import { createBrowserHistory } from 'history';
-// biome-ignore lint/nursery/noUnusedImports: <explanation>
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Route, Router, Switch } from 'react-router-dom';
@@ -12,6 +11,7 @@ const replay = Sentry.replayIntegration();
 const history = createBrowserHistory();
 
 Sentry.init({
+  traceLifecycle: 'static',
   environment: 'qa', // dynamic sampling bias to keep transactions
   dsn:
     process.env.REACT_APP_E2E_TEST_DSN ||

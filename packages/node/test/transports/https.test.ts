@@ -1,22 +1,20 @@
+import type { EventEnvelope, EventItem } from '@sentry/core';
+import { createEnvelope, createTransport, serializeEnvelope } from '@sentry/core';
 import * as http from 'http';
 import * as https from 'https';
-import { createTransport } from '@sentry/core';
-import { createEnvelope, serializeEnvelope } from '@sentry/core';
-import type { EventEnvelope, EventItem } from '@sentry/core';
-
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
+import * as httpProxyAgent from '../../src/proxy';
 import { makeNodeTransport } from '../../src/transports';
 import type { HTTPModule, HTTPModuleRequestIncomingMessage } from '../../src/transports/http-module';
 import testServerCerts from './test-server-certs';
 
-jest.mock('@sentry/core', () => {
-  const actualCore = jest.requireActual('@sentry/core');
+vi.mock('@sentry/core', async () => {
+  const actualCore = await vi.importActual('@sentry/core');
   return {
     ...actualCore,
-    createTransport: jest.fn().mockImplementation(actualCore.createTransport),
+    createTransport: vi.fn().mockImplementation(actualCore.createTransport),
   };
 });
-
-import * as httpProxyAgent from '../../src/proxy';
 
 const SUCCESS = 200;
 const RATE_LIMIT = 429;
@@ -49,7 +47,7 @@ function setupTestServer(
     res.end();
 
     // also terminate socket because keepalive hangs connection a bit
-    // eslint-disable-next-line deprecation/deprecation
+    // eslint-disable-next-line typescript/no-deprecated
     res.connection?.end();
   });
 
@@ -69,7 +67,7 @@ const EVENT_ENVELOPE = createEnvelope<EventEnvelope>({ event_id: 'aa3ff046696b4b
 const SERIALIZED_EVENT_ENVELOPE = serializeEnvelope(EVENT_ENVELOPE);
 
 const unsafeHttpsModule: HTTPModule = {
-  request: jest
+  request: vi
     .fn()
     .mockImplementation((options: https.RequestOptions, callback?: (res: HTTPModuleRequestIncomingMessage) => void) => {
       return https.request({ ...options, rejectUnauthorized: false }, callback);
@@ -82,15 +80,18 @@ const defaultOptions = {
   recordDroppedEvent: () => undefined, // noop
 };
 
-afterEach(done => {
-  jest.clearAllMocks();
+afterEach(
+  () =>
+    new Promise<void>(done => {
+      vi.clearAllMocks();
 
-  if (testServer && testServer.listening) {
-    testServer.close(done);
-  } else {
-    done();
-  }
-});
+      if (testServer?.listening) {
+        testServer.close(() => done());
+      } else {
+        done();
+      }
+    }),
+);
 
 describe('makeNewHttpsTransport()', () => {
   describe('.send()', () => {
@@ -180,7 +181,7 @@ describe('makeNewHttpsTransport()', () => {
   });
 
   describe('proxy', () => {
-    const proxyAgentSpy = jest
+    const proxyAgentSpy = vi
       .spyOn(httpProxyAgent, 'HttpsProxyAgent')
       // @ts-expect-error using http agent as https proxy agent
       .mockImplementation(() => new http.Agent({ keepAlive: false, maxSockets: 30, timeout: 2000 }));
@@ -291,7 +292,7 @@ describe('makeNewHttpsTransport()', () => {
     });
 
     makeNodeTransport(defaultOptions);
-    const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+    const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
     const executorResult = registeredRequestExecutor({
       body: serializeEnvelope(EVENT_ENVELOPE),
@@ -311,7 +312,7 @@ describe('makeNewHttpsTransport()', () => {
     });
 
     makeNodeTransport(defaultOptions);
-    const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+    const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
     const executorResult = registeredRequestExecutor({
       body: serializeEnvelope(EVENT_ENVELOPE),
@@ -339,7 +340,7 @@ describe('makeNewHttpsTransport()', () => {
     });
 
     makeNodeTransport(defaultOptions);
-    const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+    const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
     const executorResult = registeredRequestExecutor({
       body: serializeEnvelope(EVENT_ENVELOPE),
@@ -367,7 +368,7 @@ describe('makeNewHttpsTransport()', () => {
     });
 
     makeNodeTransport(defaultOptions);
-    const registeredRequestExecutor = (createTransport as jest.Mock).mock.calls[0][1];
+    const registeredRequestExecutor = (createTransport as Mock).mock.calls[0]?.[1];
 
     const executorResult = registeredRequestExecutor({
       body: serializeEnvelope(EVENT_ENVELOPE),

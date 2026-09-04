@@ -1,24 +1,24 @@
 import {
-  WINDOW,
   browserTracingIntegration,
   startBrowserTracingNavigationSpan,
   startBrowserTracingPageLoadSpan,
+  WINDOW,
 } from '@sentry/browser';
+import type { Client, Integration, Span, TransactionSource } from '@sentry/core';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_OP,
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   getActiveSpan,
   getCurrentScope,
   getRootSpan,
+  SEMANTIC_ATTRIBUTE_SENTRY_OP,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   spanToJSON,
 } from '@sentry/core';
-import type { Client, Integration, Span, TransactionSource } from '@sentry/core';
-import hoistNonReactStatics from 'hoist-non-react-statics';
-import * as React from 'react';
 import type { ReactElement } from 'react';
-
+import * as React from 'react';
+import { hoistNonReactStatics } from './hoist-non-react-statics';
 import type { Action, Location } from './types';
+import { URL_TEMPLATE } from '@sentry/conventions/attributes';
 
 // We need to disable eslint no-explicit-any because any is required for the
 // react-router typings.
@@ -121,11 +121,11 @@ function instrumentReactRouter(
   matchPath?: MatchPath,
 ): void {
   function getInitPathName(): string | undefined {
-    if (history && history.location) {
+    if (history.location) {
       return history.location.pathname;
     }
 
-    if (WINDOW && WINDOW.location) {
+    if (WINDOW.location) {
       return WINDOW.location.pathname;
     }
 
@@ -163,6 +163,7 @@ function instrumentReactRouter(
           [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'pageload',
           [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: `auto.pageload.react.${instrumentationName}`,
           [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: source,
+          ...(source === 'route' && { [URL_TEMPLATE]: name }),
         },
       });
     }
@@ -178,6 +179,7 @@ function instrumentReactRouter(
             [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: `auto.navigation.react.${instrumentationName}`,
             [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: source,
+            ...(source === 'route' && { [URL_TEMPLATE]: name }),
           },
         });
       }
@@ -226,7 +228,7 @@ export function withSentryRouting<P extends Record<string, any>, R extends React
   const componentDisplayName = Route.displayName || Route.name;
 
   const WrappedRoute: React.FC<P> = (props: P) => {
-    if (props && props.computedMatch && props.computedMatch.isExact) {
+    if (props?.computedMatch?.isExact) {
       const route = props.computedMatch.path;
       const activeRootSpan = getActiveRootSpan();
 
@@ -234,7 +236,10 @@ export function withSentryRouting<P extends Record<string, any>, R extends React
 
       if (activeRootSpan) {
         activeRootSpan.updateName(route);
-        activeRootSpan.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'route');
+        activeRootSpan.setAttributes({
+          [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+          [URL_TEMPLATE]: route,
+        });
       }
     }
 
@@ -261,7 +266,7 @@ function getActiveRootSpan(): Span | undefined {
     return undefined;
   }
 
-  const op = spanToJSON(rootSpan).op;
+  const op = spanToJSON(rootSpan).attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP];
 
   // Only use this root span if it is a pageload or navigation span
   return op === 'navigation' || op === 'pageload' ? rootSpan : undefined;

@@ -1,16 +1,39 @@
+import type { Builder, Config } from '@sveltejs/kit';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as url from 'url';
-import type { Builder, Config } from '@sveltejs/kit';
-
 import type { SupportedSvelteKitAdapters } from './detectAdapter';
+
+export type SvelteKitTracingConfig = {
+  tracing?: {
+    server: boolean;
+  };
+  // TODO: Once instrumentation is promoted stable, this will be removed!
+  instrumentation?: {
+    server: boolean;
+  };
+};
+
+/**
+ * The location of SvelteKit's native tracing config differs by version:
+ * - SvelteKit 2.31+ and early Kit 3 prereleases nest it under `kit.experimental.tracing`
+ * - SvelteKit 3 (>= 3.0.0-next.8) promoted it to `kit.tracing`
+ * - SvelteKit 3 (>= 3.0.0-next.21) dropped the `kit` nesting entirely, leaving `tracing`
+ * We type (and read) all of them so detection works across the supported peer range.
+ */
+export type BackwardsForwardsCompatibleKitConfig = Config['kit'] &
+  Pick<SvelteKitTracingConfig, 'tracing'> & { experimental?: SvelteKitTracingConfig };
+
+export interface BackwardsForwardsCompatibleSvelteConfig extends Config {
+  kit?: BackwardsForwardsCompatibleKitConfig;
+}
 
 /**
  * Imports the svelte.config.js file and returns the config object.
  * The sveltekit plugins import the config in the same way.
  * See: https://github.com/sveltejs/kit/blob/master/packages/kit/src/core/config/index.js#L63
  */
-export async function loadSvelteConfig(): Promise<Config> {
+export async function loadSvelteConfig(): Promise<BackwardsForwardsCompatibleSvelteConfig> {
   // This can only be .js (see https://github.com/sveltejs/kit/pull/4031#issuecomment-1049475388)
   const SVELTE_CONFIG_FILE = 'svelte.config.js';
 
@@ -20,11 +43,10 @@ export async function loadSvelteConfig(): Promise<Config> {
     if (!fs.existsSync(configFile)) {
       return {};
     }
-    // @ts-expect-error - we explicitly want to import the svelte config here.
     const svelteConfigModule = await import(`${url.pathToFileURL(configFile).href}`);
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    return (svelteConfigModule?.default as Config) || {};
+    return (svelteConfigModule?.default as BackwardsForwardsCompatibleSvelteConfig) || {};
   } catch (e) {
     // eslint-disable-next-line no-console
     console.warn("[Source Maps Plugin] Couldn't load svelte.config.js:");
@@ -40,6 +62,10 @@ export async function loadSvelteConfig(): Promise<Config> {
  * directory is specified, the default directory is returned.
  */
 export function getHooksFileName(svelteConfig: Config, hookType: 'client' | 'server'): string {
+  // `files` is deprecated in favour of unchangeable file names. Once it is removed, only the
+  // fallback will be necessary. We can remove the curstom files path once we drop support
+  // for that version range (presumably sveltekit 2).
+  // eslint-disable-next-line typescript/no-deprecated
   return svelteConfig.kit?.files?.hooks?.[hookType] || `src/hooks.${hookType}`;
 }
 
@@ -51,6 +77,10 @@ export function getHooksFileName(svelteConfig: Config, hookType: 'client' | 'ser
 export async function getAdapterOutputDir(svelteConfig: Config, adapter: SupportedSvelteKitAdapters): Promise<string> {
   if (adapter === 'node') {
     return getNodeAdapterOutputDir(svelteConfig);
+  }
+  if (adapter === 'cloudflare') {
+    // Cloudflare outputs to outDir\cloudflare as the output dir
+    return path.join(svelteConfig.kit?.outDir || '.svelte-kit', 'cloudflare');
   }
 
   // Auto and Vercel adapters simply use config.kit.outDir
@@ -83,13 +113,10 @@ async function getNodeAdapterOutputDir(svelteConfig: Config): Promise<string> {
     },
     // @ts-expect-error - No need to implement the other methods
     log: {
-      // eslint-disable-next-line @typescript-eslint/no-empty-function -- this should be a noop
       minor() {},
     },
     getBuildDirectory: () => '',
-    // eslint-disable-next-line @typescript-eslint/no-empty-function -- this should be a noop
     rimraf: () => {},
-    // eslint-disable-next-line @typescript-eslint/no-empty-function -- this should be a noop
     mkdirp: () => {},
 
     config: {
@@ -104,7 +131,7 @@ async function getNodeAdapterOutputDir(svelteConfig: Config): Promise<string> {
 
   try {
     await nodeAdapter.adapt(adapterBuilder);
-  } catch (_) {
+  } catch {
     // We expect the adapter to throw in writeClient!
   }
 

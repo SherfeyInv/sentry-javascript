@@ -13,7 +13,9 @@ installGlobals();
 
 const ABORT_DELAY = 5_000;
 
-export const handleError = Sentry.wrapRemixHandleError;
+export const handleError = Sentry.wrapHandleErrorWithSentry(() => {
+  Sentry.setTag('remix-test-tag', 'remix-test-value');
+});
 
 export default function handleRequest(
   request: Request,
@@ -38,11 +40,6 @@ function isBotRequest(userAgent: string | null) {
   // isbot >= 3.8.0, >4
   if ('isbot' in isbotModule && typeof isbotModule.isbot === 'function') {
     return isbotModule.isbot(userAgent);
-  }
-
-  // isbot < 3.8.0
-  if ('default' in isbotModule && typeof isbotModule.default === 'function') {
-    return isbotModule.default(userAgent);
   }
 
   return false;

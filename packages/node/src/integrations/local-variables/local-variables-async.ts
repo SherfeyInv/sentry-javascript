@@ -1,16 +1,16 @@
 import { Worker } from 'node:worker_threads';
-import type { Event, EventHint, Exception, IntegrationFn } from '@sentry/core';
-import { defineIntegration, logger } from '@sentry/core';
+import type { CollectBehavior, Event, EventHint, Exception, IntegrationFn } from '@sentry/core';
+import { debug, defineIntegration, getClient } from '@sentry/core';
 import type { NodeClient } from '../../sdk/client';
 import { isDebuggerEnabled } from '../../utils/debug';
 import type { FrameVariables, LocalVariablesIntegrationOptions, LocalVariablesWorkerArgs } from './common';
-import { LOCAL_VARIABLES_KEY, functionNamesMatch } from './common';
+import { filterFrameVariables, functionNamesMatch, LOCAL_VARIABLES_KEY } from './common';
 
 // This string is a placeholder that gets overwritten with the worker code.
 export const base64WorkerScript = '###LocalVariablesWorkerScript###';
 
 function log(...args: unknown[]): void {
-  logger.log('[LocalVariables]', ...args);
+  debug.log('[LocalVariables]', ...args);
 }
 
 /**
@@ -19,7 +19,16 @@ function log(...args: unknown[]): void {
 export const localVariablesAsyncIntegration = defineIntegration(((
   integrationOptions: LocalVariablesIntegrationOptions = {},
 ) => {
-  function addLocalVariablesToException(exception: Exception, localVariables: FrameVariables[]): void {
+  function addLocalVariablesToException(
+    exception: Exception,
+    localVariables: FrameVariables[],
+    behavior: CollectBehavior,
+  ): void {
+    // When disabled, nothing is collected so we don't attach empty `vars` to frames
+    if (behavior === false) {
+      return;
+    }
+
     // Filter out frames where the function name is `new Promise` since these are in the error.stack frames
     // but do not appear in the debugger call frames
     const frames = (exception.stacktrace?.frames || []).filter(frame => frame.function !== 'new Promise');
@@ -39,15 +48,15 @@ export const localVariablesAsyncIntegration = defineIntegration(((
       if (
         // We need to have vars to add
         frameLocalVariables.vars === undefined ||
-        // We're not interested in frames that are not in_app because the vars are not relevant
-        frame.in_app === false ||
+        // Only skip out-of-app frames if includeOutOfAppFrames is not true
+        (frame.in_app === false && integrationOptions.includeOutOfAppFrames !== true) ||
         // The function names need to match
         !functionNamesMatch(frame.function, frameLocalVariables.function)
       ) {
         continue;
       }
 
-      frame.vars = frameLocalVariables.vars;
+      frame.vars = filterFrameVariables(frameLocalVariables.vars, behavior);
     }
   }
 
@@ -58,8 +67,10 @@ export const localVariablesAsyncIntegration = defineIntegration(((
       LOCAL_VARIABLES_KEY in hint.originalException &&
       Array.isArray(hint.originalException[LOCAL_VARIABLES_KEY])
     ) {
+      const behavior = getClient()?.getDataCollectionOptions().stackFrameVariables ?? true;
+
       for (const exception of event.exception?.values || []) {
-        addLocalVariablesToException(exception, hint.originalException[LOCAL_VARIABLES_KEY]);
+        addLocalVariablesToException(exception, hint.originalException[LOCAL_VARIABLES_KEY], behavior);
       }
 
       hint.originalException[LOCAL_VARIABLES_KEY] = undefined;
@@ -102,7 +113,7 @@ export const localVariablesAsyncIntegration = defineIntegration(((
   }
 
   return {
-    name: 'LocalVariablesAsync',
+    name: 'LocalVariablesAsync' as const,
     async setup(client: NodeClient) {
       const clientOptions = client.getOptions();
 
@@ -111,13 +122,13 @@ export const localVariablesAsyncIntegration = defineIntegration(((
       }
 
       if (await isDebuggerEnabled()) {
-        logger.warn('Local variables capture has been disabled because the debugger was already enabled');
+        debug.warn('Local variables capture has been disabled because the debugger was already enabled');
         return;
       }
 
       const options: LocalVariablesWorkerArgs = {
         ...integrationOptions,
-        debug: logger.isEnabled(),
+        debug: debug.isEnabled(),
       };
 
       startInspector().then(
@@ -125,11 +136,11 @@ export const localVariablesAsyncIntegration = defineIntegration(((
           try {
             startWorker(options);
           } catch (e) {
-            logger.error('Failed to start worker', e);
+            debug.error('Failed to start worker', e);
           }
         },
         e => {
-          logger.error('Failed to start inspector', e);
+          debug.error('Failed to start inspector', e);
         },
       );
     },

@@ -4,7 +4,7 @@
   "include": ["src/**/*"],
 
   "compilerOptions": {
-    "module": "esnext",
+    "lib": ["es2020"],
     "types": ["node", "@cloudflare/workers-types"]
   }
 }

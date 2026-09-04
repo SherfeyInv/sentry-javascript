@@ -1,14 +1,13 @@
 {
   "compilerOptions": {
-    "alwaysStrict": false,
     "declaration": true,
     "declarationMap": true,
-    "downlevelIteration": true,
     "importHelpers": true,
     "inlineSources": true,
     "isolatedModules": true,
-    "lib": ["ES2018"],
-    "moduleResolution": "node",
+    "lib": ["es2020", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "noErrorTruncation": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
@@ -18,7 +17,8 @@
     "sourceMap": true,
     "strict": true,
     "strictBindCallApply": false,
-    "target": "es2018",
-    "noUncheckedIndexedAccess": true
+    "target": "es2020",
+    "noUncheckedIndexedAccess": true,
+    "types": ["node"]
   }
 }

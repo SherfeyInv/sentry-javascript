@@ -4,9 +4,9 @@
 // https://github.com/fastify/fastify/blob/87f9f20687c938828f1138f91682d568d2a31e53/types/request.d.ts#L41
 interface FastifyRequest {
   routeOptions?: {
-    method?: string;
     url?: string;
   };
+  method?: string;
 }
 
 // Partial extract of ExpressRequest interface
@@ -63,8 +63,8 @@ export interface CallHandler {
  * Represents an injectable target class in NestJS.
  */
 export interface InjectableTarget {
-  name: string;
-  sentryPatched?: boolean;
+  name?: string;
+  sentryPatchedInjectable?: boolean;
   __SENTRY_INTERNAL__?: boolean;
   prototype: {
     use?: (req: unknown, res: unknown, next: () => void, ...args: any[]) => void;
@@ -78,8 +78,8 @@ export interface InjectableTarget {
  * Represents a target class in NestJS annotated with @Catch.
  */
 export interface CatchTarget {
-  name: string;
-  sentryPatched?: boolean;
+  name?: string;
+  sentryPatchedCatch?: boolean;
   __SENTRY_INTERNAL__?: boolean;
   prototype: {
     catch?: (...args: any[]) => any;
@@ -91,8 +91,26 @@ export interface CatchTarget {
  */
 export interface OnEventTarget {
   name: string;
-  sentryPatched?: boolean;
   __SENTRY_INTERNAL__?: boolean;
+}
+
+/**
+ * Represents a target method in NestJS annotated with @Cron, @Interval, or @Timeout.
+ */
+export interface ScheduleDecoratorTarget {
+  name: string;
+  __SENTRY_INTERNAL__?: boolean;
+}
+
+/**
+ * Represents a target class in NestJS annotated with @Processor (BullMQ).
+ */
+export interface ProcessorDecoratorTarget {
+  name: string;
+  __SENTRY_INTERNAL__?: boolean;
+  prototype: {
+    process?: (...args: any[]) => Promise<any>;
+  };
 }
 
 /**

@@ -1,8 +1,17 @@
-import { registerSpanErrorInstrumentation } from '@sentry/core';
+import { registerSpanErrorInstrumentation } from '@sentry/core/browser';
+import {
+  consoleLoggingIntegrationShim,
+  elementTimingIntegrationShim,
+  loggerShim,
+  metricsShim,
+} from '@sentry-internal/integration-shims';
+import { feedbackAsyncIntegration } from './feedbackAsync';
 
 registerSpanErrorInstrumentation();
 
 export * from './index.bundle.base';
+
+export { consoleLoggingIntegrationShim as consoleLoggingIntegration, loggerShim as logger, metricsShim as metrics };
 
 export {
   getActiveSpan,
@@ -14,17 +23,25 @@ export {
   withActiveSpan,
   getSpanDescendants,
   setMeasurement,
-  captureFeedback,
-} from '@sentry/core';
+} from '@sentry/core/browser';
 
 export {
   browserTracingIntegration,
+  isBotUserAgent,
   startBrowserTracingNavigationSpan,
   startBrowserTracingPageLoadSpan,
 } from './tracing/browserTracingIntegration';
+export { elementTimingIntegrationShim as elementTimingIntegration };
+export { setActiveSpanInBrowser } from './tracing/setActiveSpan';
 
-import { feedbackAsyncIntegration } from './feedbackAsync';
-export { getFeedback } from '@sentry-internal/feedback';
+export { reportPageLoaded } from './tracing/reportPageLoaded';
+
+export { spanStreamingIntegration } from './integrations/spanstreaming';
+export { fetchStreamPerformanceIntegration } from './integrations/fetchStreamPerformance';
+export { webVitalsIntegration } from './integrations/webVitals';
+
+export { getFeedback, sendFeedback } from '@sentry/feedback';
+
 export { feedbackAsyncIntegration as feedbackAsyncIntegration, feedbackAsyncIntegration as feedbackIntegration };
 
-export { replayIntegration, getReplay } from '@sentry-internal/replay';
+export { replayIntegration, getReplay } from '@sentry/replay';

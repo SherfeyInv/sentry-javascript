@@ -1,7 +1,7 @@
 import type { IntegrationFn } from '@sentry/core';
 import { createStackParser, defineIntegration, dirname, nodeStackLineParser } from '@sentry/core';
 
-const INTEGRATION_NAME = 'NormalizePaths';
+const INTEGRATION_NAME = 'NormalizePaths' as const;
 
 function appRootFromErrorStack(error: Error): string | undefined {
   // We know at the other end of the stack from here is the entry point that called 'init'
@@ -18,7 +18,7 @@ function appRootFromErrorStack(error: Error): string | undefined {
           .replace(/\\/g, '/') // replace all `\` instances with `/`
           .split('/')
           .filter(seg => seg !== ''), // remove empty segments
-    ) as string[][];
+    );
 
   const firstPath = paths[0];
 
@@ -54,7 +54,7 @@ function getCwd(): string | undefined {
     if (permission.state == 'granted') {
       return Deno.cwd();
     }
-  } catch (_) {
+  } catch {
     //
   }
 

@@ -1,26 +1,52 @@
 export {
   addPerformanceInstrumentationHandler,
   addClsInstrumentationHandler,
-  addFidInstrumentationHandler,
   addTtfbInstrumentationHandler,
   addLcpInstrumentationHandler,
   addInpInstrumentationHandler,
-} from './metrics/instrument';
+} from './instrumentation/performanceObserver';
 
 export {
   addPerformanceEntries,
   startTrackingInteractions,
   startTrackingLongTasks,
   startTrackingLongAnimationFrames,
+} from './performance/entries';
+
+export {
+  addWebVitalsToSpan,
+  // eslint-disable-next-line typescript/no-deprecated
   startTrackingWebVitals,
-  startTrackingINP,
   registerInpInteractionListener,
-} from './metrics/browserMetrics';
+} from './web-vitals/tracking';
 
-export { addClickKeypressInstrumentationHandler } from './instrument/dom';
+// eslint-disable-next-line typescript/no-deprecated
+export { elementTimingIntegration, startTrackingElementTiming } from './performance/elementTiming';
 
-export { addHistoryInstrumentationHandler } from './instrument/history';
+export { userTimingIntegration } from './performance/userTiming';
+
+export { extractNetworkProtocol } from './performance/utils';
+
+export { trackClsAsSpan, trackInpAsSpan, trackLcpAsSpan } from './web-vitals/spans';
+
+export { whenIdleOrHidden } from './web-vitals/utils';
+
+export { addClickKeypressInstrumentationHandler } from './instrumentation/dom';
+
+export { addHistoryInstrumentationHandler } from './instrumentation/history';
 
 export { fetch, setTimeout, clearCachedImplementation, getNativeImplementation } from './getNativeImplementation';
 
-export { addXhrInstrumentationHandler, SENTRY_XHR_DATA_KEY } from './instrument/xhr';
+export { addXhrInstrumentationHandler, SENTRY_XHR_DATA_KEY } from './instrumentation/xhr';
+
+export { getBodyString, getFetchRequestArgBody, serializeFormData, parseXhrResponseHeaders } from './networkUtils';
+
+export { resourceTimingToSpanAttributes } from './performance/resourceTiming';
+
+export { htmlTreeAsString } from './htmlTreeAsString';
+
+export { isElement } from './is';
+
+export { getAbsoluteUrl } from './instrumentation/location';
+
+export type { FetchHint, NetworkMetaWarning, XhrHint } from './types';

@@ -1,345 +1,178 @@
 /* eslint-disable max-lines */
-import type { DebugImage, Envelope, Event, EventEnvelope, Profile, Span, ThreadCpuProfile } from '@sentry/core';
+import type { Client, ContinuousThreadCpuProfile, DebugImage, ProfileChunk, Span } from '@sentry/core/browser';
 import {
-  DEFAULT_ENVIRONMENT,
   browserPerformanceTimeOrigin,
-  forEachEnvelopeItem,
+  debug,
   getClient,
   getDebugImagesForResources,
-  logger,
-  spanToJSON,
-  timestampInSeconds,
+  GLOBAL_OBJ,
   uuid4,
-} from '@sentry/core';
+} from '@sentry/core/browser';
+import type { BrowserOptions } from '../client';
 import { DEBUG_BUILD } from '../debug-build';
 import { WINDOW } from '../helpers';
-import type { JSSelfProfile, JSSelfProfileStack, JSSelfProfiler, JSSelfProfilerConstructor } from './jsSelfProfiling';
+import type { JSSelfProfile, JSSelfProfiler, JSSelfProfilerConstructor } from './jsSelfProfiling';
 
-const MS_TO_NS = 1e6;
-// Use 0 as main thread id which is identical to threadId in node:worker_threads
-// where main logs 0 and workers seem to log in increments of 1
-const THREAD_ID_STRING = String(0);
-const THREAD_NAME = 'main';
+// Checking if we are in Main or Worker thread: `self` (not `window`) is the `globalThis` in Web Workers and `importScripts` are only available in Web Workers
+const isMainThread = 'window' in GLOBAL_OBJ && GLOBAL_OBJ.window === GLOBAL_OBJ && typeof importScripts === 'undefined';
 
-// Machine properties (eval only once)
-let OS_PLATFORM = '';
-let OS_PLATFORM_VERSION = '';
-let OS_ARCH = '';
-let OS_BROWSER = (WINDOW.navigator && WINDOW.navigator.userAgent) || '';
-let OS_MODEL = '';
-const OS_LOCALE =
-  (WINDOW.navigator && WINDOW.navigator.language) ||
-  (WINDOW.navigator && WINDOW.navigator.languages && WINDOW.navigator.languages[0]) ||
-  '';
-
-type UAData = {
-  platform?: string;
-  architecture?: string;
-  model?: string;
-  platformVersion?: string;
-  fullVersionList?: {
-    brand: string;
-    version: string;
-  }[];
-};
-
-interface UserAgentData {
-  getHighEntropyValues: (keys: string[]) => Promise<UAData>;
-}
-
-function isUserAgentData(data: unknown): data is UserAgentData {
-  return typeof data === 'object' && data !== null && 'getHighEntropyValues' in data;
-}
-
-// @ts-expect-error userAgentData is not part of the navigator interface yet
-const userAgentData = WINDOW.navigator && WINDOW.navigator.userAgentData;
-
-if (isUserAgentData(userAgentData)) {
-  userAgentData
-    .getHighEntropyValues(['architecture', 'model', 'platform', 'platformVersion', 'fullVersionList'])
-    .then((ua: UAData) => {
-      OS_PLATFORM = ua.platform || '';
-      OS_ARCH = ua.architecture || '';
-      OS_MODEL = ua.model || '';
-      OS_PLATFORM_VERSION = ua.platformVersion || '';
-
-      if (ua.fullVersionList && ua.fullVersionList.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        const firstUa = ua.fullVersionList[ua.fullVersionList.length - 1]!;
-        OS_BROWSER = `${firstUa.brand} ${firstUa.version}`;
-      }
-    })
-    .catch(e => void e);
-}
-
-function isProcessedJSSelfProfile(profile: ThreadCpuProfile | JSSelfProfile): profile is JSSelfProfile {
-  return !('thread_metadata' in profile);
-}
-
-// Enriches the profile with threadId of the current thread.
-// This is done in node as we seem to not be able to get the info from C native code.
-/**
- *
- */
-export function enrichWithThreadInformation(profile: ThreadCpuProfile | JSSelfProfile): ThreadCpuProfile {
-  if (!isProcessedJSSelfProfile(profile)) {
-    return profile;
-  }
-
-  return convertJSSelfProfileToSampledFormat(profile);
-}
-
-// Profile is marked as optional because it is deleted from the metadata
-// by the integration before the event is processed by other integrations.
-export interface ProfiledEvent extends Event {
-  sdkProcessingMetadata: {
-    profile?: JSSelfProfile;
-  };
-}
-
-function getTraceId(event: Event): string {
-  const traceId: unknown = event && event.contexts && event.contexts['trace'] && event.contexts['trace']['trace_id'];
-  // Log a warning if the profile has an invalid traceId (should be uuidv4).
-  // All profiles and transactions are rejected if this is the case and we want to
-  // warn users that this is happening if they enable debug flag
-  if (typeof traceId === 'string' && traceId.length !== 32) {
-    if (DEBUG_BUILD) {
-      logger.log(`[Profiling] Invalid traceId: ${traceId} on profiled event`);
-    }
-  }
-  if (typeof traceId !== 'string') {
-    return '';
-  }
-
-  return traceId;
-}
-/**
- * Creates a profiling event envelope from a Sentry event. If profile does not pass
- * validation, returns null.
- * @param event
- * @param dsn
- * @param metadata
- * @param tunnel
- * @returns {EventEnvelope | null}
- */
+// Setting ID to 0 as we cannot get an ID from Web Workers
+export const PROFILER_THREAD_ID_STRING = String(0);
+export const PROFILER_THREAD_NAME = isMainThread ? 'main' : 'worker';
 
 /**
- * Creates a profiling event envelope from a Sentry event.
+ * Create a profile chunk envelope item
  */
-export function createProfilePayload(
-  profile_id: string,
-  start_timestamp: number | undefined,
-  processed_profile: JSSelfProfile,
-  event: ProfiledEvent,
-): Profile {
-  if (event.type !== 'transaction') {
-    // createProfilingEventEnvelope should only be called for transactions,
-    // we type guard this behavior with isProfiledTransactionEvent.
-    throw new TypeError('Profiling events may only be attached to transactions, this should never occur.');
-  }
-
-  if (processed_profile === undefined || processed_profile === null) {
+export function createProfileChunkPayload(
+  jsSelfProfile: JSSelfProfile,
+  client: Client,
+  profilerId?: string,
+): ProfileChunk {
+  // only == to catch null and undefined
+  if (jsSelfProfile == null) {
     throw new TypeError(
-      `Cannot construct profiling event envelope without a valid profile. Got ${processed_profile} instead.`,
+      `Cannot construct profiling event envelope without a valid profile. Got ${jsSelfProfile} instead.`,
     );
   }
 
-  const traceId = getTraceId(event);
-  const enrichedThreadProfile = enrichWithThreadInformation(processed_profile);
-  const transactionStartMs = start_timestamp
-    ? start_timestamp
-    : typeof event.start_timestamp === 'number'
-      ? event.start_timestamp * 1000
-      : timestampInSeconds() * 1000;
-  const transactionEndMs = typeof event.timestamp === 'number' ? event.timestamp * 1000 : timestampInSeconds() * 1000;
+  const continuousProfile = convertToContinuousProfile(jsSelfProfile);
 
-  const profile: Profile = {
-    event_id: profile_id,
-    timestamp: new Date(transactionStartMs).toISOString(),
+  const options = client.getOptions();
+  const sdk = client.getSdkMetadata?.()?.sdk;
+
+  return {
+    chunk_id: uuid4(),
+    client_sdk: {
+      name: sdk?.name ?? 'sentry.javascript.browser',
+      version: sdk?.version ?? '0.0.0',
+    },
+    profiler_id: profilerId || uuid4(),
     platform: 'javascript',
-    version: '1',
-    release: event.release || '',
-    environment: event.environment || DEFAULT_ENVIRONMENT,
-    runtime: {
-      name: 'javascript',
-      version: WINDOW.navigator.userAgent,
-    },
-    os: {
-      name: OS_PLATFORM,
-      version: OS_PLATFORM_VERSION,
-      build_number: OS_BROWSER,
-    },
-    device: {
-      locale: OS_LOCALE,
-      model: OS_MODEL,
-      manufacturer: OS_BROWSER,
-      architecture: OS_ARCH,
-      is_emulator: false,
-    },
+    version: '2',
+    release: options.release ?? '',
+    environment: options.environment ?? 'production',
     debug_meta: {
-      images: applyDebugMetadata(processed_profile.resources),
+      // function name obfuscation
+      images: applyDebugMetadata(jsSelfProfile.resources),
     },
-    profile: enrichedThreadProfile,
-    transactions: [
-      {
-        name: event.transaction || '',
-        id: event.event_id || uuid4(),
-        trace_id: traceId,
-        active_thread_id: THREAD_ID_STRING,
-        relative_start_ns: '0',
-        relative_end_ns: ((transactionEndMs - transactionStartMs) * 1e6).toFixed(0),
-      },
-    ],
+    profile: continuousProfile,
   };
-
-  return profile;
 }
 
 /**
- *
+ * Validate a profile chunk against the Sample Format V2 requirements.
+ * https://develop.sentry.dev/sdk/telemetry/profiles/sample-format-v2/
+ * - Presence of samples, stacks, frames
+ * - Required metadata fields
  */
-export function isProfiledTransactionEvent(event: Event): event is ProfiledEvent {
-  return !!(event.sdkProcessingMetadata && event.sdkProcessingMetadata['profile']);
-}
+export function validateProfileChunk(chunk: ProfileChunk): { valid: true } | { reason: string } {
+  try {
+    // Required metadata
+    if (!chunk || typeof chunk !== 'object') {
+      return { reason: 'chunk is not an object' };
+    }
 
-/*
-  See packages/browser-utils/src/browser/router.ts
-*/
-/**
- *
- */
-export function isAutomatedPageLoadSpan(span: Span): boolean {
-  return spanToJSON(span).op === 'pageload';
-}
+    // profiler_id and chunk_id must be 32 lowercase hex chars
+    const isHex32 = (val: unknown): boolean => typeof val === 'string' && /^[a-f0-9]{32}$/.test(val);
+    if (!isHex32(chunk.profiler_id)) {
+      return { reason: 'missing or invalid profiler_id' };
+    }
+    if (!isHex32(chunk.chunk_id)) {
+      return { reason: 'missing or invalid chunk_id' };
+    }
 
-/**
- * Converts a JSSelfProfile to a our sampled format.
- * Does not currently perform stack indexing.
- */
-export function convertJSSelfProfileToSampledFormat(input: JSSelfProfile): Profile['profile'] {
-  let EMPTY_STACK_ID: undefined | number = undefined;
-  let STACK_ID = 0;
+    if (!chunk.client_sdk) {
+      return { reason: 'missing client_sdk metadata' };
+    }
 
-  // Initialize the profile that we will fill with data
-  const profile: Profile['profile'] = {
-    samples: [],
-    stacks: [],
-    frames: [],
-    thread_metadata: {
-      [THREAD_ID_STRING]: { name: THREAD_NAME },
-    },
-  };
+    // Profile data must have frames, stacks, samples
+    const profile = chunk.profile as { frames?: unknown[]; stacks?: unknown[]; samples?: unknown[] } | undefined;
+    if (!profile) {
+      return { reason: 'missing profile data' };
+    }
 
-  const firstSample = input.samples[0];
-  if (!firstSample) {
-    return profile;
+    if (!Array.isArray(profile.frames) || !profile.frames.length) {
+      return { reason: 'profile has no frames' };
+    }
+    if (!Array.isArray(profile.stacks) || !profile.stacks.length) {
+      return { reason: 'profile has no stacks' };
+    }
+    if (!Array.isArray(profile.samples) || !profile.samples.length) {
+      return { reason: 'profile has no samples' };
+    }
+
+    return { valid: true };
+  } catch (e) {
+    return { reason: `unknown validation error: ${e}` };
   }
+}
 
-  // We assert samples.length > 0 above and timestamp should always be present
-  const start = firstSample.timestamp;
-  // The JS SDK might change it's time origin based on some heuristic (see See packages/utils/src/time.ts)
-  // when that happens, we need to ensure we are correcting the profile timings so the two timelines stay in sync.
-  // Since JS self profiling time origin is always initialized to performance.timeOrigin, we need to adjust for
-  // the drift between the SDK selected value and our profile time origin.
-  const origin =
-    typeof performance.timeOrigin === 'number' ? performance.timeOrigin : browserPerformanceTimeOrigin || 0;
-  const adjustForOriginChange = origin - (browserPerformanceTimeOrigin || origin);
-
-  input.samples.forEach((jsSample, i) => {
-    // If sample has no stack, add an empty sample
-    if (jsSample.stackId === undefined) {
-      if (EMPTY_STACK_ID === undefined) {
-        EMPTY_STACK_ID = STACK_ID;
-        profile.stacks[EMPTY_STACK_ID] = [];
-        STACK_ID++;
-      }
-
-      profile['samples'][i] = {
-        // convert ms timestamp to ns
-        elapsed_since_start_ns: ((jsSample.timestamp + adjustForOriginChange - start) * MS_TO_NS).toFixed(0),
-        stack_id: EMPTY_STACK_ID,
-        thread_id: THREAD_ID_STRING,
-      };
-      return;
+/**
+ * Convert from JSSelfProfile format to ContinuousThreadCpuProfile format.
+ */
+function convertToContinuousProfile(input: {
+  frames: { name: string; resourceId?: number; line?: number; column?: number }[];
+  stacks: { frameId: number; parentId?: number }[];
+  samples: { timestamp: number; stackId?: number }[];
+  resources: string[];
+}): ContinuousThreadCpuProfile {
+  // Frames map 1:1 by index; fill only when present to avoid sparse writes
+  const frames: ContinuousThreadCpuProfile['frames'] = [];
+  for (let i = 0; i < input.frames.length; i++) {
+    const frame = input.frames[i];
+    if (!frame) {
+      continue;
     }
-
-    let stackTop: JSSelfProfileStack | undefined = input.stacks[jsSample.stackId];
-
-    // Functions in top->down order (root is last)
-    // We follow the stackTop.parentId trail and collect each visited frameId
-    const stack: number[] = [];
-
-    while (stackTop) {
-      stack.push(stackTop.frameId);
-
-      const frame = input.frames[stackTop.frameId];
-
-      // If our frame has not been indexed yet, index it
-      if (frame && profile.frames[stackTop.frameId] === undefined) {
-        profile.frames[stackTop.frameId] = {
-          function: frame.name,
-          abs_path: typeof frame.resourceId === 'number' ? input.resources[frame.resourceId] : undefined,
-          lineno: frame.line,
-          colno: frame.column,
-        };
-      }
-
-      stackTop = stackTop.parentId === undefined ? undefined : input.stacks[stackTop.parentId];
-    }
-
-    const sample: Profile['profile']['samples'][0] = {
-      // convert ms timestamp to ns
-      elapsed_since_start_ns: ((jsSample.timestamp + adjustForOriginChange - start) * MS_TO_NS).toFixed(0),
-      stack_id: STACK_ID,
-      thread_id: THREAD_ID_STRING,
+    frames[i] = {
+      function: frame.name,
+      abs_path: typeof frame.resourceId === 'number' ? input.resources[frame.resourceId] : undefined,
+      lineno: frame.line,
+      colno: frame.column,
     };
-
-    profile['stacks'][STACK_ID] = stack;
-    profile['samples'][i] = sample;
-    STACK_ID++;
-  });
-
-  return profile;
-}
-
-/**
- * Adds items to envelope if they are not already present - mutates the envelope.
- * @param envelope
- */
-export function addProfilesToEnvelope(envelope: EventEnvelope, profiles: Profile[]): Envelope {
-  if (!profiles.length) {
-    return envelope;
   }
 
-  for (const profile of profiles) {
-    envelope[1].push([{ type: 'profile' }, profile]);
+  // Build stacks by following parent links, top->down order (root last)
+  const stacks: ContinuousThreadCpuProfile['stacks'] = [];
+  for (let i = 0; i < input.stacks.length; i++) {
+    const stackHead = input.stacks[i];
+    if (!stackHead) {
+      continue;
+    }
+    const list: number[] = [];
+    let current: { frameId: number; parentId?: number } | undefined = stackHead;
+    while (current) {
+      list.push(current.frameId);
+      current = current.parentId === undefined ? undefined : input.stacks[current.parentId];
+    }
+    stacks[i] = list;
   }
-  return envelope;
-}
 
-/**
- * Finds transactions with profile_id context in the envelope
- * @param envelope
- * @returns
- */
-export function findProfiledTransactionsFromEnvelope(envelope: Envelope): Event[] {
-  const events: Event[] = [];
+  // Align timestamps to SDK time origin to match span/event timelines
+  const perfOrigin = browserPerformanceTimeOrigin();
+  const origin = typeof performance.timeOrigin === 'number' ? performance.timeOrigin : perfOrigin || 0;
+  const adjustForOriginChange = origin - (perfOrigin || origin);
 
-  forEachEnvelopeItem(envelope, (item, type) => {
-    if (type !== 'transaction') {
-      return;
+  const samples: ContinuousThreadCpuProfile['samples'] = [];
+  for (let i = 0; i < input.samples.length; i++) {
+    const sample = input.samples[i];
+    if (!sample) {
+      continue;
     }
+    // Convert ms to seconds epoch-based timestamp
+    const timestampSeconds = (origin + (sample.timestamp - adjustForOriginChange)) / 1000;
+    samples[i] = {
+      stack_id: sample.stackId ?? 0,
+      thread_id: PROFILER_THREAD_ID_STRING,
+      timestamp: timestampSeconds,
+    };
+  }
 
-    for (let j = 1; j < item.length; j++) {
-      const event = item[j] as Event;
-
-      if (event && event.contexts && event.contexts['profile'] && event.contexts['profile']['profile_id']) {
-        events.push(item[j] as Event);
-      }
-    }
-  });
-
-  return events;
+  return {
+    frames,
+    stacks,
+    samples,
+    thread_metadata: { [PROFILER_THREAD_ID_STRING]: { name: PROFILER_THREAD_NAME } },
+  };
 }
 
 /**
@@ -347,8 +180,8 @@ export function findProfiledTransactionsFromEnvelope(envelope: Envelope): Event[
  */
 export function applyDebugMetadata(resource_paths: ReadonlyArray<string>): DebugImage[] {
   const client = getClient();
-  const options = client && client.getOptions();
-  const stackParser = options && options.stackParser;
+  const options = client?.getOptions();
+  const stackParser = options?.stackParser;
 
   if (!stackParser) {
     return [];
@@ -364,7 +197,7 @@ export function isValidSampleRate(rate: unknown): boolean {
   // we need to check NaN explicitly because it's of type 'number' and therefore wouldn't get caught by this typecheck
   if ((typeof rate !== 'number' && typeof rate !== 'boolean') || (typeof rate === 'number' && isNaN(rate))) {
     DEBUG_BUILD &&
-      logger.warn(
+      debug.warn(
         `[Profiling] Invalid sample rate. Sample rate must be a boolean or a number between 0 and 1. Got ${JSON.stringify(
           rate,
         )} of type ${JSON.stringify(typeof rate)}.`,
@@ -379,30 +212,9 @@ export function isValidSampleRate(rate: unknown): boolean {
 
   // in case sampleRate is a boolean, it will get automatically cast to 1 if it's true and 0 if it's false
   if (rate < 0 || rate > 1) {
-    DEBUG_BUILD && logger.warn(`[Profiling] Invalid sample rate. Sample rate must be between 0 and 1. Got ${rate}.`);
+    DEBUG_BUILD && debug.warn(`[Profiling] Invalid sample rate. Sample rate must be between 0 and 1. Got ${rate}.`);
     return false;
   }
-  return true;
-}
-
-function isValidProfile(profile: JSSelfProfile): profile is JSSelfProfile & { profile_id: string } {
-  if (profile.samples.length < 2) {
-    if (DEBUG_BUILD) {
-      // Log a warning if the profile has less than 2 samples so users can know why
-      // they are not seeing any profiling data and we cant avoid the back and forth
-      // of asking them to provide us with a dump of the profile data.
-      logger.log('[Profiling] Discarding profile because it contains less than 2 samples');
-    }
-    return false;
-  }
-
-  if (!profile.frames.length) {
-    if (DEBUG_BUILD) {
-      logger.log('[Profiling] Discarding profile because it contains no frames');
-    }
-    return false;
-  }
-
   return true;
 }
 
@@ -428,9 +240,7 @@ export function startJSSelfProfile(): JSSelfProfiler | undefined {
 
   if (!isJSProfilerSupported(JSProfilerConstructor)) {
     if (DEBUG_BUILD) {
-      logger.log(
-        '[Profiling] Profiling is not supported by this browser, Profiler interface missing on window object.',
-      );
+      debug.log('[Profiling] Profiling is not supported by this browser, Profiler interface missing on window object.');
     }
     return;
   }
@@ -445,12 +255,12 @@ export function startJSSelfProfile(): JSSelfProfiler | undefined {
   // as we risk breaking the user's application, so just disable profiling and log an error.
   try {
     return new JSProfilerConstructor({ sampleInterval: samplingIntervalMS, maxBufferSize: maxSamples });
-  } catch (e) {
+  } catch {
     if (DEBUG_BUILD) {
-      logger.log(
+      debug.log(
         "[Profiling] Failed to initialize the Profiling constructor, this is likely due to a missing 'Document-Policy': 'js-profiling' header.",
       );
-      logger.log('[Profiling] Disabling profiling for current user session.');
+      debug.log('[Profiling] Disabling profiling for current user session.');
     }
     PROFILING_CONSTRUCTOR_FAILED = true;
   }
@@ -459,114 +269,42 @@ export function startJSSelfProfile(): JSSelfProfiler | undefined {
 }
 
 /**
- * Determine if a profile should be profiled.
+ * Determine if a profile should be created for the current session.
  */
-export function shouldProfileSpan(span: Span): boolean {
+export function shouldProfileSession(options: BrowserOptions): boolean {
   // If constructor failed once, it will always fail, so we can early return.
   if (PROFILING_CONSTRUCTOR_FAILED) {
     if (DEBUG_BUILD) {
-      logger.log('[Profiling] Profiling has been disabled for the duration of the current user session.');
+      debug.log(
+        '[Profiling] Profiling has been disabled for the duration of the current user session as the JS Profiler could not be started.',
+      );
     }
     return false;
   }
 
-  if (!span.isRecording()) {
-    if (DEBUG_BUILD) {
-      logger.log('[Profiling] Discarding profile because transaction was not sampled.');
-    }
+  if (options.profileLifecycle !== 'trace' && options.profileLifecycle !== 'manual') {
+    DEBUG_BUILD && debug.warn('[Profiling] Session not sampled. Invalid `profileLifecycle` option.');
     return false;
   }
 
-  const client = getClient();
-  const options = client && client.getOptions();
-  if (!options) {
-    DEBUG_BUILD && logger.log('[Profiling] Profiling disabled, no options found.');
+  //  Session sampling: profileSessionSampleRate gates whether profiling is enabled for this session
+  const profileSessionSampleRate = options.profileSessionSampleRate;
+
+  if (!isValidSampleRate(profileSessionSampleRate)) {
+    DEBUG_BUILD && debug.warn('[Profiling] Discarding profile because of invalid profileSessionSampleRate.');
     return false;
   }
 
-  // @ts-expect-error profilesSampleRate is not part of the browser options yet
-  const profilesSampleRate: number | boolean | undefined = options.profilesSampleRate;
-
-  // Since this is coming from the user (or from a function provided by the user), who knows what we might get. (The
-  // only valid values are booleans or numbers between 0 and 1.)
-  if (!isValidSampleRate(profilesSampleRate)) {
-    DEBUG_BUILD && logger.warn('[Profiling] Discarding profile because of invalid sample rate.');
-    return false;
-  }
-
-  // if the function returned 0 (or false), or if `profileSampleRate` is 0, it's a sign the profile should be dropped
-  if (!profilesSampleRate) {
+  if (!profileSessionSampleRate) {
     DEBUG_BUILD &&
-      logger.log(
-        '[Profiling] Discarding profile because a negative sampling decision was inherited or profileSampleRate is set to 0',
-      );
+      debug.log('[Profiling] Discarding profile because profileSessionSampleRate is not defined or set to 0');
     return false;
   }
 
-  // Now we roll the dice. Math.random is inclusive of 0, but not of 1, so strict < is safe here. In case sampleRate is
-  // a boolean, the < comparison will cause it to be automatically cast to 1 if it's true and 0 if it's false.
-  const sampled = profilesSampleRate === true ? true : Math.random() < profilesSampleRate;
-  // Check if we should sample this profile
-  if (!sampled) {
-    DEBUG_BUILD &&
-      logger.log(
-        `[Profiling] Discarding profile because it's not included in the random sample (sampling rate = ${Number(
-          profilesSampleRate,
-        )})`,
-      );
-    return false;
-  }
-
-  return true;
+  return Math.random() <= profileSessionSampleRate;
 }
 
-/**
- * Creates a profiling envelope item, if the profile does not pass validation, returns null.
- * @param event
- * @returns {Profile | null}
- */
-export function createProfilingEvent(
-  profile_id: string,
-  start_timestamp: number | undefined,
-  profile: JSSelfProfile,
-  event: ProfiledEvent,
-): Profile | null {
-  if (!isValidProfile(profile)) {
-    return null;
-  }
-
-  return createProfilePayload(profile_id, start_timestamp, profile, event);
-}
-
-// TODO (v8): We need to obtain profile ids in @sentry-internal/tracing,
-// but we don't have access to this map because importing this map would
-// cause a circular dependency. We need to resolve this in v8.
-const PROFILE_MAP: Map<string, JSSelfProfile> = new Map();
-/**
- *
- */
-export function getActiveProfilesCount(): number {
-  return PROFILE_MAP.size;
-}
-
-/**
- * Retrieves profile from global cache and removes it.
- */
-export function takeProfileFromGlobalCache(profile_id: string): JSSelfProfile | undefined {
-  const profile = PROFILE_MAP.get(profile_id);
-  if (profile) {
-    PROFILE_MAP.delete(profile_id);
-  }
-  return profile;
-}
-/**
- * Adds profile to global cache and evicts the oldest profile if the cache is full.
- */
-export function addProfileToGlobalCache(profile_id: string, profile: JSSelfProfile): void {
-  PROFILE_MAP.set(profile_id, profile);
-
-  if (PROFILE_MAP.size > 30) {
-    const last: string = PROFILE_MAP.keys().next().value;
-    PROFILE_MAP.delete(last);
-  }
+export function setThreadAttributes(span: Span): void {
+  span.setAttribute('thread.id', PROFILER_THREAD_ID_STRING);
+  span.setAttribute('thread.name', PROFILER_THREAD_NAME);
 }

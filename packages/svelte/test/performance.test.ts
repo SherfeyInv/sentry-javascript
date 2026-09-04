@@ -2,14 +2,11 @@
  * @vitest-environment jsdom
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { act, render } from '@testing-library/svelte';
-import { getClient, getCurrentScope, getIsolationScope, init, startSpan } from '../src';
-
 import type { TransactionEvent } from '@sentry/core';
-
-// @ts-expect-error svelte import
+import { getMainCarrier } from '@sentry/core';
+import { act, render } from '@testing-library/svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getClient, init, startSpan } from '../src';
 import DummyComponent from './components/Dummy.svelte';
 
 const PUBLIC_DSN = 'https://username@domain/123';
@@ -22,8 +19,7 @@ describe('Sentry.trackComponent()', () => {
 
     vi.resetAllMocks();
 
-    getCurrentScope().clear();
-    getIsolationScope().clear();
+    getMainCarrier().__SENTRY__ = undefined;
 
     const beforeSendTransaction = vi.fn(event => {
       transactions.push(event);
@@ -32,12 +28,13 @@ describe('Sentry.trackComponent()', () => {
 
     init({
       dsn: PUBLIC_DSN,
-      enableTracing: true,
+      tracesSampleRate: 1,
+      traceLifecycle: 'static',
       beforeSendTransaction,
     });
   });
 
-  it('creates init and update spans on component initialization', async () => {
+  it('creates init spans on component initialization by default', async () => {
     startSpan({ name: 'outer' }, span => {
       expect(span).toBeDefined();
       render(DummyComponent, { props: { options: {} } });
@@ -47,7 +44,7 @@ describe('Sentry.trackComponent()', () => {
 
     expect(transactions).toHaveLength(1);
     const transaction = transactions[0]!;
-    expect(transaction.spans).toHaveLength(2);
+    expect(transaction.spans).toHaveLength(1);
 
     const rootSpanId = transaction.contexts?.trace?.span_id;
     expect(rootSpanId).toBeDefined();
@@ -56,41 +53,27 @@ describe('Sentry.trackComponent()', () => {
 
     expect(transaction.spans![0]).toEqual({
       data: {
-        'sentry.op': 'ui.svelte.init',
+        'sentry.op': 'ui.mount',
         'sentry.origin': 'auto.ui.svelte',
       },
       description: '<Svelte Component>',
-      op: 'ui.svelte.init',
+      op: 'ui.mount',
       origin: 'auto.ui.svelte',
       parent_span_id: rootSpanId,
       span_id: initSpanId,
       start_timestamp: expect.any(Number),
       timestamp: expect.any(Number),
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-    });
-
-    expect(transaction.spans![1]).toEqual({
-      data: {
-        'sentry.op': 'ui.svelte.update',
-        'sentry.origin': 'auto.ui.svelte',
-      },
-      description: '<Svelte Component>',
-      op: 'ui.svelte.update',
-      origin: 'auto.ui.svelte',
-      parent_span_id: rootSpanId,
-      span_id: expect.stringMatching(/[a-f0-9]{16}/),
-      start_timestamp: expect.any(Number),
-      timestamp: expect.any(Number),
-      trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+      status: 'ok',
     });
   });
 
-  it('creates an update span, when the component is updated', async () => {
+  it('creates an update span, if `trackUpdates` is `true`', async () => {
     startSpan({ name: 'outer' }, async span => {
       expect(span).toBeDefined();
 
       // first we create the component
-      const { component } = render(DummyComponent, { props: { options: {} } });
+      const { component } = render(DummyComponent, { props: { options: { trackUpdates: true } } });
 
       // then trigger an update
       // (just changing the trackUpdates prop so that we trigger an update. #
@@ -111,47 +94,50 @@ describe('Sentry.trackComponent()', () => {
 
     expect(transaction.spans![0]).toEqual({
       data: {
-        'sentry.op': 'ui.svelte.init',
+        'sentry.op': 'ui.mount',
         'sentry.origin': 'auto.ui.svelte',
       },
       description: '<Svelte Component>',
-      op: 'ui.svelte.init',
+      op: 'ui.mount',
       origin: 'auto.ui.svelte',
       parent_span_id: rootSpanId,
       span_id: initSpanId,
       start_timestamp: expect.any(Number),
       timestamp: expect.any(Number),
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+      status: 'ok',
     });
 
     expect(transaction.spans![1]).toEqual({
       data: {
-        'sentry.op': 'ui.svelte.update',
+        'sentry.op': 'ui.update',
         'sentry.origin': 'auto.ui.svelte',
       },
       description: '<Svelte Component>',
-      op: 'ui.svelte.update',
+      op: 'ui.update',
       origin: 'auto.ui.svelte',
       parent_span_id: rootSpanId,
       span_id: expect.stringMatching(/[a-f0-9]{16}/),
       start_timestamp: expect.any(Number),
       timestamp: expect.any(Number),
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+      status: 'ok',
     });
 
     expect(transaction.spans![2]).toEqual({
       data: {
-        'sentry.op': 'ui.svelte.update',
+        'sentry.op': 'ui.update',
         'sentry.origin': 'auto.ui.svelte',
       },
       description: '<Svelte Component>',
-      op: 'ui.svelte.update',
+      op: 'ui.update',
       origin: 'auto.ui.svelte',
       parent_span_id: rootSpanId,
       span_id: expect.stringMatching(/[a-f0-9]{16}/),
       start_timestamp: expect.any(Number),
       timestamp: expect.any(Number),
       trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+      status: 'ok',
     });
   });
 
@@ -168,14 +154,14 @@ describe('Sentry.trackComponent()', () => {
     const transaction = transactions[0]!;
     expect(transaction.spans).toHaveLength(1);
 
-    expect(transaction.spans![0]?.op).toEqual('ui.svelte.init');
+    expect(transaction.spans![0]?.op).toEqual('ui.mount');
   });
 
   it('only creates update spans if trackInit is deactivated', async () => {
     startSpan({ name: 'outer' }, span => {
       expect(span).toBeDefined();
 
-      render(DummyComponent, { props: { options: { trackInit: false } } });
+      render(DummyComponent, { props: { options: { trackInit: false, trackUpdates: true } } });
     });
 
     await getClient()?.flush();
@@ -184,7 +170,7 @@ describe('Sentry.trackComponent()', () => {
     const transaction = transactions[0]!;
     expect(transaction.spans).toHaveLength(1);
 
-    expect(transaction.spans![0]?.op).toEqual('ui.svelte.update');
+    expect(transaction.spans![0]?.op).toEqual('ui.update');
   });
 
   it('creates no spans if trackInit and trackUpdates are deactivated', async () => {
@@ -206,7 +192,13 @@ describe('Sentry.trackComponent()', () => {
       expect(span).toBeDefined();
 
       render(DummyComponent, {
-        props: { options: { componentName: 'CustomComponentName' } },
+        props: {
+          options: {
+            componentName: 'CustomComponentName',
+            // enabling updates to check for both span names in one test
+            trackUpdates: true,
+          },
+        },
       });
     });
 
@@ -220,7 +212,7 @@ describe('Sentry.trackComponent()', () => {
     expect(transaction.spans![1]?.description).toEqual('<CustomComponentName>');
   });
 
-  it("doesn't do anything, if there's no ongoing transaction", async () => {
+  it("doesn't do anything, if there's no ongoing parent span", async () => {
     render(DummyComponent, {
       props: { options: { componentName: 'CustomComponentName' } },
     });
@@ -230,11 +222,11 @@ describe('Sentry.trackComponent()', () => {
     expect(transactions).toHaveLength(0);
   });
 
-  it("doesn't record update spans, if there's no ongoing root span at that time", async () => {
+  it("doesn't record update spans, if there's no ongoing parent span at that time", async () => {
     const component = startSpan({ name: 'outer' }, span => {
       expect(span).toBeDefined();
 
-      const { component } = render(DummyComponent, { props: { options: {} } });
+      const { component } = render(DummyComponent, { props: { options: { trackUpdates: true } } });
       return component;
     });
 
@@ -249,7 +241,7 @@ describe('Sentry.trackComponent()', () => {
     // One update span is triggered by the initial rendering, but the second one is not captured
     expect(transaction.spans).toHaveLength(2);
 
-    expect(transaction.spans![0]?.op).toEqual('ui.svelte.init');
-    expect(transaction.spans![1]?.op).toEqual('ui.svelte.update');
+    expect(transaction.spans![0]?.op).toEqual('ui.mount');
+    expect(transaction.spans![1]?.op).toEqual('ui.update');
   });
 });

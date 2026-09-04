@@ -2,8 +2,6 @@ export type {
   Breadcrumb,
   BreadcrumbHint,
   PolymorphicRequest,
-  // eslint-disable-next-line deprecation/deprecation
-  Request,
   RequestEventData,
   SdkInfo,
   Event,
@@ -17,8 +15,11 @@ export type {
   Stacktrace,
   Thread,
   User,
+  FeatureFlagsIntegration,
+  Metric,
+  ExclusiveEventHintOrCaptureContext,
+  CaptureContext,
 } from '@sentry/core';
-export type { AddRequestDataToEventOptions } from '@sentry/core';
 
 export {
   addEventProcessor,
@@ -34,11 +35,9 @@ export {
   endSession,
   withMonitor,
   createTransport,
-  // eslint-disable-next-line deprecation/deprecation
-  getCurrentHub,
   getClient,
   isInitialized,
-  generateInstrumentOnce,
+  isEnabled,
   getCurrentScope,
   getGlobalScope,
   getIsolationScope,
@@ -48,10 +47,13 @@ export {
   Scope,
   SDK_VERSION,
   setContext,
+  setConversationId,
   setExtra,
   setExtras,
   setTag,
   setTags,
+  setAttribute,
+  setAttributes,
   setUser,
   getSpanStatusFromHttpCode,
   setHttpStatus,
@@ -64,19 +66,24 @@ export {
   flush,
   close,
   getSentryRelease,
-  // eslint-disable-next-line deprecation/deprecation
-  addRequestDataToEvent,
-  DEFAULT_USER_INCLUDES,
-  // eslint-disable-next-line deprecation/deprecation
-  extractRequestData,
   createGetModuleFromFilename,
+  createLangChainCallbackHandler,
+  instrumentLangChainEmbeddings,
+  httpHeadersToSpanAttributes,
+  winterCGHeadersToDict,
+  // eslint-disable-next-line typescript/no-deprecated
   anrIntegration,
+  // eslint-disable-next-line typescript/no-deprecated
   disableAnrDetectionForCallback,
   consoleIntegration,
   httpIntegration,
-  nativeNodeFetchIntegration,
+  httpServerIntegration,
+  httpServerSpansIntegration,
   onUncaughtExceptionIntegration,
   onUnhandledRejectionIntegration,
+  openAIIntegration,
+  langChainIntegration,
+  langGraphIntegration,
   modulesIntegration,
   contextLinesIntegration,
   nodeContextIntegration,
@@ -84,7 +91,7 @@ export {
   requestDataIntegration,
   fsIntegration,
   functionToStringIntegration,
-  inboundFiltersIntegration,
+  eventFiltersIntegration,
   linkedErrorsIntegration,
   setMeasurement,
   getActiveSpan,
@@ -92,6 +99,7 @@ export {
   startInactiveSpan,
   startSpanManual,
   startNewTrace,
+  bindScopeToEmitter,
   suppressTracing,
   withActiveSpan,
   getRootSpan,
@@ -110,10 +118,9 @@ export {
   setupExpressErrorHandler,
   fastifyIntegration,
   setupFastifyErrorHandler,
+  firebaseIntegration,
   koaIntegration,
   setupKoaErrorHandler,
-  connectIntegration,
-  setupConnectErrorHandler,
   genericPoolIntegration,
   graphqlIntegration,
   knexIntegration,
@@ -126,19 +133,53 @@ export {
   redisIntegration,
   tediousIntegration,
   postgresIntegration,
+  postgresJsIntegration,
   prismaIntegration,
+  otlpIntegration,
+  getOtlpTracesEndpoint,
+  processSessionIntegration,
   hapiIntegration,
   setupHapiErrorHandler,
   spotlightIntegration,
   initOpenTelemetry,
+  spanToStaticSpanJSON,
   spanToJSON,
   spanToTraceHeader,
   spanToBaggageHeader,
   trpcMiddleware,
   updateSpanName,
+  supabaseIntegration,
+  instrumentSupabaseClient,
+  instrumentOpenAiClient,
+  instrumentAnthropicAiClient,
+  instrumentGoogleGenAIClient,
+  instrumentStateGraph,
+  instrumentStateGraphCompile,
   zodErrorsIntegration,
   profiler,
   amqplibIntegration,
+  anthropicAIIntegration,
+  googleGenAIIntegration,
+  vercelAIIntegration,
+  logger,
+  consoleLoggingIntegration,
+  createConsolaReporter,
+  createSentryWinstonTransport,
+  pinoIntegration,
+  wrapMcpServerWithSentry,
+  featureFlagsIntegration,
+  launchDarklyIntegration,
+  growthbookIntegration,
+  buildLaunchDarklyFlagUsedHandler,
+  openFeatureIntegration,
+  OpenFeatureIntegrationHook,
+  statsigIntegration,
+  unleashIntegration,
+  metrics,
+  spanStreamingIntegration,
+  withStaticSpan,
+  // oxlint-disable-next-line typescript/no-deprecated
+  withStreamedSpan,
 } from '@sentry/node';
 
 export {
@@ -150,7 +191,16 @@ export {
 
 export type { BunOptions } from './types';
 
+// eslint-disable-next-line typescript/no-deprecated
 export { BunClient } from './client';
-export { getDefaultIntegrations, init } from './sdk';
+export {
+  getDefaultIntegrations,
+  getDefaultIntegrationsWithoutPerformance,
+  init,
+  initWithoutDefaultIntegrations,
+} from './sdk';
 export { bunServerIntegration } from './integrations/bunserver';
+export { bunHttpServerIntegration } from './integrations/bunHttpServer';
+export { fetchIntegration } from './integrations/fetch';
+export { bunRuntimeMetricsIntegration, type BunRuntimeMetricsOptions } from './integrations/bunRuntimeMetrics';
 export { makeFetchTransport } from './transports';

@@ -1,7 +1,6 @@
-import type { ClientOptions, Context } from '@sentry/core';
-import { captureException, dropUndefinedKeys, getClient, getTraceMetaTags } from '@sentry/core';
-import type { VueOptions } from '@sentry/vue/src/types';
-import type { CapturedErrorContext } from 'nitropack';
+import type { ClientOptions, Context, SerializedTraceData } from '@sentry/core';
+import { captureException, debug, getClient, getTraceMetaTags } from '@sentry/core';
+import type { CapturedErrorContext } from 'nitropack/types';
 import type { NuxtRenderHTMLContext } from 'nuxt/app';
 import type { ComponentPublicInstance } from 'vue';
 
@@ -9,25 +8,23 @@ import type { ComponentPublicInstance } from 'vue';
  *  Extracts the relevant context information from the error context (H3Event in Nitro Error)
  *  and created a structured context object.
  */
-export function extractErrorContext(errorContext: CapturedErrorContext): Context {
-  const structuredContext: Context = {
-    method: undefined,
-    path: undefined,
-    tags: undefined,
-  };
+export function extractErrorContext(errorContext: CapturedErrorContext | undefined): Context {
+  const ctx: Context = {};
 
-  if (errorContext) {
-    if (errorContext.event) {
-      structuredContext.method = errorContext.event._method || undefined;
-      structuredContext.path = errorContext.event._path || undefined;
-    }
-
-    if (Array.isArray(errorContext.tags)) {
-      structuredContext.tags = errorContext.tags || undefined;
-    }
+  if (!errorContext) {
+    return ctx;
   }
 
-  return dropUndefinedKeys(structuredContext);
+  if (errorContext.event) {
+    ctx.method = errorContext.event._method;
+    ctx.path = errorContext.event._path;
+  }
+
+  if (Array.isArray(errorContext.tags)) {
+    ctx.tags = errorContext.tags;
+  }
+
+  return ctx;
 }
 
 /**
@@ -35,10 +32,18 @@ export function extractErrorContext(errorContext: CapturedErrorContext): Context
  *
  * Exported only for testing
  */
-export function addSentryTracingMetaTags(head: NuxtRenderHTMLContext['head']): void {
-  const metaTags = getTraceMetaTags();
+export function addSentryTracingMetaTags(head: NuxtRenderHTMLContext['head'], traceData?: SerializedTraceData): void {
+  const metaTags = getTraceMetaTags(traceData);
+
+  if (head.some(tag => tag.includes('meta') && tag.includes('sentry-trace'))) {
+    debug.warn(
+      'Skipping addition of meta tags. Sentry tracing meta tags are already present in HTML page. Make sure to only set up Sentry once on the server-side. ',
+    );
+    return;
+  }
 
   if (metaTags) {
+    debug.log('Adding Sentry tracing meta tags to HTML page:', metaTags);
     head.push(metaTags);
   }
 }
@@ -61,12 +66,14 @@ export function reportNuxtError(options: {
     // todo: add component name and trace (like in the vue integration)
   };
 
-  if (instance && instance.$props) {
+  if (instance?.$props) {
     const sentryClient = getClient();
-    const sentryOptions = sentryClient ? (sentryClient.getOptions() as ClientOptions & VueOptions) : null;
+    // `attachProps` is defined in the Vue integration options, but the type is not exported from @sentry/vue, as it's only used internally.
+    const sentryOptions = sentryClient ? (sentryClient.getOptions() as ClientOptions & { attachProps: boolean }) : null;
 
     // `attachProps` is enabled by default and props should only not be attached if explicitly disabled (see DEFAULT_CONFIG in `vueIntegration`).
-    if (sentryOptions && sentryOptions.attachProps && instance.$props !== false) {
+    // oxlint-disable-next-line typescript/no-unsafe-member-access
+    if (sentryOptions?.attachProps && instance.$props !== false) {
       metadata.propsData = instance.$props;
     }
   }
@@ -75,7 +82,7 @@ export function reportNuxtError(options: {
   setTimeout(() => {
     captureException(error, {
       captureContext: { contexts: { nuxt: metadata } },
-      mechanism: { handled: false },
+      mechanism: { handled: false, type: `auto.function.nuxt.${instance ? 'vue' : 'app'}-error` },
     });
   });
 }

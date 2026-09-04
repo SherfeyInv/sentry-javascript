@@ -1,13 +1,10 @@
-import { captureException, defineIntegration, getClient, logger } from '@sentry/core';
+import { captureException, debug, defineIntegration, getClient } from '@sentry/core';
+import { isMainThread } from 'worker_threads';
 import { DEBUG_BUILD } from '../debug-build';
 import type { NodeClient } from '../sdk/client';
 import { logAndExitProcess } from '../utils/errorhandling';
 
 type OnFatalErrorHandler = (firstError: Error, secondError?: Error) => void;
-
-type TaggedListener = NodeJS.UncaughtExceptionListener & {
-  tag?: string;
-};
 
 interface OnUncaughtExceptionOptions {
   /**
@@ -30,7 +27,7 @@ interface OnUncaughtExceptionOptions {
   onFatalError?(this: void, firstError: Error, secondError?: Error): void;
 }
 
-const INTEGRATION_NAME = 'OnUncaughtException';
+const INTEGRATION_NAME = 'OnUncaughtException' as const;
 
 /**
  * Add a global exception handler.
@@ -44,6 +41,12 @@ export const onUncaughtExceptionIntegration = defineIntegration((options: Partia
   return {
     name: INTEGRATION_NAME,
     setup(client: NodeClient) {
+      // errors in worker threads are already handled by the childProcessIntegration
+      // also we don't want to exit the Node process on worker thread errors
+      if (!isMainThread) {
+        return;
+      }
+
       global.process.on('uncaughtException', makeErrorHandler(client, optionsWithDefaults));
     },
   };
@@ -68,7 +71,7 @@ export function makeErrorHandler(client: NodeClient, options: OnUncaughtExceptio
       if (options.onFatalError) {
         onFatalError = options.onFatalError;
       } else if (clientOptions.onFatalError) {
-        onFatalError = clientOptions.onFatalError as OnFatalErrorHandler;
+        onFatalError = clientOptions.onFatalError;
       }
 
       // Attaching a listener to `uncaughtException` will prevent the node process from exiting. We generally do not
@@ -76,19 +79,15 @@ export function makeErrorHandler(client: NodeClient, options: OnUncaughtExceptio
       // exit behaviour of the SDK accordingly:
       // - If other listeners are attached, do not exit.
       // - If the only listener attached is ours, exit.
-      const userProvidedListenersCount = (global.process.listeners('uncaughtException') as TaggedListener[]).filter(
-        listener => {
-          // There are 3 listeners we ignore:
-          return (
-            // as soon as we're using domains this listener is attached by node itself
-            listener.name !== 'domainUncaughtExceptionClear' &&
-            // the handler we register for tracing
-            listener.tag !== 'sentry_tracingErrorCallback' &&
-            // the handler we register in this integration
-            (listener as ErrorHandler)._errorHandler !== true
-          );
-        },
-      ).length;
+      const userProvidedListenersCount = global.process.listeners('uncaughtException').filter(listener => {
+        // There are 3 listeners we ignore:
+        return (
+          // as soon as we're using domains this listener is attached by node itself
+          listener.name !== 'domainUncaughtExceptionClear' &&
+          // the handler we register in this integration
+          (listener as ErrorHandler)._errorHandler !== true
+        );
+      }).length;
 
       const processWouldExit = userProvidedListenersCount === 0;
       const shouldApplyFatalHandlingLogic = options.exitEvenIfOtherHandlersAreRegistered || processWouldExit;
@@ -108,7 +107,7 @@ export function makeErrorHandler(client: NodeClient, options: OnUncaughtExceptio
             },
             mechanism: {
               handled: false,
-              type: 'onuncaughtexception',
+              type: 'auto.node.onuncaughtexception',
             },
           });
         }
@@ -122,7 +121,7 @@ export function makeErrorHandler(client: NodeClient, options: OnUncaughtExceptio
           if (calledFatalError) {
             // we hit an error *after* calling onFatalError - pretty boned at this point, just shut it down
             DEBUG_BUILD &&
-              logger.warn(
+              debug.warn(
                 'uncaught exception after calling fatal error shutdown callback - this is bad! forcing shutdown',
               );
             logAndExitProcess(error);

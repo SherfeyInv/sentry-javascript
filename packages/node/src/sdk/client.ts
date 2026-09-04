@@ -1,11 +1,23 @@
 import * as os from 'node:os';
 import type { Tracer } from '@opentelemetry/api';
 import { trace } from '@opentelemetry/api';
-import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import type { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
-import type { DynamicSamplingContext, Scope, ServerRuntimeClientOptions, TraceContext } from '@sentry/core';
-import { SDK_VERSION, ServerRuntimeClient, applySdkMetadata, logger } from '@sentry/core';
-import { getTraceContextForScope } from '@sentry/opentelemetry';
+import type { ServerRuntimeClientOptions } from '@sentry/core';
+import {
+  _INTERNAL_clearAiProviderSkips,
+  _INTERNAL_flushLogsBuffer,
+  _INTERNAL_setDeferSegmentSpanCapture,
+  applySdkMetadata,
+  debug,
+  SDK_VERSION,
+  ServerRuntimeClient,
+} from '@sentry/core';
+import {
+  type AsyncLocalStorageLookup,
+  registerPrepareSpanScope,
+  type SentryTracerProvider,
+  setOpenTelemetryContextAsyncContextStrategy,
+} from '@sentry/opentelemetry';
+import { setAsyncLocalStorageAsyncContextStrategy } from '@sentry/server-utils';
 import { isMainThread, threadId } from 'worker_threads';
 import { DEBUG_BUILD } from '../debug-build';
 import type { NodeClientOptions } from '../types';
@@ -14,32 +26,75 @@ const DEFAULT_CLIENT_REPORT_FLUSH_INTERVAL_MS = 60_000; // 60s was chosen arbitr
 
 /** A client for using Sentry with Node & OpenTelemetry. */
 export class NodeClient extends ServerRuntimeClient<NodeClientOptions> {
-  public traceProvider: BasicTracerProvider | undefined;
+  public traceProvider: SentryTracerProvider | undefined;
+  public asyncLocalStorageLookup: AsyncLocalStorageLookup | undefined;
+
   private _tracer: Tracer | undefined;
   private _clientReportInterval: NodeJS.Timeout | undefined;
   private _clientReportOnExitFlushListener: (() => void) | undefined;
+  private _logOnExitFlushListener: (() => void) | undefined;
 
   public constructor(options: NodeClientOptions) {
+    const serverName =
+      options.includeServerName === false
+        ? undefined
+        : options.serverName || global.process.env.SENTRY_NAME || os.hostname();
+
     const clientOptions: ServerRuntimeClientOptions = {
       ...options,
       platform: 'node',
-      runtime: { name: 'node', version: global.process.version },
-      serverName: options.serverName || global.process.env.SENTRY_NAME || os.hostname(),
+      // Use provided runtime or default to 'node' with current process version
+      runtime: options.runtime || { name: 'node', version: global.process.version },
+      serverName,
     };
-
-    if (options.openTelemetryInstrumentations) {
-      registerInstrumentations({
-        instrumentations: options.openTelemetryInstrumentations,
-      });
-    }
 
     applySdkMetadata(clientOptions, 'node');
 
-    logger.log(
-      `Initializing Sentry: process: ${process.pid}, thread: ${isMainThread ? 'main' : `worker-${threadId}`}.`,
-    );
+    debug.log(`Initializing Sentry: process: ${process.pid}, thread: ${isMainThread ? 'main' : `worker-${threadId}`}.`);
 
     super(clientOptions);
+
+    this._logOnExitFlushListener = () => {
+      _INTERNAL_flushLogsBuffer(this);
+    };
+
+    if (serverName) {
+      this.on('beforeCaptureLog', log => {
+        log.attributes = {
+          ...log.attributes,
+          'server.address': serverName,
+        };
+      });
+    }
+
+    process.on('beforeExit', this._logOnExitFlushListener);
+
+    // Enable deferred segment-span transaction capture here, in the constructor, rather than in
+    // `initOtel`. Every client runs its constructor exactly once, whereas `initOtel` only runs on
+    // `Sentry.init()` and only fully wires up the first client (a second `init` loses the
+    // `setGlobalTracerProvider` race and bails early, and a manually constructed `NodeClient` never
+    // runs `initOtel` at all). Anchoring on the constructor means every client — first, second, or
+    // manual — defers correctly. It's unconditional and cheap: clients on the OpenTelemetry SDK
+    // provider path produce OTel spans that never reach `SentrySpan`, so the strategy is simply never
+    // consulted for them.
+    _INTERNAL_setDeferSegmentSpanCapture(this);
+
+    // Same constructor anchoring as above: every client must continue incoming (remote) traces,
+    // also manually constructed ones that never run `initOtel`.
+    registerPrepareSpanScope(this);
+  }
+
+  /** @inheritDoc */
+  public init(): void {
+    // Must run before `super.init()`: channel-based integrations capture the strategy's
+    // AsyncLocalStorage via `getTracingChannelBinding()` during integration setup.
+    if (this.getOptions().enableOpenTelemetrySetup) {
+      this.asyncLocalStorageLookup = setOpenTelemetryContextAsyncContextStrategy();
+    } else {
+      this.asyncLocalStorageLookup = { asyncLocalStorage: setAsyncLocalStorageAsyncContextStrategy() };
+    }
+
+    super.init();
   }
 
   /** Get the OTEL tracer. */
@@ -56,15 +111,10 @@ export class NodeClient extends ServerRuntimeClient<NodeClientOptions> {
     return tracer;
   }
 
-  // Eslint ignore explanation: This is already documented in super.
-  // eslint-disable-next-line jsdoc/require-jsdoc
-  public async flush(timeout?: number): Promise<boolean> {
-    const provider = this.traceProvider;
-    const spanProcessor = provider?.activeSpanProcessor;
-
-    if (spanProcessor) {
-      await spanProcessor.forceFlush();
-    }
+  /** @inheritDoc */
+  // @ts-expect-error - PromiseLike is a subset of Promise
+  public async flush(timeout?: number): PromiseLike<boolean> {
+    await this.traceProvider?.forceFlush();
 
     if (this.getOptions().sendClientReports) {
       this._flushOutcomes();
@@ -73,9 +123,9 @@ export class NodeClient extends ServerRuntimeClient<NodeClientOptions> {
     return super.flush(timeout);
   }
 
-  // Eslint ignore explanation: This is already documented in super.
-  // eslint-disable-next-line jsdoc/require-jsdoc
-  public close(timeout?: number | undefined): PromiseLike<boolean> {
+  /** @inheritDoc */
+  // @ts-expect-error - PromiseLike is a subset of Promise
+  public async close(timeout?: number | undefined): PromiseLike<boolean> {
     if (this._clientReportInterval) {
       clearInterval(this._clientReportInterval);
     }
@@ -84,7 +134,16 @@ export class NodeClient extends ServerRuntimeClient<NodeClientOptions> {
       process.off('beforeExit', this._clientReportOnExitFlushListener);
     }
 
-    return super.close(timeout);
+    if (this._logOnExitFlushListener) {
+      process.off('beforeExit', this._logOnExitFlushListener);
+    }
+
+    const allEventsSent = await super.close(timeout);
+    if (this.traceProvider) {
+      await this.traceProvider.shutdown();
+    }
+
+    return allEventsSent;
   }
 
   /**
@@ -110,7 +169,7 @@ export class NodeClient extends ServerRuntimeClient<NodeClientOptions> {
       };
 
       this._clientReportInterval = setInterval(() => {
-        DEBUG_BUILD && logger.log('Flushing client reports based on interval.');
+        DEBUG_BUILD && debug.log('Flushing client reports based on interval.');
         this._flushOutcomes();
       }, clientOptions.clientReportFlushInterval ?? DEFAULT_CLIENT_REPORT_FLUSH_INTERVAL_MS)
         // Unref is critical for not preventing the process from exiting because the interval is active.
@@ -120,14 +179,12 @@ export class NodeClient extends ServerRuntimeClient<NodeClientOptions> {
     }
   }
 
-  /** Custom implementation for OTEL, so we can handle scope-span linking. */
-  protected _getTraceInfoFromScope(
-    scope: Scope | undefined,
-  ): [dynamicSamplingContext: Partial<DynamicSamplingContext> | undefined, traceContext: TraceContext | undefined] {
-    if (!scope) {
-      return [undefined, undefined];
-    }
-
-    return getTraceContextForScope(this, scope);
+  /** @inheritDoc */
+  protected _setupIntegrations(): void {
+    // Clear AI provider skip registrations before setting up integrations
+    // This ensures a clean state between different client initializations
+    // (e.g., when LangChain skips OpenAI in one client, but a subsequent client uses OpenAI standalone)
+    _INTERNAL_clearAiProviderSkips();
+    super._setupIntegrations();
   }
 }

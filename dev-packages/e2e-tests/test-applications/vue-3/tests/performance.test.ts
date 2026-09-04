@@ -18,6 +18,9 @@ test('sends a pageload transaction with a parameterized URL', async ({ page }) =
           'sentry.origin': 'auto.pageload.vue',
           'sentry.op': 'pageload',
           'params.id': '456',
+          'url.template': '/users/:id',
+          'url.path': '/users/456',
+          'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/users\/456$/),
         },
         op: 'pageload',
         origin: 'auto.pageload.vue',
@@ -54,6 +57,9 @@ test('sends a navigation transaction with a parameterized URL', async ({ page })
           'sentry.origin': 'auto.navigation.vue',
           'sentry.op': 'navigation',
           'params.id': '123',
+          'url.template': '/users/:id',
+          'url.path': '/users/123',
+          'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/users\/123$/),
         },
         op: 'navigation',
         origin: 'auto.navigation.vue',
@@ -83,6 +89,9 @@ test('sends a pageload transaction with a nested route URL', async ({ page }) =>
           'sentry.origin': 'auto.pageload.vue',
           'sentry.op': 'pageload',
           'params.id': '123',
+          'url.template': '/categories/:id',
+          'url.path': '/categories/123',
+          'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/categories\/123$/),
         },
         op: 'pageload',
         origin: 'auto.pageload.vue',
@@ -111,6 +120,9 @@ test('sends a pageload transaction with a route name as transaction name if avai
           'sentry.source': 'custom',
           'sentry.origin': 'auto.pageload.vue',
           'sentry.op': 'pageload',
+          'navigation.route.id': 'AboutView',
+          'url.path': '/about',
+          'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/about$/),
         },
         op: 'pageload',
         origin: 'auto.pageload.vue',
@@ -139,6 +151,9 @@ test('sends a lifecycle span for each tracked components', async ({ page }) => {
           'sentry.source': 'route',
           'sentry.origin': 'auto.pageload.vue',
           'sentry.op': 'pageload',
+          'url.template': '/components',
+          'url.path': '/components',
+          'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/components$/),
         },
         op: 'pageload',
         origin: 'auto.pageload.vue',
@@ -148,54 +163,54 @@ test('sends a lifecycle span for each tracked components', async ({ page }) => {
       // enabled by default
       expect.objectContaining({
         data: {
-          'sentry.op': 'ui.vue.render',
+          'sentry.op': 'ui.render',
           'sentry.origin': 'auto.ui.vue',
         },
         description: 'Application Render',
-        op: 'ui.vue.render',
+        op: 'ui.render',
         origin: 'auto.ui.vue',
       }),
       // enabled by default
       expect.objectContaining({
         data: {
-          'sentry.op': 'ui.vue.mount',
+          'sentry.op': 'ui.mount',
           'sentry.origin': 'auto.ui.vue',
         },
         description: 'Vue <Root>',
-        op: 'ui.vue.mount',
+        op: 'ui.mount',
         origin: 'auto.ui.vue',
       }),
 
       // without `<>`
       expect.objectContaining({
         data: {
-          'sentry.op': 'ui.vue.mount',
+          'sentry.op': 'ui.mount',
           'sentry.origin': 'auto.ui.vue',
         },
         description: 'Vue <ComponentMainView>',
-        op: 'ui.vue.mount',
+        op: 'ui.mount',
         origin: 'auto.ui.vue',
       }),
 
       // with `<>`
       expect.objectContaining({
         data: {
-          'sentry.op': 'ui.vue.mount',
+          'sentry.op': 'ui.mount',
           'sentry.origin': 'auto.ui.vue',
         },
         description: 'Vue <ComponentOneView>',
-        op: 'ui.vue.mount',
+        op: 'ui.mount',
         origin: 'auto.ui.vue',
       }),
 
       // not tracked
       expect.not.objectContaining({
         data: {
-          'sentry.op': 'ui.vue.mount',
+          'sentry.op': 'ui.mount',
           'sentry.origin': 'auto.ui.vue',
         },
         description: 'Vue <ComponentTwoView>',
-        op: 'ui.vue.mount',
+        op: 'ui.mount',
         origin: 'auto.ui.vue',
       }),
     ]),

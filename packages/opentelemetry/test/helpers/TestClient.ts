@@ -1,11 +1,7 @@
-import { BaseClient, createTransport, getCurrentScope } from '@sentry/core';
-import { resolvedSyncPromise } from '@sentry/core';
-import type { Client, ClientOptions, Event, Options, SeverityLevel } from '@sentry/core';
+import type { ClientOptions, Event, Options, SeverityLevel } from '@sentry/core';
+import { Client, createTransport, getCurrentScope, resolvedSyncPromise } from '@sentry/core';
 
-import { wrapClientClass } from '../../src/custom/client';
-import type { OpenTelemetryClient } from '../../src/types';
-
-class BaseTestClient extends BaseClient<ClientOptions> {
+export class TestClient extends Client<ClientOptions> {
   public constructor(options: ClientOptions) {
     super(options);
   }
@@ -28,22 +24,19 @@ class BaseTestClient extends BaseClient<ClientOptions> {
   }
 }
 
-export const TestClient = wrapClientClass(BaseTestClient);
-
-export type TestClientInterface = Client & OpenTelemetryClient;
-
-export function init(options: Partial<Options> = {}): void {
-  const client = new TestClient(getDefaultTestClientOptions(options));
+export function init(options: Partial<Options> = {}): TestClient {
+  const client = new TestClient(getDefaultTestClientOptions({ tracesSampleRate: 1, ...options }));
 
   // The client is on the current scope, from where it generally is inherited
   getCurrentScope().setClient(client);
   client.init();
+  return client;
 }
 
 export function getDefaultTestClientOptions(options: Partial<Options> = {}): ClientOptions {
   return {
-    enableTracing: true,
     integrations: [],
+    traceLifecycle: 'static',
     transport: () => createTransport({ recordDroppedEvent: () => undefined }, _ => resolvedSyncPromise({})),
     stackParser: () => [],
     ...options,

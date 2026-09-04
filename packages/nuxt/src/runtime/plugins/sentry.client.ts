@@ -1,6 +1,6 @@
-import { GLOBAL_OBJ, getClient } from '@sentry/core';
+import { getClient, GLOBAL_OBJ } from '@sentry/core';
 import { browserTracingIntegration, vueIntegration } from '@sentry/vue';
-import { defineNuxtPlugin } from 'nuxt/app';
+import { defineNuxtPlugin, isNuxtError } from 'nuxt/app';
 import type { GlobalObjWithIntegrationOptions } from '../../client/vueIntegration';
 import { reportNuxtError } from '../utils';
 
@@ -66,6 +66,15 @@ export default defineNuxtPlugin({
     });
 
     nuxtApp.hook('app:error', error => {
+      if (isNuxtError(error)) {
+        // oxlint-disable-next-line typescript/no-deprecated
+        const statusCode = error?.status || error?.statusCode;
+
+        // Do not report if status code is 3xx or 4xx
+        if (statusCode && statusCode >= 300 && statusCode < 500) {
+          return;
+        }
+      }
       reportNuxtError({ error });
     });
 

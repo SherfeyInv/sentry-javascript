@@ -3,13 +3,17 @@ module.exports = {
     node: true,
   },
   extends: ['eslint:recommended'],
-  plugins: ['@sentry-internal/eslint-plugin-sdk'],
+  plugins: ['@sentry/sdk'],
   overrides: [
     {
       // Configuration for JavaScript files
       files: ['*.js'],
       rules: {
         'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      },
+      parserOptions: {
+        sourceType: 'module',
+        ecmaVersion: 2020,
       },
     },
     {
@@ -20,7 +24,7 @@ module.exports = {
       parser: '@typescript-eslint/parser',
       rules: {
         // We want to guard against using the equality operator with empty arrays
-        '@sentry-internal/sdk/no-eq-empty': 'error',
+        '@sentry/sdk/no-eq-empty': 'error',
 
         // Unused variables should be removed unless they are marked with and underscore (ex. _varName).
         '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
@@ -51,6 +55,12 @@ module.exports = {
         '@typescript-eslint/unbound-method': 'error',
 
         '@typescript-eslint/consistent-type-imports': 'error',
+
+        // We want to use optional chaining, where possible, to safe bytes
+        '@typescript-eslint/prefer-optional-chain': 'error',
+
+        // Disallow unnecessary type assertions/conversions
+        '@typescript-eslint/no-unnecessary-type-assertion': 'error',
 
         // Private and protected members of a class should be prefixed with a leading underscore.
         // typeLike declarations (class, interface, typeAlias, enum, typeParameter) should be
@@ -100,6 +110,9 @@ module.exports = {
         // Be explicit about class member accessibility (public, private, protected). Turned off
         // on tests for ease of use.
         '@typescript-eslint/explicit-member-accessibility': ['error'],
+
+        // We do not care about empty functions
+        '@typescript-eslint/no-empty-function': 'off',
       },
     },
     {
@@ -133,7 +146,7 @@ module.exports = {
         // We want to avoid using the RegExp constructor as it can lead to invalid or dangerous regular expressions
         // if end user input is used in the constructor. It's fine to ignore this rule if it is safe to use the RegExp.
         // However, we want to flag each use case so that we're aware of the potential danger.
-        '@sentry-internal/sdk/no-regexp-constructor': 'error',
+        '@sentry/sdk/no-regexp-constructor': 'error',
 
         // JSDOC comments are required for classes and methods. As we have a public facing codebase, documentation,
         // even if it may seems excessive at times, is important to emphasize. Turned off in tests.
@@ -147,14 +160,10 @@ module.exports = {
         ],
 
         // Do not allow usage of class field initializers
-        '@sentry-internal/sdk/no-class-field-initializers': 'error',
+        '@sentry/sdk/no-class-field-initializers': 'error',
       },
     },
     {
-      // Configuration for files in test directories
-      env: {
-        jest: true,
-      },
       files: [
         'test.ts',
         '*.test.ts',
@@ -175,10 +184,9 @@ module.exports = {
         '@typescript-eslint/explicit-member-accessibility': 'off',
         '@typescript-eslint/no-explicit-any': 'off',
         '@typescript-eslint/no-non-null-assertion': 'off',
-        '@typescript-eslint/no-empty-function': 'off',
         '@typescript-eslint/no-floating-promises': 'off',
-        '@sentry-internal/sdk/no-focused-tests': 'error',
-        '@sentry-internal/sdk/no-skipped-tests': 'error',
+        '@sentry/sdk/no-focused-tests': 'error',
+        '@sentry/sdk/no-skipped-tests': 'error',
       },
     },
     {
@@ -186,7 +194,7 @@ module.exports = {
       files: ['*.config.js', '*.config.mjs'],
       parserOptions: {
         sourceType: 'module',
-        ecmaVersion: 2018,
+        ecmaVersion: 2020,
       },
     },
     {

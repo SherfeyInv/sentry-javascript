@@ -3,23 +3,22 @@ import type { NodeOptions } from '@sentry/node';
 import type { BrowserOptions } from '@sentry/react';
 
 export type RemixOptions = (Options | BrowserOptions | NodeOptions) & {
+  /**
+   * Controls which `action` form data fields are captured and attached to spans/errors, optionally
+   * renaming them (`{ username: 'user' }` reports `username` as `user`).
+   *
+   * Setting this option is enough to opt into capturing the configured fields, and it takes
+   * precedence over `dataCollection.httpBodies`:
+   *
+   * ```js
+   * Sentry.init({
+   *   captureActionFormDataKeys: { username: true },
+   * });
+   * ```
+   *
+   * When this option is not set, all form fields are captured if `dataCollection.httpBodies`
+   * includes `'incomingRequest'` (the default). Either way, values whose field name looks
+   * sensitive (`password`, `token`, …) are replaced with `[Filtered]`.
+   */
   captureActionFormDataKeys?: Record<string, string | boolean>;
-} & (
-    | {
-        /**
-         * Enables OpenTelemetry Remix instrumentation.
-         *
-         * Note: This option will be the default behavior and will be removed in the next major version.
-         */
-        autoInstrumentRemix?: true;
-      }
-    | {
-        /**
-         * Enables OpenTelemetry Remix instrumentation
-         *
-         * @deprecated Setting this option to `false` is deprecated as the next major version will default to behaving as if this option were `true` and the option itself will be removed.
-         * It is recommended to set this option to `true`.
-         */
-        autoInstrumentRemix?: false;
-      }
-  );
+};

@@ -14,15 +14,13 @@ import { HttpsProxyAgent } from '../proxy';
 import type { HTTPModule } from './http-module';
 
 export interface NodeTransportOptions extends BaseTransportOptions {
-  /** Define custom headers */
-  headers?: Record<string, string>;
   /** Set a proxy that should be used for outbound requests. */
   proxy?: string;
   /** HTTPS proxy CA certificates */
   caCerts?: string | Buffer | Array<string | Buffer>;
   /** Custom HTTP module. Defaults to the native 'http' and 'https' modules. */
   httpModule?: HTTPModule;
-  /** Allow overriding connection keepAlive, defaults to false */
+  /** Allow overriding connection keepAlive, defaults to true */
   keepAlive?: boolean;
 }
 
@@ -50,7 +48,7 @@ export function makeNodeTransport(options: NodeTransportOptions): Transport {
 
   try {
     urlSegments = new URL(options.url);
-  } catch (e) {
+  } catch {
     consoleSandbox(() => {
       // eslint-disable-next-line no-console
       console.warn(
@@ -70,10 +68,7 @@ export function makeNodeTransport(options: NodeTransportOptions): Transport {
   );
 
   const nativeHttpModule = isHttps ? https : http;
-  const keepAlive = options.keepAlive === undefined ? false : options.keepAlive;
-
-  // TODO(v9): Evaluate if we can set keepAlive to true. This would involve testing for memory leaks in older node
-  // versions(>= 8) as they had memory leaks when using it: #2555
+  const keepAlive = options.keepAlive ?? true;
   const agent = proxy
     ? (new HttpsProxyAgent(proxy) as http.Agent)
     : new nativeHttpModule.Agent({ keepAlive, maxSockets: 30, timeout: 2000 });
@@ -92,13 +87,11 @@ export function makeNodeTransport(options: NodeTransportOptions): Transport {
 function applyNoProxyOption(transportUrlSegments: URL, proxy: string | undefined): string | undefined {
   const { no_proxy } = process.env;
 
-  const urlIsExemptFromProxy =
-    no_proxy &&
-    no_proxy
-      .split(',')
-      .some(
-        exemption => transportUrlSegments.host.endsWith(exemption) || transportUrlSegments.hostname.endsWith(exemption),
-      );
+  const urlIsExemptFromProxy = no_proxy
+    ?.split(',')
+    .some(
+      exemption => transportUrlSegments.host.endsWith(exemption) || transportUrlSegments.hostname.endsWith(exemption),
+    );
 
   if (urlIsExemptFromProxy) {
     return undefined;
@@ -117,60 +110,75 @@ function createRequestExecutor(
 ): TransportRequestExecutor {
   const { hostname, pathname, port, protocol, search } = new URL(options.url);
   return function makeRequest(request: TransportRequest): Promise<TransportMakeRequestResponse> {
-    return new Promise((resolve, reject) => {
-      // This ensures we do not generate any spans in OpenTelemetry for the transport
-      suppressTracing(() => {
-        let body = streamFromBody(request.body);
+    const sendRequest = (canRetry: boolean): Promise<TransportMakeRequestResponse> =>
+      new Promise((resolve, reject) => {
+        // This ensures we do not generate any spans in OpenTelemetry for the transport
+        suppressTracing(() => {
+          // Recreate the body on each attempt so a retry is not piping a consumed stream.
+          let body = streamFromBody(request.body);
 
-        const headers: Record<string, string> = { ...options.headers };
+          const headers: Record<string, string> = { ...options.headers };
 
-        if (request.body.length > GZIP_THRESHOLD) {
-          headers['content-encoding'] = 'gzip';
-          body = body.pipe(createGzip());
-        }
+          if (request.body.length > GZIP_THRESHOLD) {
+            headers['content-encoding'] = 'gzip';
+            body = body.pipe(createGzip());
+          }
 
-        const req = httpModule.request(
-          {
-            method: 'POST',
-            agent,
-            headers,
-            hostname,
-            path: `${pathname}${search}`,
-            port,
-            protocol,
-            ca: options.caCerts,
-          },
-          res => {
-            res.on('data', () => {
-              // Drain socket
-            });
+          const hostnameIsIPv6 = hostname.startsWith('[');
 
-            res.on('end', () => {
-              // Drain socket
-            });
+          const req = httpModule.request(
+            {
+              method: 'POST',
+              agent,
+              headers,
+              // Remove "[" and "]" from IPv6 hostnames
+              hostname: hostnameIsIPv6 ? hostname.slice(1, -1) : hostname,
+              path: `${pathname}${search}`,
+              port,
+              protocol,
+              ca: options.caCerts,
+            },
+            res => {
+              res.on('data', () => {
+                // Drain socket
+              });
 
-            res.setEncoding('utf8');
+              res.on('end', () => {
+                // Drain socket
+              });
 
-            // "Key-value pairs of header names and values. Header names are lower-cased."
-            // https://nodejs.org/api/http.html#http_message_headers
-            const retryAfterHeader = res.headers['retry-after'] ?? null;
-            const rateLimitsHeader = res.headers['x-sentry-rate-limits'] ?? null;
+              res.setEncoding('utf8');
 
-            resolve({
-              statusCode: res.statusCode,
-              headers: {
-                'retry-after': retryAfterHeader,
-                'x-sentry-rate-limits': Array.isArray(rateLimitsHeader)
-                  ? rateLimitsHeader[0] || null
-                  : rateLimitsHeader,
-              },
-            });
-          },
-        );
+              // "Key-value pairs of header names and values. Header names are lower-cased."
+              // https://nodejs.org/api/http.html#http_message_headers
+              const retryAfterHeader = res.headers['retry-after'] ?? null;
+              const rateLimitsHeader = res.headers['x-sentry-rate-limits'] ?? null;
 
-        req.on('error', reject);
-        body.pipe(req);
+              resolve({
+                statusCode: res.statusCode,
+                headers: {
+                  'retry-after': retryAfterHeader,
+                  'x-sentry-rate-limits': Array.isArray(rateLimitsHeader)
+                    ? rateLimitsHeader[0] || null
+                    : rateLimitsHeader,
+                },
+              });
+            },
+          );
+
+          req.on('error', error => {
+            // Keep-alive sockets can go stale while a serverless isolate is frozen.
+            // Node recommends a single retry when the reused socket resets.
+            if (canRetry && req.reusedSocket && (error as NodeJS.ErrnoException).code === 'ECONNRESET') {
+              resolve(sendRequest(false));
+            } else {
+              reject(error);
+            }
+          });
+          body.pipe(req);
+        });
       });
-    });
+
+    return sendRequest(true);
   };
 }

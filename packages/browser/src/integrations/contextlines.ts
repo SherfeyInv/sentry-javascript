@@ -1,28 +1,31 @@
-import type { Event, IntegrationFn, StackFrame } from '@sentry/core';
-import { GLOBAL_OBJ, addContextToFrame, defineIntegration, stripUrlQueryAndFragment } from '@sentry/core';
+import type { Event, IntegrationFn, StackFrame } from '@sentry/core/browser';
+import { addContextToFrame, defineIntegration, GLOBAL_OBJ, stripUrlQueryAndFragment } from '@sentry/core/browser';
 
 const WINDOW = GLOBAL_OBJ as typeof GLOBAL_OBJ & Window;
 
 const DEFAULT_LINES_OF_CONTEXT = 7;
 
-const INTEGRATION_NAME = 'ContextLines';
+const INTEGRATION_NAME = 'ContextLines' as const;
 
+// TODO(v11): Use `dataCollection.frameContextLines` default (5)
 interface ContextLinesOptions {
   /**
    * Sets the number of context lines for each frame when loading a file.
    * Defaults to 7.
    *
    * Set to 0 to disable loading and inclusion of source files.
+   *
+   * When set, this option takes precedence over `dataCollection.frameContextLines`.
    **/
   frameContextLines?: number;
 }
 
 const _contextLinesIntegration = ((options: ContextLinesOptions = {}) => {
-  const contextLines = options.frameContextLines != null ? options.frameContextLines : DEFAULT_LINES_OF_CONTEXT;
-
   return {
     name: INTEGRATION_NAME,
-    processEvent(event) {
+    processEvent(event, _hint, client) {
+      const contextLines =
+        options.frameContextLines ?? client?.getDataCollectionOptions().frameContextLines ?? DEFAULT_LINES_OF_CONTEXT;
       return addSourceContext(event, contextLines);
     },
   };
@@ -51,8 +54,8 @@ function addSourceContext(event: Event, contextLines: number): Event {
     return event;
   }
 
-  const exceptions = event.exception && event.exception.values;
-  if (!exceptions || !exceptions.length) {
+  const exceptions = event.exception?.values;
+  if (!exceptions?.length) {
     return event;
   }
 
@@ -65,7 +68,7 @@ function addSourceContext(event: Event, contextLines: number): Event {
 
   exceptions.forEach(exception => {
     const stacktrace = exception.stacktrace;
-    if (stacktrace && stacktrace.frames) {
+    if (stacktrace?.frames) {
       stacktrace.frames = stacktrace.frames.map(frame =>
         applySourceContextToFrame(frame, htmlLines, htmlFilename, contextLines),
       );

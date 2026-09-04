@@ -1,15 +1,8 @@
 // Copyright 2021 Remix Software Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 
-import { matchRoutes } from '@remix-run/router';
 import type { AgnosticRouteMatch, AgnosticRouteObject } from '@remix-run/router';
-import type { DeferredData, ErrorResponse, ServerRoute } from './types';
-
+import { matchRoutes } from '@remix-run/router';
 /**
  * Based on Remix Implementation
  *
@@ -76,7 +69,7 @@ export const json: JsonFunction = (data, init = {}) => {
  * Changed so that `matchRoutes` function is passed in.
  */
 export function matchServerRoutes(
-  routes: ServerRoute[],
+  routes: AgnosticRouteObject[],
   pathname: string,
 ): AgnosticRouteMatch<string, AgnosticRouteObject>[] | null {
   const matches = matchRoutes(routes, pathname);
@@ -91,73 +84,4 @@ export function matchServerRoutes(
     route: match.route,
     pathnameBase: match.pathnameBase,
   }));
-}
-
-/**
- * https://github.com/remix-run/remix/blob/97999d02493e8114c39d48b76944069d58526e8d/packages/remix-server-runtime/server.ts#L573-L586
- */
-export function isIndexRequestUrl(url: URL): boolean {
-  for (const param of url.searchParams.getAll('index')) {
-    // only use bare `?index` params without a value
-    // ✅ /foo?index
-    // ✅ /foo?index&index=123
-    // ✅ /foo?index=123&index
-    // ❌ /foo?index=123
-    if (param === '') {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * https://github.com/remix-run/remix/blob/97999d02493e8114c39d48b76944069d58526e8d/packages/remix-server-runtime/server.ts#L588-L596
- */
-export function getRequestMatch(
-  url: URL,
-  matches: AgnosticRouteMatch[],
-): AgnosticRouteMatch<string, AgnosticRouteObject> {
-  const match = matches.slice(-1)[0] as AgnosticRouteMatch<string, AgnosticRouteObject>;
-
-  if (!isIndexRequestUrl(url) && match.route.id?.endsWith('/index')) {
-    return matches.slice(-2)[0] as AgnosticRouteMatch<string, AgnosticRouteObject>;
-  }
-
-  return match;
-}
-
-/**
- * https://github.com/remix-run/remix/blob/3e589152bc717d04e2054c31bea5a1056080d4b9/packages/remix-server-runtime/responses.ts#L75-L85
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function isDeferredData(value: any): value is DeferredData {
-  const deferred: DeferredData = value;
-  return (
-    deferred &&
-    typeof deferred === 'object' &&
-    typeof deferred.data === 'object' &&
-    typeof deferred.subscribe === 'function' &&
-    typeof deferred.cancel === 'function' &&
-    typeof deferred.resolveData === 'function'
-  );
-}
-
-/**
- * https://github.com/remix-run/react-router/blob/f9b3dbd9cbf513366c456b33d95227f42f36da63/packages/router/utils.ts#L1574
- *
- * Check if the given error is an ErrorResponse generated from a 4xx/5xx
- * Response thrown from an action/loader
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function isRouteErrorResponse(value: any): value is ErrorResponse {
-  const error: ErrorResponse = value;
-
-  return (
-    error != null &&
-    typeof error.status === 'number' &&
-    typeof error.statusText === 'string' &&
-    typeof error.internal === 'boolean' &&
-    'data' in error
-  );
 }

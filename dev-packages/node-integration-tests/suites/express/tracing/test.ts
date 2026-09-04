@@ -1,21 +1,23 @@
-import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
+import { afterAll, describe, expect } from 'vitest';
+import { assertSentryTransaction } from '../../../utils/assertions';
+import { cleanupChildProcesses, createEsmAndCjsTests } from '../../../utils/runner';
 
 describe('express tracing', () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  describe('CJS', () => {
-    test('should create and send transactions for Express routes and spans for middlewares.', done => {
-      createRunner(__dirname, 'server.js')
+  createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('should create and send transactions for Express routes and spans for middlewares.', async () => {
+      const runner = createRunner()
         .expect({
           transaction: {
             contexts: {
               trace: {
-                span_id: expect.stringMatching(/[a-f0-9]{16}/),
-                trace_id: expect.stringMatching(/[a-f0-9]{32}/),
+                span_id: expect.stringMatching(/[a-f\d]{16}/),
+                trace_id: expect.stringMatching(/[a-f\d]{32}/),
                 data: {
-                  url: expect.stringMatching(/\/test\/express$/),
+                  'url.full': expect.stringMatching(/\/test\/express$/),
                   'http.response.status_code': 200,
                 },
                 op: 'http.server',
@@ -29,8 +31,8 @@ describe('express tracing', () => {
                   'express.type': 'middleware',
                 }),
                 description: 'corsMiddleware',
-                op: 'middleware.express',
-                origin: 'auto.http.otel.express',
+                op: 'middleware',
+                origin: 'auto.http.express',
               }),
               expect.objectContaining({
                 data: expect.objectContaining({
@@ -38,18 +40,19 @@ describe('express tracing', () => {
                   'express.type': 'request_handler',
                 }),
                 description: '/test/express',
-                op: 'request_handler.express',
-                origin: 'auto.http.otel.express',
+                op: 'handler',
+                origin: 'auto.http.express',
               }),
             ]),
           },
         })
-        .start(done)
-        .makeRequest('get', '/test/express');
+        .start();
+      runner.makeRequest('get', '/test/express');
+      await runner.completed();
     });
 
-    test('should set a correct transaction name for routes specified in RegEx', done => {
-      createRunner(__dirname, 'server.js')
+    test('should set a correct transaction name for routes specified in RegEx', async () => {
+      const runner = createRunner()
         .expect({
           transaction: {
             transaction: 'GET /\\/test\\/regex/',
@@ -58,10 +61,10 @@ describe('express tracing', () => {
             },
             contexts: {
               trace: {
-                trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-                span_id: expect.stringMatching(/[a-f0-9]{16}/),
+                trace_id: expect.stringMatching(/[a-f\d]{32}/),
+                span_id: expect.stringMatching(/[a-f\d]{16}/),
                 data: {
-                  url: expect.stringMatching(/\/test\/regex$/),
+                  'url.full': expect.stringMatching(/\/test\/regex$/),
                   'http.response.status_code': 200,
                 },
                 op: 'http.server',
@@ -70,14 +73,102 @@ describe('express tracing', () => {
             },
           },
         })
-        .start(done)
-        .makeRequest('get', '/test/regex');
+        .start();
+      runner.makeRequest('get', '/test/regex');
+      await runner.completed();
+    });
+
+    test('nests a sub-router route handler span under the router span', async () => {
+      const runner = createRunner()
+        .expect({
+          transaction: transaction => {
+            expect(transaction.transaction).toBe('GET /test/router/user/:id');
+
+            const spans = transaction.spans || [];
+            const routerSpan = spans.find(span => span.data?.['express.type'] === 'router');
+            const handlerSpan = spans.find(span => span.data?.['express.type'] === 'request_handler');
+
+            expect(routerSpan).toBeDefined();
+            expect(handlerSpan).toBeDefined();
+
+            // The route handler nests under the router span in both instrumentations.
+            expect(handlerSpan?.parent_span_id).toBe(routerSpan?.span_id);
+
+            // The handler delays its response by ~100ms (see scenario).
+            const routerDurationMs = ((routerSpan?.timestamp ?? 0) - (routerSpan?.start_timestamp ?? 0)) * 1000;
+
+            // The router span stays open until the response finishes, so it spans the
+            // whole sub-stack it dispatched (~the 100ms handler delay).
+            expect(routerDurationMs).toBeGreaterThan(50);
+          },
+        })
+        .start();
+      runner.makeRequest('get', '/test/router/user/42');
+      await runner.completed();
+    });
+
+    test('keeps the parameter in a route mounted under a parameterized sub-router path', async () => {
+      const runner = createRunner()
+        .expect({
+          transaction: {
+            // The `:version` parameter must be preserved — using the concrete value
+            // (`/test/version/v1/user`) would explode route cardinality.
+            transaction: 'GET /test/version/:version/user',
+            transaction_info: {
+              source: 'route',
+            },
+          },
+        })
+        .start();
+      runner.makeRequest('get', '/test/version/v1/user');
+      await runner.completed();
+    });
+
+    test('handles root page correctly', async () => {
+      const runner = createRunner()
+        .expect({
+          transaction: {
+            transaction: 'GET /',
+            contexts: {
+              trace: {
+                span_id: expect.stringMatching(/[a-f\d]{16}/),
+                trace_id: expect.stringMatching(/[a-f\d]{32}/),
+                data: {
+                  'http.response.status_code': 200,
+                  'http.method': 'GET',
+                  'url.full': expect.stringMatching(/\/$/),
+                  'http.route': '/',
+                  'http.target': '/',
+                },
+                op: 'http.server',
+                status: 'ok',
+              },
+            },
+          },
+        })
+        .start();
+      runner.makeRequest('get', '/');
+      await runner.completed();
+    });
+
+    test.each(['/401', '/402', '/403', '/does-not-exist'])('ignores %s route by default', async (url: string) => {
+      const runner = createRunner()
+        .expect({
+          // No transaction is sent for the 401, 402, 403, 404 routes
+          transaction: {
+            transaction: 'GET /',
+          },
+        })
+        .start();
+      runner.makeRequest('get', url, { expectError: true });
+      runner.makeRequest('get', '/');
+      await runner.completed();
     });
 
     test.each([['array1'], ['array5']])(
       'should set a correct transaction name for routes consisting of arrays of routes for %p',
-      ((segment: string, done: () => void) => {
-        createRunner(__dirname, 'server.js')
+      async (segment: string) => {
+        const runner = await createRunner()
           .expect({
             transaction: {
               transaction: 'GET /test/array1,/\\/test\\/array[2-9]/',
@@ -86,10 +177,10 @@ describe('express tracing', () => {
               },
               contexts: {
                 trace: {
-                  trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-                  span_id: expect.stringMatching(/[a-f0-9]{16}/),
+                  trace_id: expect.stringMatching(/[a-f\d]{32}/),
+                  span_id: expect.stringMatching(/[a-f\d]{16}/),
                   data: {
-                    url: expect.stringMatching(`/test/${segment}$`),
+                    'url.full': expect.stringMatching(`/test/${segment}$`),
                     'http.response.status_code': 200,
                   },
                   op: 'http.server',
@@ -98,9 +189,10 @@ describe('express tracing', () => {
               },
             },
           })
-          .start(done)
-          .makeRequest('get', `/test/${segment}`);
-      }) as any,
+          .start();
+        await runner.makeRequest('get', `/test/${segment}`);
+        await runner.completed();
+      },
     );
 
     test.each([
@@ -112,20 +204,20 @@ describe('express tracing', () => {
       ['arr55/required/lastParam'],
       ['arr/requiredPath/optionalPath/'],
       ['arr/requiredPath/optionalPath/lastParam'],
-    ])('should handle more complex regexes in route arrays correctly for %p', ((segment: string, done: () => void) => {
-      createRunner(__dirname, 'server.js')
+    ])('should handle more complex regexes in route arrays correctly for %p', async (segment: string) => {
+      const runner = await createRunner()
         .expect({
           transaction: {
-            transaction: 'GET /test/arr/:id,/\\/test\\/arr[0-9]*\\/required(path)?(\\/optionalPath)?\\/(lastParam)?/',
+            transaction: 'GET /test/arr/:id,/\\/test\\/arr\\d*\\/required(path)?(\\/optionalPath)?\\/(lastParam)?/',
             transaction_info: {
               source: 'route',
             },
             contexts: {
               trace: {
-                trace_id: expect.stringMatching(/[a-f0-9]{32}/),
-                span_id: expect.stringMatching(/[a-f0-9]{16}/),
+                trace_id: expect.stringMatching(/[a-f\d]{32}/),
+                span_id: expect.stringMatching(/[a-f\d]{16}/),
                 data: {
-                  url: expect.stringMatching(`/test/${segment}$`),
+                  'url.full': expect.stringMatching(`/test/${segment}$`),
                   'http.response.status_code': 200,
                 },
                 op: 'http.server',
@@ -134,13 +226,14 @@ describe('express tracing', () => {
             },
           },
         })
-        .start(done)
-        .makeRequest('get', `/test/${segment}`);
-    }) as any);
+        .start();
+      await runner.makeRequest('get', `/test/${segment}`);
+      await runner.completed();
+    });
 
     describe('request data', () => {
-      test('correctly captures JSON request data', done => {
-        const runner = createRunner(__dirname, 'server.js')
+      test('correctly captures JSON request data', async () => {
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -158,13 +251,19 @@ describe('express tracing', () => {
               },
             },
           })
-          .start(done);
+          .start();
 
-        runner.makeRequest('post', '/test-post', { data: { foo: 'bar', other: 1 } });
+        runner.makeRequest('post', '/test-post', {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          data: JSON.stringify({ foo: 'bar', other: 1 }),
+        });
+        await runner.completed();
       });
 
-      test('correctly captures plain text request data', done => {
-        const runner = createRunner(__dirname, 'server.js')
+      test('correctly captures plain text request data', async () => {
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -179,16 +278,17 @@ describe('express tracing', () => {
               },
             },
           })
-          .start(done);
+          .start();
 
         runner.makeRequest('post', '/test-post', {
           headers: { 'Content-Type': 'text/plain' },
           data: 'some plain text',
         });
+        await runner.completed();
       });
 
-      test('correctly captures text buffer request data', done => {
-        const runner = createRunner(__dirname, 'server.js')
+      test('correctly captures text buffer request data', async () => {
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -203,16 +303,17 @@ describe('express tracing', () => {
               },
             },
           })
-          .start(done);
+          .start();
 
         runner.makeRequest('post', '/test-post', {
           headers: { 'Content-Type': 'application/octet-stream' },
           data: Buffer.from('some plain text in buffer'),
         });
+        await runner.completed();
       });
 
-      test('correctly captures non-text buffer request data', done => {
-        const runner = createRunner(__dirname, 'server.js')
+      test('correctly captures non-text buffer request data', async () => {
+        const runner = createRunner()
           .expect({
             transaction: {
               transaction: 'POST /test-post',
@@ -228,7 +329,7 @@ describe('express tracing', () => {
               },
             },
           })
-          .start(done);
+          .start();
 
         const body = new Uint8Array([1, 2, 3, 4, 5]).buffer;
 
@@ -236,7 +337,95 @@ describe('express tracing', () => {
           headers: { 'Content-Type': 'application/octet-stream' },
           data: body,
         });
+        await runner.completed();
+      });
+
+      test('correctly ignores request data', async () => {
+        const runner = createRunner()
+          .expect({
+            transaction: e => {
+              assertSentryTransaction(e, {
+                transaction: 'POST /test-post-ignore-body',
+                request: {
+                  url: expect.stringMatching(/^http:\/\/localhost:(\d+)\/test-post-ignore-body$/),
+                  method: 'POST',
+                  headers: {
+                    'user-agent': expect.stringContaining(''),
+                    'content-type': 'application/octet-stream',
+                  },
+                },
+              });
+              // Ensure the request body has been ignored
+              expect(e).have.property('request').that.does.not.have.property('data');
+            },
+          })
+          .start();
+
+        runner.makeRequest('post', '/test-post-ignore-body', {
+          headers: { 'Content-Type': 'application/octet-stream' },
+          data: Buffer.from('some plain text in buffer'),
+        });
+        await runner.completed();
       });
     });
+  });
+
+  describe('filter status codes', () => {
+    createEsmAndCjsTests(
+      __dirname,
+      'scenario-filterStatusCode.mjs',
+      'instrument-filterStatusCode.mjs',
+      (createRunner, test) => {
+        // We opt-out of the default [401, 404] filtering in order to test how these spans are handled
+        test.each([
+          { status_code: 401, url: '/401', status: 'unauthenticated' },
+          { status_code: 402, url: '/402', status: 'invalid_argument' },
+          { status_code: 403, url: '/403', status: 'permission_denied' },
+          { status_code: 404, url: '/does-not-exist', status: 'not_found' },
+        ])(
+          'handles %s route correctly',
+          async ({ status_code, url, status }: { status_code: number; url: string; status: string }) => {
+            const runner = createRunner()
+              .expect({
+                transaction: {
+                  transaction: `GET ${url}`,
+                  contexts: {
+                    trace: {
+                      span_id: expect.stringMatching(/[a-f\d]{16}/),
+                      trace_id: expect.stringMatching(/[a-f\d]{32}/),
+                      data: {
+                        'http.response.status_code': status_code,
+                        'http.method': 'GET',
+                        'url.full': expect.stringMatching(url),
+                        'http.target': url,
+                      },
+                      op: 'http.server',
+                      status,
+                    },
+                  },
+                },
+              })
+              .start();
+            runner.makeRequest('get', url, { expectError: true });
+            await runner.completed();
+          },
+        );
+
+        test('filters defined status codes', async () => {
+          const runner = createRunner()
+            .expect({
+              transaction: {
+                transaction: 'GET /',
+              },
+            })
+            .start();
+          await runner.makeRequest('get', '/499', { expectError: true });
+          await runner.makeRequest('get', '/300', { expectError: true });
+          await runner.makeRequest('get', '/399', { expectError: true });
+          await runner.makeRequest('get', '/');
+          await runner.completed();
+        });
+      },
+    );
   });
 });

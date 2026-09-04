@@ -1,4 +1,4 @@
-import { makeBaseNPMConfig, makeNPMConfigVariants, makeOtelLoaders } from '@sentry-internal/rollup-utils';
+import { makeBaseNPMConfig, makeNPMConfigVariants, makeOrchestrionLoader } from '@sentry-internal/rollup-utils';
 
 export default [
   ...makeNPMConfigVariants(
@@ -18,6 +18,22 @@ export default [
       // the name doesn't match an SDK dependency)
       packageSpecificConfig: {
         external: ['next/router', 'next/constants', 'next/headers', 'stacktrace-parser'],
+
+        // Next.js and our users are more happy when our client code has the "use client" directive
+        plugins: [
+          {
+            name: 'sentry-internal-add-use-client-directive-to-client-entry-points-plugin-extravaganza',
+            banner: chunk => {
+              if (
+                chunk.isEntry &&
+                (chunk.facadeModuleId.endsWith('/src/index.client.ts') ||
+                  chunk.facadeModuleId.endsWith('/src/client/index.ts'))
+              ) {
+                return '"use client";';
+              }
+            },
+          },
+        ],
       },
     }),
   ),
@@ -72,5 +88,5 @@ export default [
       },
     }),
   ),
-  ...makeOtelLoaders('./build', 'sentry-node'),
+  ...makeOrchestrionLoader('./build'),
 ];

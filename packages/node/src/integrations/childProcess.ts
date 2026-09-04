@@ -1,7 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import * as diagnosticsChannel from 'node:diagnostics_channel';
-import type { Worker } from 'node:worker_threads';
-import { addBreadcrumb, defineIntegration } from '@sentry/core';
+import { addBreadcrumb, defineIntegration, isObjectLike } from '@sentry/core';
 
 interface Options {
   /**
@@ -12,27 +11,19 @@ interface Options {
   includeChildProcessArgs?: boolean;
 }
 
-// TODO(v9): Update this name and mention in migration docs.
-const INTEGRATION_NAME = 'ProcessAndThreadBreadcrumbs';
+const INTEGRATION_NAME = 'ChildProcess' as const;
 
 /**
- * Capture breadcrumbs for child processes and worker threads.
+ * Capture breadcrumbs and events for child processes.
+ * For worker thread events, use `workerThreadsIntegration()` instead.
  */
 export const childProcessIntegration = defineIntegration((options: Options = {}) => {
   return {
     name: INTEGRATION_NAME,
-    setup(_client) {
-      // eslint-disable-next-line deprecation/deprecation
+    setup() {
       diagnosticsChannel.channel('child_process').subscribe((event: unknown) => {
-        if (event && typeof event === 'object' && 'process' in event) {
+        if (isObjectLike(event) && 'process' in event) {
           captureChildProcessEvents(event.process as ChildProcess, options);
-        }
-      });
-
-      // eslint-disable-next-line deprecation/deprecation
-      diagnosticsChannel.channel('worker_threads').subscribe((event: unknown) => {
-        if (event && typeof event === 'object' && 'worker' in event) {
-          captureWorkerThreadEvents(event.worker as Worker);
         }
       });
     },
@@ -65,7 +56,7 @@ function captureChildProcessEvents(child: ChildProcess, options: Options): void 
           addBreadcrumb({
             category: 'child_process',
             message: `Child process exited with code '${code}'`,
-            level: 'warning',
+            level: code === 0 ? 'info' : 'warning',
             data,
           });
         }
@@ -82,22 +73,5 @@ function captureChildProcessEvents(child: ChildProcess, options: Options): void 
           data,
         });
       }
-    });
-}
-
-function captureWorkerThreadEvents(worker: Worker): void {
-  let threadId: number | undefined;
-
-  worker
-    .on('online', () => {
-      threadId = worker.threadId;
-    })
-    .on('error', error => {
-      addBreadcrumb({
-        category: 'worker_thread',
-        message: `Worker thread errored with '${error.message}'`,
-        level: 'error',
-        data: { threadId },
-      });
     });
 }

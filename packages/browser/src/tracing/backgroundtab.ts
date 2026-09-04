@@ -1,13 +1,14 @@
-import { SPAN_STATUS_ERROR, getActiveSpan, getRootSpan, logger, spanToJSON } from '@sentry/core';
+import { debug, getActiveSpan, getRootSpan, SPAN_STATUS_ERROR, spanToJSON } from '@sentry/core/browser';
 import { DEBUG_BUILD } from '../debug-build';
 import { WINDOW } from '../helpers';
+import { SENTRY_OP } from '@sentry/conventions/attributes';
 
 /**
  * Add a listener that cancels and finishes a transaction when the global
  * document is hidden.
  */
 export function registerBackgroundTabDetection(): void {
-  if (WINDOW && WINDOW.document) {
+  if (WINDOW.document) {
     WINDOW.document.addEventListener('visibilitychange', () => {
       const activeSpan = getActiveSpan();
       if (!activeSpan) {
@@ -19,15 +20,18 @@ export function registerBackgroundTabDetection(): void {
       if (WINDOW.document.hidden && rootSpan) {
         const cancelledStatus = 'cancelled';
 
-        const { op, status } = spanToJSON(rootSpan);
+        const {
+          attributes: { [SENTRY_OP]: op },
+          status,
+        } = spanToJSON(rootSpan);
 
         if (DEBUG_BUILD) {
-          logger.log(`[Tracing] Transaction: ${cancelledStatus} -> since tab moved to the background, op: ${op}`);
+          debug.log(`[Tracing] Transaction: ${cancelledStatus} -> since tab moved to the background, op: ${op}`);
         }
 
         // We should not set status if it is already set, this prevent important statuses like
         // error or data loss from being overwritten on transaction.
-        if (!status) {
+        if (status === 'ok') {
           rootSpan.setStatus({ code: SPAN_STATUS_ERROR, message: cancelledStatus });
         }
 
@@ -36,6 +40,6 @@ export function registerBackgroundTabDetection(): void {
       }
     });
   } else {
-    DEBUG_BUILD && logger.warn('[Tracing] Could not set up background tab detection due to lack of global document');
+    DEBUG_BUILD && debug.warn('[Tracing] Could not set up background tab detection due to lack of global document');
   }
 }

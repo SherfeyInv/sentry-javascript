@@ -1,8 +1,12 @@
 import { getPlaywrightConfig } from '@sentry-internal/test-utils';
 
 const config = getPlaywrightConfig({
-  startCommand: 'pnpm preview',
+  startCommand: 'pnpm start:import',
   port: 3030,
 });
 
-export default config;
+export default {
+  ...config,
+  globalSetup: './global-setup.mjs',
+  globalTeardown: './global-teardown.mjs',
+};

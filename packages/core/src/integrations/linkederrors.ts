@@ -1,7 +1,7 @@
 import { defineIntegration } from '../integration';
-import type { IntegrationFn } from '../types-hoist';
-import { applyAggregateErrorsToEvent } from '../utils-hoist/aggregate-errors';
-import { exceptionFromError } from '../utils-hoist/eventbuilder';
+import type { IntegrationFn } from '../types/integration';
+import { applyAggregateErrorsToEvent } from '../utils/aggregate-errors';
+import { exceptionFromError } from '../utils/eventbuilder';
 
 interface LinkedErrorsOptions {
   key?: string;
@@ -11,7 +11,7 @@ interface LinkedErrorsOptions {
 const DEFAULT_KEY = 'cause';
 const DEFAULT_LIMIT = 5;
 
-const INTEGRATION_NAME = 'LinkedErrors';
+const INTEGRATION_NAME = 'LinkedErrors' as const;
 
 const _linkedErrorsIntegration = ((options: LinkedErrorsOptions = {}) => {
   const limit = options.limit || DEFAULT_LIMIT;
@@ -22,15 +22,7 @@ const _linkedErrorsIntegration = ((options: LinkedErrorsOptions = {}) => {
     preprocessEvent(event, hint, client) {
       const options = client.getOptions();
 
-      applyAggregateErrorsToEvent(
-        exceptionFromError,
-        options.stackParser,
-        options.maxValueLength,
-        key,
-        limit,
-        event,
-        hint,
-      );
+      applyAggregateErrorsToEvent(exceptionFromError, options.stackParser, key, limit, event, hint);
     },
   };
 }) satisfies IntegrationFn;

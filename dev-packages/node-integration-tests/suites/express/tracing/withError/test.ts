@@ -1,13 +1,14 @@
-import { cleanupChildProcesses, createRunner } from '../../../../utils/runner';
+import { afterAll, describe } from 'vitest';
+import { cleanupChildProcesses, createCjsTests } from '../../../../utils/runner';
 
-describe('express tracing experimental', () => {
+describe('express tracing with error', () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  describe('CJS', () => {
-    test('should apply the scope transactionName to error events', done => {
-      createRunner(__dirname, 'server.js')
+  createCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('should apply the scope transactionName to error events', async () => {
+      const runner = createRunner()
         .ignore('transaction')
         .expect({
           event: {
@@ -21,8 +22,25 @@ describe('express tracing experimental', () => {
             transaction: 'GET /test/:id1/:id2',
           },
         })
-        .start(done)
-        .makeRequest('get', '/test/123/abc?q=1');
+        .start();
+      runner.makeRequest('get', '/test/123/abc?q=1');
+      await runner.completed();
+    });
+
+    test('preserves encoded query parameters while filtering sensitive values on events', async () => {
+      const runner = createRunner()
+        .ignore('transaction')
+        .expect({
+          event: {
+            request: {
+              query_string: 'q=hello%20world&token=[Filtered]',
+            },
+          },
+        })
+        .start();
+
+      await runner.makeRequest('get', '/test/123/abc?q=hello%20world&token=secret');
+      await runner.completed();
     });
   });
 });

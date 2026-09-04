@@ -1,6 +1,7 @@
-import type { Event, StackFrame } from '../../../src/types-hoist';
-
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { generateIteratee, rewriteFramesIntegration } from '../../../src/integrations/rewriteframes';
+import type { Event } from '../../../src/types/event';
+import type { StackFrame } from '../../../src/types/stackframe';
 
 let rewriteFrames: ReturnType<typeof rewriteFramesIntegration>;
 let exceptionEvent: Event;

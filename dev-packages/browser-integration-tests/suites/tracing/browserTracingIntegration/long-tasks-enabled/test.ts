@@ -1,7 +1,6 @@
 import type { Route } from '@playwright/test';
 import { expect } from '@playwright/test';
 import type { Event } from '@sentry/core';
-
 import { sentryTest } from '../../../../utils/fixtures';
 import { getFirstSentryEnvelopeRequest, shouldSkipTracingTest } from '../../../../utils/helpers';
 
@@ -23,7 +22,7 @@ sentryTest('should capture long task.', async ({ browserName, getLocalTestUrl, p
   const [firstUISpan] = uiSpans || [];
   expect(firstUISpan).toEqual(
     expect.objectContaining({
-      op: 'ui.long-task',
+      op: 'ui.long_task',
       description: 'Main UI thread blocked',
       parent_span_id: eventData.contexts?.trace?.span_id,
     }),

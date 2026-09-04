@@ -2,33 +2,32 @@
  * @vitest-environment jsdom
  */
 
+import {
+  eventFiltersIntegration,
+  getMainCarrier,
+  getReportDialogEndpoint,
+  lastEventId,
+  SDK_VERSION,
+} from '@sentry/core/browser';
+import * as utils from '@sentry/core/browser';
 import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
 import {
-  SDK_VERSION,
-  getGlobalScope,
-  getIsolationScope,
-  getReportDialogEndpoint,
-  inboundFiltersIntegration,
-  lastEventId,
-} from '@sentry/core';
-import * as utils from '@sentry/core';
-
-import { setCurrentClient } from '../src';
-import {
-  BrowserClient,
-  Scope,
-  WINDOW,
   addBreadcrumb,
+  BrowserClient,
   captureEvent,
   captureException,
   captureMessage,
+  defaultStackParser,
   flush,
   getClient,
   getCurrentScope,
   init,
+  logger,
+  Scope,
+  setCurrentClient,
   showReportDialog,
+  WINDOW,
 } from '../src';
 import { getDefaultBrowserClientOptions } from './helper/browser-client-options';
 import { makeSimpleTransport } from './mocks/simpletransport';
@@ -38,7 +37,7 @@ const dsn = 'https://53039209a22b4ec1bcc296a3c9fdecd6@sentry.io/4291';
 // eslint-disable-next-line no-var
 declare var global: any;
 
-vi.mock('@sentry/core', async requireActual => {
+vi.mock('@sentry/core/browser', async requireActual => {
   return {
     ...((await requireActual()) as any),
     getReportDialogEndpoint: vi.fn(),
@@ -49,10 +48,7 @@ describe('SentryBrowser', () => {
   const beforeSend = vi.fn(event => event);
 
   beforeEach(() => {
-    getGlobalScope().clear();
-    getIsolationScope().clear();
-    getCurrentScope().clear();
-    getCurrentScope().setClient(undefined);
+    getMainCarrier().__SENTRY__ = undefined;
 
     init({
       beforeSend,
@@ -243,20 +239,39 @@ describe('SentryBrowser', () => {
       expect(event.exception.values[0]?.stacktrace.frames).not.toHaveLength(0);
     });
 
-    it('should capture a message', done => {
-      const options = getDefaultBrowserClientOptions({
-        beforeSend: (event: Event): Event | null => {
-          expect(event.level).toBe('info');
-          expect(event.message).toBe('test');
-          expect(event.exception).toBeUndefined();
-          done();
-          return event;
-        },
-        dsn,
-      });
-      setCurrentClient(new BrowserClient(options));
-      captureMessage('test');
-    });
+    it('should capture an message', () =>
+      new Promise<void>(resolve => {
+        const options = getDefaultBrowserClientOptions({
+          attachStacktrace: false,
+          beforeSend: event => {
+            expect(event.level).toBe('info');
+            expect(event.message).toBe('test');
+            expect(event.exception).toBeUndefined();
+            resolve();
+            return event;
+          },
+          dsn,
+        });
+        setCurrentClient(new BrowserClient(options));
+        captureMessage('test');
+      }));
+
+    it('attaches a synthetic stacktrace to messages by default', () =>
+      new Promise<void>(resolve => {
+        const options = getDefaultBrowserClientOptions({
+          stackParser: defaultStackParser,
+          beforeSend: event => {
+            expect(event.message).toBe('test');
+            expect(event.exception?.values?.[0]?.stacktrace?.frames?.length).toBeGreaterThan(0);
+            expect(event.exception?.values?.[0]?.mechanism?.synthetic).toBe(true);
+            resolve();
+            return event;
+          },
+          dsn,
+        });
+        setCurrentClient(new BrowserClient(options));
+        captureMessage('test');
+      }));
 
     it('should capture an event', () =>
       new Promise<void>(resolve => {
@@ -304,12 +319,12 @@ describe('SentryBrowser', () => {
       expect(localBeforeSend).toHaveBeenCalledTimes(2);
     });
 
-    it('should use inboundfilter rules of bound client', async () => {
+    it('should use eventFilters rules of bound client', async () => {
       const localBeforeSend = vi.fn();
       const options = getDefaultBrowserClientOptions({
         beforeSend: localBeforeSend,
         dsn,
-        integrations: [inboundFiltersIntegration({ ignoreErrors: ['capture'] })],
+        integrations: [eventFiltersIntegration({ ignoreErrors: ['capture'] })],
       });
       const client = new BrowserClient(options);
       setCurrentClient(client);
@@ -320,6 +335,18 @@ describe('SentryBrowser', () => {
       await flush(2000);
 
       expect(localBeforeSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('logger', () => {
+    it('exports all log methods', () => {
+      expect(logger).toBeDefined();
+      expect(logger.trace).toBeDefined();
+      expect(logger.debug).toBeDefined();
+      expect(logger.info).toBeDefined();
+      expect(logger.warn).toBeDefined();
+      expect(logger.error).toBeDefined();
+      expect(logger.fatal).toBeDefined();
     });
   });
 });

@@ -1,9 +1,23 @@
 import type { Event } from '@sentry/core';
-import { conditionalTest } from '../../../utils';
+import { afterAll, describe, expect, test } from 'vitest';
 import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
 
-const EVENT = {
-  // and an exception that is our ANR
+const WORKER_ERROR_EVENT = {
+  exception: {
+    values: [
+      {
+        type: 'Error',
+        value: 'Worker error',
+        mechanism: {
+          type: 'auto.node.worker_threads',
+          handled: false,
+        },
+      },
+    ],
+  },
+};
+
+const TEST_ERROR_EVENT = {
   exception: {
     values: [
       {
@@ -22,27 +36,21 @@ const EVENT = {
         spawnfile: 'sleep',
       },
     },
-    {
-      timestamp: expect.any(Number),
-      category: 'worker_thread',
-      message: "Worker thread errored with 'Worker error'",
-      level: 'error',
-      data: {
-        threadId: expect.any(Number),
-      },
-    },
   ],
 };
 
-conditionalTest({ min: 20 })('should capture process and thread breadcrumbs', () => {
+describe('should capture child process breadcrumbs and worker thread errors', () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  test('ESM', done => {
-    createRunner(__dirname, 'app.mjs')
+  test('ESM', async () => {
+    await createRunner(__dirname, 'app.mjs')
       .withMockSentryServer()
-      .expect({ event: EVENT as Event })
-      .start(done);
+      .expect({ event: WORKER_ERROR_EVENT as Event })
+      .expect({ event: TEST_ERROR_EVENT as Event })
+      .unordered()
+      .start()
+      .completed();
   });
 });

@@ -1,16 +1,19 @@
-import type { Client, ClientOptions, Event, EventHint, StackParser } from '../types-hoist';
-
+import type { Client } from '../client';
 import { DEFAULT_ENVIRONMENT } from '../constants';
-import { getGlobalScope } from '../currentScopes';
 import { notifyEventProcessors } from '../eventProcessors';
 import type { CaptureContext, ScopeContext } from '../scope';
 import { Scope } from '../scope';
-import { getFilenameToDebugIdMap } from '../utils-hoist/debug-ids';
-import { addExceptionMechanism, uuid4 } from '../utils-hoist/misc';
-import { normalize } from '../utils-hoist/normalize';
-import { truncate } from '../utils-hoist/string';
-import { dateTimestampInSeconds } from '../utils-hoist/time';
-import { applyScopeDataToEvent, mergeScopeData } from './applyScopeDataToEvent';
+import type { Event, EventHint } from '../types/event';
+import type { ClientOptions } from '../types/options';
+import type { StackParser } from '../types/stacktrace';
+import { getFilenameToDebugIdMap } from './debug-ids';
+import { addExceptionMechanismToCapturedException, uuid4 } from './misc';
+import { normalize } from './normalize';
+import { applyScopeDataToEvent, applySpanToEvent, getCombinedScopeData } from './scopeData';
+import { getActiveSpan } from './spanUtils';
+import { truncate } from './string';
+import { resolvedSyncPromise } from './syncpromise';
+import { dateTimestampInSeconds } from './time';
 
 /**
  * This type makes sure that we get either a CaptureContext, OR an EventHint.
@@ -69,7 +72,7 @@ export function prepareEvent(
   const finalScope = getFinalScope(scope, hint.captureContext);
 
   if (hint.mechanism) {
-    addExceptionMechanism(prepared, hint.mechanism);
+    addExceptionMechanismToCapturedException(prepared, hint.mechanism);
   }
 
   const clientEventProcessors = client ? client.getEventProcessors() : [];
@@ -77,17 +80,7 @@ export function prepareEvent(
   // This should be the last thing called, since we want that
   // {@link Scope.addEventProcessor} gets the finished prepared event.
   // Merge scope data together
-  const data = getGlobalScope().getScopeData();
-
-  if (isolationScope) {
-    const isolationData = isolationScope.getScopeData();
-    mergeScopeData(data, isolationData);
-  }
-
-  if (finalScope) {
-    const finalScopeData = finalScope.getScopeData();
-    mergeScopeData(data, finalScopeData);
-  }
+  const data = getCombinedScopeData(isolationScope, finalScope);
 
   const attachments = [...(hint.attachments || []), ...data.attachments];
   if (attachments.length) {
@@ -95,6 +88,10 @@ export function prepareEvent(
   }
 
   applyScopeDataToEvent(prepared, data);
+  const span = getActiveSpan(finalScope);
+  if (span) {
+    applySpanToEvent(prepared, span);
+  }
 
   const eventProcessors = [
     ...clientEventProcessors,
@@ -102,7 +99,12 @@ export function prepareEvent(
     ...data.eventProcessors,
   ];
 
-  const result = notifyEventProcessors(eventProcessors, prepared, hint);
+  // Skip event processors for internal exceptions to prevent recursion
+  // oxlint-disable-next-line typescript/prefer-optional-chain
+  const isInternalException = hint.data && (hint.data as { __sentry__: boolean }).__sentry__ === true;
+  const result = isInternalException
+    ? resolvedSyncPromise(prepared)
+    : notifyEventProcessors(eventProcessors, prepared, hint);
 
   return result.then(evt => {
     if (evt) {
@@ -130,7 +132,7 @@ export function prepareEvent(
  * @param event event instance to be enhanced
  */
 export function applyClientOptions(event: Event, options: ClientOptions): void {
-  const { environment, release, dist, maxValueLength = 250 } = options;
+  const { environment, release, dist, maxValueLength } = options;
 
   // empty strings do not make sense for environment, release, and dist
   // so we handle them the same as if they were not provided
@@ -144,18 +146,18 @@ export function applyClientOptions(event: Event, options: ClientOptions): void {
     event.dist = dist;
   }
 
-  if (event.message) {
-    event.message = truncate(event.message, maxValueLength);
-  }
-
-  const exception = event.exception && event.exception.values && event.exception.values[0];
-  if (exception && exception.value) {
-    exception.value = truncate(exception.value, maxValueLength);
-  }
-
   const request = event.request;
-  if (request && request.url) {
+  if (request?.url && maxValueLength) {
     request.url = truncate(request.url, maxValueLength);
+  }
+
+  if (maxValueLength) {
+    event.exception?.values?.forEach(exception => {
+      if (exception.value) {
+        // Truncates error messages
+        exception.value = truncate(exception.value, maxValueLength);
+      }
+    });
   }
 }
 
@@ -166,19 +168,13 @@ export function applyDebugIds(event: Event, stackParser: StackParser): void {
   // Build a map of filename -> debug_id
   const filenameDebugIdMap = getFilenameToDebugIdMap(stackParser);
 
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    event!.exception!.values!.forEach(exception => {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      exception.stacktrace!.frames!.forEach(frame => {
-        if (frame.filename) {
-          frame.debug_id = filenameDebugIdMap[frame.filename];
-        }
-      });
+  event.exception?.values?.forEach(exception => {
+    exception.stacktrace?.frames?.forEach(frame => {
+      if (frame.filename) {
+        frame.debug_id = filenameDebugIdMap[frame.filename];
+      }
     });
-  } catch (e) {
-    // To save bundle size we're just try catching here instead of checking for the existence of all the different objects.
-  }
+  });
 }
 
 /**
@@ -187,24 +183,18 @@ export function applyDebugIds(event: Event, stackParser: StackParser): void {
 export function applyDebugMeta(event: Event): void {
   // Extract debug IDs and filenames from the stack frames on the event.
   const filenameDebugIdMap: Record<string, string> = {};
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    event.exception!.values!.forEach(exception => {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      exception.stacktrace!.frames!.forEach(frame => {
-        if (frame.debug_id) {
-          if (frame.abs_path) {
-            filenameDebugIdMap[frame.abs_path] = frame.debug_id;
-          } else if (frame.filename) {
-            filenameDebugIdMap[frame.filename] = frame.debug_id;
-          }
-          delete frame.debug_id;
+  event.exception?.values?.forEach(exception => {
+    exception.stacktrace?.frames?.forEach(frame => {
+      if (frame.debug_id) {
+        if (frame.abs_path) {
+          filenameDebugIdMap[frame.abs_path] = frame.debug_id;
+        } else if (frame.filename) {
+          filenameDebugIdMap[frame.filename] = frame.debug_id;
         }
-      });
+        delete frame.debug_id;
+      }
     });
-  } catch (e) {
-    // To save bundle size we're just try catching here instead of checking for the existence of all the different objects.
-  }
+  });
 
   if (Object.keys(filenameDebugIdMap).length === 0) {
     return;
@@ -277,7 +267,7 @@ function normalizeEvent(event: Event | null, depth: number, maxBreadth: number):
   // For now the decision is to skip normalization of Transactions and Spans,
   // so this block overwrites the normalized event to add back the original
   // Transaction information prior to normalization.
-  if (event.contexts && event.contexts.trace && normalized.contexts) {
+  if (event.contexts?.trace && normalized.contexts) {
     normalized.contexts.trace = event.contexts.trace;
 
     // event.contexts.trace.data may contain circular/dangerous data so we need to normalize it
@@ -302,7 +292,7 @@ function normalizeEvent(event: Event | null, depth: number, maxBreadth: number):
   // flag integrations. It has a greater nesting depth than our other typed
   // Contexts, so we re-normalize with a fixed depth of 3 here. We do not want
   // to skip this in case of conflicting, user-provided context.
-  if (event.contexts && event.contexts.flags && normalized.contexts) {
+  if (event.contexts?.flags && normalized.contexts) {
     normalized.contexts.flags = normalize(event.contexts.flags, 3, maxBreadth);
   }
 

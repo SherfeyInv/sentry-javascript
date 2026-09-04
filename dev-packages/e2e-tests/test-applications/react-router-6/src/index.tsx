@@ -11,12 +11,14 @@ import {
   useNavigationType,
 } from 'react-router-dom';
 import Index from './pages/Index';
+import Products from './pages/Products';
 import SSE from './pages/SSE';
 import User from './pages/User';
 
 const replay = Sentry.replayIntegration();
 
 Sentry.init({
+  traceLifecycle: 'static',
   environment: 'qa', // dynamic sampling bias to keep transactions
   dsn: process.env.REACT_APP_E2E_TEST_DSN,
   integrations: [
@@ -26,8 +28,8 @@ Sentry.init({
       useNavigationType,
       createRoutesFromChildren,
       matchRoutes,
-      trackFetchStreamPerformance: true,
     }),
+    Sentry.fetchStreamPerformanceIntegration(),
     replay,
   ],
   // We recommend adjusting this value in production, or using tracesSampler
@@ -50,6 +52,7 @@ root.render(
     <SentryRoutes>
       <Route path="/" element={<Index />} />
       <Route path="/user/:id" element={<User />} />
+      <Route path="/products" element={<Products />} />
       <Route path="/sse" element={<SSE />} />
     </SentryRoutes>
   </BrowserRouter>,

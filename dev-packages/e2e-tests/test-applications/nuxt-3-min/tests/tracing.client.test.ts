@@ -1,10 +1,11 @@
-import { expect, test } from '@nuxt/test-utils/playwright';
+import { expect, test } from '@playwright/test';
 import { waitForTransaction } from '@sentry-internal/test-utils';
-import type { Span } from '@sentry/nuxt';
 
 test('sends a pageload root span with a parameterized URL', async ({ page }) => {
   const transactionPromise = waitForTransaction('nuxt-3-min', async transactionEvent => {
-    return transactionEvent.transaction === '/test-param/:param()';
+    return (
+      transactionEvent.contexts?.trace?.op === 'pageload' && transactionEvent.transaction === '/test-param/:param()'
+    );
   });
 
   await page.goto(`/test-param/1234`);
@@ -19,6 +20,9 @@ test('sends a pageload root span with a parameterized URL', async ({ page }) => 
           'sentry.origin': 'auto.pageload.vue',
           'sentry.op': 'pageload',
           'params.param': '1234',
+          'url.template': '/test-param/:param()',
+          'url.path': '/test-param/1234',
+          'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/test-param\/1234$/),
         },
         op: 'pageload',
         origin: 'auto.pageload.vue',
@@ -39,12 +43,12 @@ test('sends component tracking spans when `trackComponents` is enabled', async (
   await page.goto(`/client-error`);
 
   const rootSpan = await transactionPromise;
-  const errorButtonSpan = rootSpan.spans.find((span: Span) => span.description === 'Vue <ErrorButton>');
+  const errorButtonSpan = rootSpan.spans.find(span => span.description === 'Vue <ErrorButton>');
 
   const expected = {
-    data: { 'sentry.origin': 'auto.ui.vue', 'sentry.op': 'ui.vue.mount' },
+    data: { 'sentry.origin': 'auto.ui.vue', 'sentry.op': 'ui.mount' },
     description: 'Vue <ErrorButton>',
-    op: 'ui.vue.mount',
+    op: 'ui.mount',
     parent_span_id: expect.stringMatching(/[a-f0-9]{16}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),
     start_timestamp: expect.any(Number),

@@ -5,7 +5,7 @@ type GlobalHandlersIntegrationsOptionKeys = 'error' | 'unhandledrejection';
 
 type GlobalHandlersIntegrations = Record<GlobalHandlersIntegrationsOptionKeys, boolean>;
 
-const INTEGRATION_NAME = 'GlobalHandlers';
+const INTEGRATION_NAME = 'GlobalHandlers' as const;
 let isExiting = false;
 
 const _globalHandlersIntegration = ((options?: GlobalHandlersIntegrations) => {
@@ -61,7 +61,7 @@ function installGlobalErrorHandler(client: Client): void {
       originalException: error,
       mechanism: {
         handled: false,
-        type: 'error',
+        type: 'auto.deno.global_handlers.error',
       },
     });
 
@@ -96,7 +96,7 @@ function installGlobalUnhandledRejectionHandler(client: Client): void {
       if ('reason' in e) {
         error = e.reason;
       }
-    } catch (_oO) {
+    } catch {
       // no-empty
     }
 
@@ -110,7 +110,7 @@ function installGlobalUnhandledRejectionHandler(client: Client): void {
       originalException: error,
       mechanism: {
         handled: false,
-        type: 'unhandledrejection',
+        type: 'auto.deno.global_handlers.unhandledrejection',
       },
     });
 

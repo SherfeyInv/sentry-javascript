@@ -27,6 +27,11 @@ test.describe('performance events', () => {
         trace: {
           op: 'pageload',
           origin: 'auto.pageload.sveltekit',
+          data: {
+            'url.path': '/users/123xyz',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/users\/123xyz$/),
+            'url.template': '/users/[id]',
+          },
         },
       },
     });
@@ -81,6 +86,11 @@ test.describe('performance events', () => {
         trace: {
           op: 'navigation',
           origin: 'auto.navigation.sveltekit',
+          data: {
+            'url.path': '/users',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/users$/),
+            'url.template': '/users',
+          },
         },
       },
     });
@@ -132,6 +142,11 @@ test.describe('performance events', () => {
         trace: {
           op: 'navigation',
           origin: 'auto.navigation.sveltekit',
+          data: {
+            'url.path': '/universal-load-fetch',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/universal-load-fetch$/),
+            'url.template': '/universal-load-fetch',
+          },
         },
       },
     });
@@ -158,7 +173,7 @@ test.describe('performance events', () => {
       op: 'http.client',
       origin: 'auto.http.browser',
       data: {
-        url: expect.stringContaining('/api/users'),
+        'url.full': expect.stringContaining('/api/users'),
         type: 'fetch',
         'http.method': 'GET',
         'http.response.status_code': 200,
@@ -205,6 +220,11 @@ test.describe('performance events', () => {
         trace: {
           op: 'pageload',
           origin: 'auto.pageload.sveltekit',
+          data: {
+            'url.path': '/',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/$/),
+            'url.template': '/',
+          },
         },
       },
     });
@@ -221,20 +241,23 @@ test.describe('performance events', () => {
             'sentry.sveltekit.navigation.from': '/',
             'sentry.sveltekit.navigation.to': '/users/[id]',
             'sentry.sveltekit.navigation.type': 'link',
+            'url.path': '/users/123abc',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/users\/123abc$/),
+            'url.template': '/users/[id]',
           },
         },
       },
     });
 
-    const routingSpans = navigationTxnEvent.spans?.filter(s => s.op === 'ui.sveltekit.routing');
+    const routingSpans = navigationTxnEvent.spans?.filter(s => s.op === 'router');
     expect(routingSpans).toHaveLength(1);
 
     const routingSpan = routingSpans && routingSpans[0];
     expect(routingSpan).toMatchObject({
-      op: 'ui.sveltekit.routing',
+      op: 'router',
       description: 'SvelteKit Route Change',
       data: {
-        'sentry.op': 'ui.sveltekit.routing',
+        'sentry.op': 'router',
         'sentry.origin': 'auto.ui.sveltekit',
         'sentry.sveltekit.navigation.from': '/',
         'sentry.sveltekit.navigation.to': '/users/[id]',
@@ -283,20 +306,23 @@ test.describe('performance events', () => {
             'sentry.sveltekit.navigation.from': '/',
             'sentry.sveltekit.navigation.to': '/redirect1',
             'sentry.sample_rate': 1,
+            'url.path': '/redirect1',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/redirect1$/),
+            'url.template': '/redirect1',
           },
         },
       },
     });
 
-    const redirect1Spans = redirect1TxnEvent.spans?.filter(s => s.op === 'ui.sveltekit.routing');
+    const redirect1Spans = redirect1TxnEvent.spans?.filter(s => s.op === 'router');
     expect(redirect1Spans).toHaveLength(1);
 
     const redirect1Span = redirect1Spans && redirect1Spans[0];
     expect(redirect1Span).toMatchObject({
-      op: 'ui.sveltekit.routing',
+      op: 'router',
       description: 'SvelteKit Route Change',
       data: {
-        'sentry.op': 'ui.sveltekit.routing',
+        'sentry.op': 'router',
         'sentry.origin': 'auto.ui.sveltekit',
         'sentry.sveltekit.navigation.from': '/',
         'sentry.sveltekit.navigation.to': '/redirect1',
@@ -316,28 +342,31 @@ test.describe('performance events', () => {
             'sentry.origin': 'auto.navigation.sveltekit',
             'sentry.op': 'navigation',
             'sentry.source': 'route',
-            'sentry.sveltekit.navigation.type': 'goto',
+            'sentry.sveltekit.navigation.type': 'link',
             'sentry.sveltekit.navigation.from': '/',
             'sentry.sveltekit.navigation.to': '/redirect2',
             'sentry.sample_rate': 1,
+            'url.path': '/redirect2',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/redirect2$/),
+            'url.template': '/redirect2',
           },
         },
       },
     });
 
-    const redirect2Spans = redirect2TxnEvent.spans?.filter(s => s.op === 'ui.sveltekit.routing');
+    const redirect2Spans = redirect2TxnEvent.spans?.filter(s => s.op === 'router');
     expect(redirect2Spans).toHaveLength(1);
 
     const redirect2Span = redirect2Spans && redirect2Spans[0];
     expect(redirect2Span).toMatchObject({
-      op: 'ui.sveltekit.routing',
+      op: 'router',
       description: 'SvelteKit Route Change',
       data: {
-        'sentry.op': 'ui.sveltekit.routing',
+        'sentry.op': 'router',
         'sentry.origin': 'auto.ui.sveltekit',
         'sentry.sveltekit.navigation.from': '/',
         'sentry.sveltekit.navigation.to': '/redirect2',
-        'sentry.sveltekit.navigation.type': 'goto',
+        'sentry.sveltekit.navigation.type': 'link',
       },
     });
 
@@ -353,28 +382,31 @@ test.describe('performance events', () => {
             'sentry.origin': 'auto.navigation.sveltekit',
             'sentry.op': 'navigation',
             'sentry.source': 'route',
-            'sentry.sveltekit.navigation.type': 'goto',
+            'sentry.sveltekit.navigation.type': 'link',
             'sentry.sveltekit.navigation.from': '/',
             'sentry.sveltekit.navigation.to': '/users/[id]',
             'sentry.sample_rate': 1,
+            'url.path': '/users/789',
+            'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/users\/789$/),
+            'url.template': '/users/[id]',
           },
         },
       },
     });
 
-    const redirect3Spans = redirect3TxnEvent.spans?.filter(s => s.op === 'ui.sveltekit.routing');
+    const redirect3Spans = redirect3TxnEvent.spans?.filter(s => s.op === 'router');
     expect(redirect3Spans).toHaveLength(1);
 
     const redirect3Span = redirect3Spans && redirect3Spans[0];
     expect(redirect3Span).toMatchObject({
-      op: 'ui.sveltekit.routing',
+      op: 'router',
       description: 'SvelteKit Route Change',
       data: {
-        'sentry.op': 'ui.sveltekit.routing',
+        'sentry.op': 'router',
         'sentry.origin': 'auto.ui.sveltekit',
         'sentry.sveltekit.navigation.from': '/',
         'sentry.sveltekit.navigation.to': '/users/[id]',
-        'sentry.sveltekit.navigation.type': 'goto',
+        'sentry.sveltekit.navigation.type': 'link',
       },
     });
   });

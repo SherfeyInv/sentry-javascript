@@ -1,11 +1,10 @@
 import { expect } from '@playwright/test';
-
 import { sentryTest } from '../../../utils/fixtures';
 import { getReplayEvent, shouldSkipReplayTest, waitForReplayRequest } from '../../../utils/replayHelpers';
 
 sentryTest('should capture replays offline', async ({ getLocalTestUrl, page }) => {
   // makeBrowserOfflineTransport is not included in any CDN bundles
-  if (shouldSkipReplayTest() || (process.env.PW_BUNDLE && process.env.PW_BUNDLE.startsWith('bundle'))) {
+  if (shouldSkipReplayTest() || process.env.PW_BUNDLE?.startsWith('bundle')) {
     sentryTest.skip();
   }
 

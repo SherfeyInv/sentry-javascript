@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-
 import { onRequest } from '../../../src/integration/middleware';
 
 vi.mock('../../../src/server/meta', () => ({
@@ -25,7 +24,7 @@ describe('Integration middleware', () => {
         id: '123',
       },
     };
-    // @ts-expect-error - a partial ctx object is fine here
+    // `onRequest` accepts a framework-agnostic `ctx`, so a partial Astro context is fine here.
     const res = await onRequest(ctx, next);
 
     expect(res).toBeDefined();

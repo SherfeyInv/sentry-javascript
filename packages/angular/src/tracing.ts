@@ -1,6 +1,6 @@
+import type { AfterViewInit, OnDestroy, OnInit } from '@angular/core';
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import { ElementRef } from '@angular/core';
-import type { AfterViewInit, OnDestroy, OnInit } from '@angular/core';
 import { Directive, Injectable, Input, NgModule } from '@angular/core';
 import type { ActivatedRouteSnapshot, Event, RouterState } from '@angular/router';
 // Duplicated import to work around a TypeScript bug where it'd complain that `Router` isn't imported as a type.
@@ -9,24 +9,32 @@ import type { ActivatedRouteSnapshot, Event, RouterState } from '@angular/router
 import { NavigationCancel, NavigationError, Router } from '@angular/router';
 import { NavigationEnd, NavigationStart, ResolveEnd } from '@angular/router';
 import {
-  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
-  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   browserTracingIntegration as originalBrowserTracingIntegration,
   getActiveSpan,
   getClient,
   getCurrentScope,
   getRootSpan,
+  SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
+  SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
   spanToJSON,
   startBrowserTracingNavigationSpan,
   startInactiveSpan,
+  getAbsoluteUrl,
 } from '@sentry/browser';
-import { logger, stripUrlQueryAndFragment, timestampInSeconds } from '@sentry/core';
+import { CODE_FUNCTION_NAME, SENTRY_OP, URL_FULL, URL_PATH, URL_TEMPLATE } from '@sentry/conventions/attributes';
+import { GENERAL_FUNCTION_SPAN_OP } from '@sentry/conventions/op';
 import type { Integration, Span } from '@sentry/core';
+import {
+  debug,
+  parseStringToURLObject,
+  stripUrlQueryAndFragment,
+  timestampInSeconds,
+  filterCollectedUrl,
+} from '@sentry/core';
 import type { Observable } from 'rxjs';
 import { Subscription } from 'rxjs';
 import { filter, tap } from 'rxjs/operators';
-
-import { ANGULAR_INIT_OP, ANGULAR_OP, ANGULAR_ROUTING_OP } from './constants';
+import { ANGULAR_INIT_OP } from './constants';
 import { IS_DEBUG_BUILD } from './flags';
 import { runOutsideAngular } from './zone';
 
@@ -55,13 +63,25 @@ export function browserTracingIntegration(
 /**
  * This function is extracted to make unit testing easier.
  */
-export function _updateSpanAttributesForParametrizedUrl(route: string, span?: Span): void {
-  const attributes = (span && spanToJSON(span).data) || {};
+export function _updateSpanAttributesForParametrizedUrl(route: string, url: string, span?: Span): void {
+  if (!span) {
+    return;
+  }
 
-  if (span && attributes[SEMANTIC_ATTRIBUTE_SENTRY_SOURCE] === 'url') {
+  const attributes = spanToJSON(span).attributes;
+
+  if (!attributes || attributes[SEMANTIC_ATTRIBUTE_SENTRY_SOURCE] === 'url') {
     span.updateName(route);
-    span.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'route');
-    span.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, `auto.${spanToJSON(span).op}.angular`);
+
+    const absoluteUrl = getAbsoluteUrl(url);
+
+    span.setAttributes({
+      [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: `auto.${attributes[SENTRY_OP]}.angular`,
+      [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+      [URL_FULL]: filterCollectedUrl(absoluteUrl),
+      [URL_PATH]: parseStringToURLObject(absoluteUrl)?.pathname,
+      [URL_TEMPLATE]: route,
+    });
   }
 }
 
@@ -76,7 +96,7 @@ export class TraceService implements OnDestroy {
     tap(navigationEvent => {
       if (!instrumentationInitialized) {
         IS_DEBUG_BUILD &&
-          logger.error('Angular integration has tracing enabled, but Tracing integration is not configured');
+          debug.error('Angular integration has tracing enabled, but Tracing integration is not configured');
         return;
       }
 
@@ -92,13 +112,19 @@ export class TraceService implements OnDestroy {
         // see comment in `_isPageloadOngoing` for rationale
         if (!this._isPageloadOngoing()) {
           runOutsideAngular(() => {
-            startBrowserTracingNavigationSpan(client, {
-              name: strippedUrl,
-              attributes: {
-                [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.angular',
-                [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+            startBrowserTracingNavigationSpan(
+              client,
+              {
+                name: strippedUrl,
+                attributes: {
+                  [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.angular',
+                  [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
+                },
               },
-            });
+              {
+                url: getAbsoluteUrl(navigationEvent.url),
+              },
+            );
           });
         } else {
           // The first time we end up here, we set the pageload flag to false
@@ -111,11 +137,12 @@ export class TraceService implements OnDestroy {
           runOutsideAngular(() =>
             startInactiveSpan({
               name: `${navigationEvent.url}`,
-              op: ANGULAR_ROUTING_OP,
               attributes: {
+                // TODO(conventions): Replace `'router'` with the `router` span op constant once it is released in `@sentry/conventions`.
+                [SENTRY_OP]: 'router',
                 [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.angular',
                 [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'url',
-                url: strippedUrl,
+                [URL_FULL]: strippedUrl,
                 ...(navigationEvent.navigationTrigger && {
                   navigationTrigger: navigationEvent.navigationTrigger,
                 }),
@@ -150,7 +177,7 @@ export class TraceService implements OnDestroy {
       const activeSpan = getActiveSpan();
       const rootSpan = activeSpan && getRootSpan(activeSpan);
 
-      _updateSpanAttributesForParametrizedUrl(route, rootSpan);
+      _updateSpanAttributesForParametrizedUrl(route, event.urlAfterRedirects, rootSpan);
     }),
   );
 
@@ -232,7 +259,7 @@ export class TraceService implements OnDestroy {
 
     const rootSpan = getRootSpan(activeSpan);
 
-    this._pageloadOngoing = spanToJSON(rootSpan).op === 'pageload';
+    this._pageloadOngoing = spanToJSON(rootSpan).attributes[SENTRY_OP] === 'pageload';
     return this._pageloadOngoing;
   }
 }
@@ -274,8 +301,10 @@ export class TraceDirective implements OnInit, AfterViewInit {
       this._tracingSpan = runOutsideAngular(() =>
         startInactiveSpan({
           name: `<${this.componentName}>`,
-          op: ANGULAR_INIT_OP,
-          attributes: { [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.angular.trace_directive' },
+          attributes: {
+            [SENTRY_OP]: ANGULAR_INIT_OP,
+            [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.angular.trace_directive',
+          },
         }),
       );
     }
@@ -322,9 +351,9 @@ export function TraceClass(options?: TraceClassOptions): ClassDecorator {
       tracingSpan = runOutsideAngular(() =>
         startInactiveSpan({
           onlyIfParent: true,
-          name: `<${options && options.name ? options.name : 'unnamed'}>`,
-          op: ANGULAR_INIT_OP,
+          name: `<${options?.name || 'unnamed'}>`,
           attributes: {
+            [SENTRY_OP]: ANGULAR_INIT_OP,
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.angular.trace_class_decorator',
           },
         }),
@@ -367,11 +396,12 @@ export function TraceMethod(options?: TraceMethodOptions): MethodDecorator {
       runOutsideAngular(() => {
         startInactiveSpan({
           onlyIfParent: true,
-          name: `<${options && options.name ? options.name : 'unnamed'}>`,
-          op: `${ANGULAR_OP}.${String(propertyKey)}`,
+          name: `<${options?.name ? options.name : 'unnamed'}>`,
           startTime: now,
           attributes: {
+            [SENTRY_OP]: GENERAL_FUNCTION_SPAN_OP,
             [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.ui.angular.trace_method_decorator',
+            [CODE_FUNCTION_NAME]: String(propertyKey),
           },
         }).end(now);
       });
@@ -397,9 +427,9 @@ export function TraceMethod(options?: TraceMethodOptions): MethodDecorator {
 export function getParameterizedRouteFromSnapshot(route?: ActivatedRouteSnapshot | null): string {
   const parts: string[] = [];
 
-  let currentRoute = route && route.firstChild;
+  let currentRoute = route?.firstChild;
   while (currentRoute) {
-    const path = currentRoute && currentRoute.routeConfig && currentRoute.routeConfig.path;
+    const path = currentRoute?.routeConfig && currentRoute.routeConfig.path;
     if (path === null || path === undefined) {
       break;
     }

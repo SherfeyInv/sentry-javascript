@@ -1,5 +1,11 @@
-import type { BaseTransportOptions, Envelope, OfflineStore, OfflineTransportOptions, Transport } from '@sentry/core';
-import { makeOfflineTransport, parseEnvelope, serializeEnvelope } from '@sentry/core';
+import type {
+  BaseTransportOptions,
+  Envelope,
+  OfflineStore,
+  OfflineTransportOptions,
+  Transport,
+} from '@sentry/core/browser';
+import { makeOfflineTransport, parseEnvelope, serializeEnvelope } from '@sentry/core/browser';
 import { WINDOW } from '../helpers';
 import { makeFetchTransport } from './fetch';
 
@@ -127,17 +133,17 @@ function createIndexedDbStore(options: BrowserOfflineTransportOptions): OfflineS
   return {
     push: async (env: Envelope) => {
       try {
-        const serialized = await serializeEnvelope(env);
+        const serialized = serializeEnvelope(env);
         await push(getStore(), serialized, options.maxQueueSize || 30);
-      } catch (_) {
+      } catch {
         //
       }
     },
     unshift: async (env: Envelope) => {
       try {
-        const serialized = await serializeEnvelope(env);
+        const serialized = serializeEnvelope(env);
         await unshift(getStore(), serialized, options.maxQueueSize || 30);
-      } catch (_) {
+      } catch {
         //
       }
     },
@@ -147,7 +153,7 @@ function createIndexedDbStore(options: BrowserOfflineTransportOptions): OfflineS
         if (deserialized) {
           return parseEnvelope(deserialized);
         }
-      } catch (_) {
+      } catch {
         //
       }
 

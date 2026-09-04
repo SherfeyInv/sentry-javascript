@@ -11,12 +11,6 @@ const DEFAULT_PAGE_LIMIT = 10;
  * This is a bit hacky since GitHub Actions currently does not directly
  * support downloading artifacts from other workflows
  */
-/**
- * Fetch artifacts from a workflow run from a branch
- *
- * This is a bit hacky since GitHub Actions currently does not directly
- * support downloading artifacts from other workflows
- */
 export async function getArtifactsForBranchAndWorkflow(octokit, { owner, repo, workflowName, branch, artifactName }) {
   let repositoryWorkflow = null;
 

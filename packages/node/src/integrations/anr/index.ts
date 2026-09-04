@@ -2,17 +2,15 @@ import { types } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import type { Contexts, Event, EventHint, Integration, IntegrationFn, ScopeData } from '@sentry/core';
 import {
-  GLOBAL_OBJ,
+  debug,
   defineIntegration,
   getClient,
+  getCombinedScopeData,
   getCurrentScope,
   getFilenameToDebugIdMap,
-  getGlobalScope,
   getIsolationScope,
-  logger,
-  mergeScopeData,
+  GLOBAL_OBJ,
 } from '@sentry/core';
-import { NODE_VERSION } from '../../nodeVersion';
 import type { NodeClient } from '../../sdk/client';
 import { isDebuggerEnabled } from '../../utils/debug';
 import type { AnrIntegrationOptions, WorkerStartData } from './common';
@@ -26,7 +24,7 @@ const DEFAULT_INTERVAL = 50;
 const DEFAULT_HANG_THRESHOLD = 5000;
 
 function log(message: string, ...args: unknown[]): void {
-  logger.log(`[ANR] ${message}`, ...args);
+  debug.log(`[ANR] ${message}`, ...args);
 }
 
 function globalWithScopeFetchFn(): typeof GLOBAL_OBJ & { __SENTRY_GET_SCOPES__?: () => ScopeData } {
@@ -35,9 +33,7 @@ function globalWithScopeFetchFn(): typeof GLOBAL_OBJ & { __SENTRY_GET_SCOPES__?:
 
 /** Fetches merged scope data */
 function getScopeData(): ScopeData {
-  const scope = getGlobalScope().getScopeData();
-  mergeScopeData(scope, getIsolationScope().getScopeData());
-  mergeScopeData(scope, getCurrentScope().getScopeData());
+  const scope = getCombinedScopeData(getIsolationScope(), getCurrentScope());
 
   // We remove attachments because they likely won't serialize well as json
   scope.attachments = [];
@@ -62,15 +58,12 @@ async function getContexts(client: NodeClient): Promise<Contexts> {
   return event?.contexts || {};
 }
 
-const INTEGRATION_NAME = 'Anr';
+const INTEGRATION_NAME = 'Anr' as const;
 
 type AnrInternal = { startWorker: () => void; stopWorker: () => void };
 
+// eslint-disable-next-line typescript/no-deprecated
 const _anrIntegration = ((options: Partial<AnrIntegrationOptions> = {}) => {
-  if (NODE_VERSION.major < 16 || (NODE_VERSION.major === 16 && NODE_VERSION.minor < 17)) {
-    throw new Error('ANR detection requires Node 16.17.0 or later');
-  }
-
   let worker: Promise<() => void> | undefined;
   let client: NodeClient | undefined;
 
@@ -103,7 +96,7 @@ const _anrIntegration = ((options: Partial<AnrIntegrationOptions> = {}) => {
       client = initClient;
 
       if (options.captureStackTrace && (await isDebuggerEnabled())) {
-        logger.warn('ANR captureStackTrace has been disabled because the debugger was already enabled');
+        debug.warn('ANR captureStackTrace has been disabled because the debugger was already enabled');
         options.captureStackTrace = false;
       }
 
@@ -114,8 +107,45 @@ const _anrIntegration = ((options: Partial<AnrIntegrationOptions> = {}) => {
   } as Integration & AnrInternal;
 }) satisfies IntegrationFn;
 
+// eslint-disable-next-line typescript/no-deprecated
 type AnrReturn = (options?: Partial<AnrIntegrationOptions>) => Integration & AnrInternal;
 
+/**
+ * Application Not Responding (ANR) integration for Node.js applications.
+ *
+ * @deprecated The ANR integration has been deprecated. Use `eventLoopBlockIntegration` from `@sentry/node-native` instead.
+ *
+ * Detects when the Node.js main thread event loop is blocked for more than the configured
+ * threshold (5 seconds by default) and reports these as Sentry events.
+ *
+ * ANR detection uses a worker thread to monitor the event loop in the main app thread.
+ * The main app thread sends a heartbeat message to the ANR worker thread every 50ms by default.
+ * If the ANR worker does not receive a heartbeat message for the configured threshold duration,
+ * it triggers an ANR event.
+ *
+ * - Node.js 16.17.0 or higher
+ * - Only supported in the Node.js runtime (not browsers)
+ * - Not supported for Node.js clusters
+ *
+ * Overhead should be minimal:
+ * - Main thread: Only polling the ANR worker over IPC every 50ms
+ * - Worker thread: Consumes around 10-20 MB of RAM
+ * - When ANR detected: Brief pause in debugger to capture stack trace (negligible compared to the blocking)
+ *
+ * @example
+ * ```javascript
+ * Sentry.init({
+ *   dsn: "https://examplePublicKey@o0.ingest.sentry.io/0",
+ *   integrations: [
+ *     Sentry.anrIntegration({
+ *       anrThreshold: 5000,
+ *       captureStackTrace: true,
+ *       pollInterval: 50,
+ *     }),
+ *   ],
+ * });
+ * ```
+ */
 export const anrIntegration = defineIntegration(_anrIntegration) as AnrReturn;
 
 /**
@@ -125,6 +155,7 @@ export const anrIntegration = defineIntegration(_anrIntegration) as AnrReturn;
  */
 async function _startWorker(
   client: NodeClient,
+  // eslint-disable-next-line typescript/no-deprecated
   integrationOptions: Partial<AnrIntegrationOptions>,
 ): Promise<() => void> {
   const dsn = client.getDsn();
@@ -149,7 +180,7 @@ async function _startWorker(
   }
 
   const options: WorkerStartData = {
-    debug: logger.isEnabled(),
+    debug: debug.isEnabled(),
     dsn,
     tunnel: initOptions.tunnel,
     environment: initOptions.environment || 'production',
@@ -186,13 +217,13 @@ async function _startWorker(
 
   const timer = setInterval(() => {
     try {
-      const currentSession = getCurrentScope().getSession();
+      const currentSession = getIsolationScope().getSession();
       // We need to copy the session object and remove the toJSON method so it can be sent to the worker
       // serialized without making it a SerializedSession
       const session = currentSession ? { ...currentSession, toJSON: undefined } : undefined;
       // message the worker to tell it the main event loop is still running
       worker.postMessage({ session, debugImages: getFilenameToDebugIdMap(initOptions.stackParser) });
-    } catch (_) {
+    } catch {
       //
     }
   }, options.pollInterval);
@@ -202,7 +233,7 @@ async function _startWorker(
   worker.on('message', (msg: string) => {
     if (msg === 'session-ended') {
       log('ANR event sent from ANR worker. Clearing session in this thread.');
-      getCurrentScope().setSession(undefined);
+      getIsolationScope().setSession(undefined);
     }
   });
 
@@ -226,10 +257,26 @@ async function _startWorker(
   };
 }
 
+/**
+ * @see {@link disableBlockDetectionForCallback}
+ *
+ * @deprecated The ANR integration has been deprecated. Use `eventLoopBlockIntegration` from `@sentry/node-native` instead.
+ */
 export function disableAnrDetectionForCallback<T>(callback: () => T): T;
+/**
+ * @see {@link disableBlockDetectionForCallback}
+ *
+ * @deprecated The ANR integration has been deprecated. Use `eventLoopBlockIntegration` from `@sentry/node-native` instead.
+ */
 export function disableAnrDetectionForCallback<T>(callback: () => Promise<T>): Promise<T>;
 /**
- * Disables ANR detection for the duration of the callback
+ * Temporarily disables ANR detection for the duration of a callback function.
+ *
+ * This utility function allows you to disable ANR detection during operations that
+ * are expected to block the event loop, such as intensive computational tasks or
+ * synchronous I/O operations.
+ *
+ * @deprecated The ANR integration has been deprecated. Use `eventLoopBlockIntegration` from `@sentry/node-native` instead.
  */
 export function disableAnrDetectionForCallback<T>(callback: () => T | Promise<T>): T | Promise<T> {
   const integration = getClient()?.getIntegrationByName(INTEGRATION_NAME) as AnrInternal | undefined;

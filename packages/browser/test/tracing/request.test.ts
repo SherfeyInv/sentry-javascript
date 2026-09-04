@@ -1,11 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import * as browserUtils from '@sentry-internal/browser-utils';
-import * as utils from '@sentry/core';
-import type { Client } from '@sentry/core';
-import { WINDOW } from '../../src/helpers';
-
-import { extractNetworkProtocol, instrumentOutgoingRequests, shouldAttachHeaders } from '../../src/tracing/request';
+import type { Client } from '@sentry/core/browser';
+import * as utils from '@sentry/core/browser';
+import * as browserUtils from '@sentry/browser-utils';
+import { HTTP_METHOD } from '@sentry/conventions/attributes';
+import type { MockInstance } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BrowserClient } from '../../src/client';
+import { instrumentOutgoingRequests, shouldAttachHeaders } from '../../src/tracing/request';
+import { getDefaultBrowserClientOptions } from '../helper/browser-client-options';
 
 beforeAll(() => {
   // @ts-expect-error need to override global Request because it's not in the vi environment (even with an
@@ -14,11 +15,12 @@ beforeAll(() => {
 });
 
 class MockClient implements Partial<Client> {
-  public addEventProcessor: () => void;
-  constructor() {
-    // Mock addEventProcessor function
-    this.addEventProcessor = vi.fn();
+  // @ts-expect-error not returning options for the test
+  public getOptions() {
+    return {};
   }
+
+  public emit(): void {}
 }
 
 describe('instrumentOutgoingRequests', () => {
@@ -27,6 +29,7 @@ describe('instrumentOutgoingRequests', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     client = new MockClient() as unknown as Client;
+    utils._INTERNAL_setSpanForScope(utils.getCurrentScope(), undefined);
   });
 
   it('instruments fetch and xhr requests', () => {
@@ -55,63 +58,119 @@ describe('instrumentOutgoingRequests', () => {
     expect(addXhrSpy).not.toHaveBeenCalled();
   });
 
-  it('does instrument streaming requests if trackFetchStreamPerformance is true', () => {
-    const addFetchEndSpy = vi.spyOn(utils, 'addFetchEndInstrumentationHandler');
+  it('creates a QUERY fetch span with the QUERY method attribute', () => {
+    let fetchHandler: ((data: utils.HandlerDataFetch) => void) | undefined;
+    let requestSpan: utils.Span | undefined;
 
-    instrumentOutgoingRequests(client, { trackFetchStreamPerformance: true });
+    vi.spyOn(utils, 'addFetchInstrumentationHandler').mockImplementation(handler => {
+      fetchHandler = handler;
+    });
+    const tracingClient = new BrowserClient(getDefaultBrowserClientOptions({ tracesSampleRate: 1 }));
+    utils.setCurrentClient(tracingClient);
+    utils._INTERNAL_setSpanForScope(utils.getCurrentScope(), new utils.SentrySpan({ sampled: true }));
 
-    expect(addFetchEndSpy).toHaveBeenCalledWith(expect.any(Function));
+    instrumentOutgoingRequests(tracingClient, {
+      traceXHR: false,
+      enableHTTPTimings: false,
+      onRequestSpanStart: span => {
+        requestSpan = span;
+      },
+    });
+    fetchHandler?.({
+      fetchData: { method: 'QUERY', url: 'https://example.com/rest/v1/users?select=id' },
+      args: ['https://example.com/rest/v1/users?select=id'],
+      startTimestamp: Date.now(),
+    });
+
+    expect(fetchHandler).toBeDefined();
+    expect(requestSpan).toBeDefined();
+    const requestSpanJson = utils.spanToJSON(requestSpan!);
+    expect(requestSpanJson.name).toBe('QUERY https://example.com/rest/v1/users');
+    expect(requestSpanJson.attributes[HTTP_METHOD]).toBe('QUERY');
   });
-});
 
-interface ProtocolInfo {
-  name: string;
-  version: string;
-}
+  it('creates a QUERY XHR span with the QUERY method attribute', () => {
+    let xhrHandler: ((data: utils.HandlerDataXhr) => void) | undefined;
+    let requestSpan: utils.Span | undefined;
 
-describe('HTTPTimings', () => {
-  test('Extracting version from ALPN protocol', () => {
-    const nextHopToNetworkVersion: Record<string, ProtocolInfo> = {
-      'http/0.9': { name: 'http', version: '0.9' },
-      'http/1.0': { name: 'http', version: '1.0' },
-      'http/1.1': { name: 'http', version: '1.1' },
-      'spdy/1': { name: 'spdy', version: '1' },
-      'spdy/2': { name: 'spdy', version: '2' },
-      'spdy/3': { name: 'spdy', version: '3' },
-      'stun.turn': { name: 'stun.turn', version: 'unknown' },
-      'stun.nat-discovery': { name: 'stun.nat-discovery', version: 'unknown' },
-      h2: { name: 'http', version: '2' },
-      h2c: { name: 'http', version: '2c' },
-      webrtc: { name: 'webrtc', version: 'unknown' },
-      'c-webrtc': { name: 'c-webrtc', version: 'unknown' },
-      ftp: { name: 'ftp', version: 'unknown' },
-      imap: { name: 'imap', version: 'unknown' },
-      pop3: { name: 'pop', version: '3' },
-      managesieve: { name: 'managesieve', version: 'unknown' },
-      coap: { name: 'coap', version: 'unknown' },
-      'xmpp-client': { name: 'xmpp-client', version: 'unknown' },
-      'xmpp-server': { name: 'xmpp-server', version: 'unknown' },
-      'acme-tls/1': { name: 'acme-tls', version: '1' },
-      mqtt: { name: 'mqtt', version: 'unknown' },
-      dot: { name: 'dot', version: 'unknown' },
-      'ntske/1': { name: 'ntske', version: '1' },
-      sunrpc: { name: 'sunrpc', version: 'unknown' },
-      h3: { name: 'http', version: '3' },
-      smb: { name: 'smb', version: 'unknown' },
-      irc: { name: 'irc', version: 'unknown' },
-      nntp: { name: 'nntp', version: 'unknown' },
-      nnsp: { name: 'nnsp', version: 'unknown' },
-      doq: { name: 'doq', version: 'unknown' },
-      'sip/2': { name: 'sip', version: '2' },
-      'tds/8.0': { name: 'tds', version: '8.0' },
-      dicom: { name: 'dicom', version: 'unknown' },
-    };
+    vi.spyOn(browserUtils, 'addXhrInstrumentationHandler').mockImplementation(handler => {
+      xhrHandler = handler;
+    });
+    const tracingClient = new BrowserClient(getDefaultBrowserClientOptions({ tracesSampleRate: 1 }));
+    utils.setCurrentClient(tracingClient);
+    utils._INTERNAL_setSpanForScope(utils.getCurrentScope(), new utils.SentrySpan({ sampled: true }));
 
-    const protocols = Object.keys(nextHopToNetworkVersion);
-    for (const protocol of protocols) {
-      const expected = nextHopToNetworkVersion[protocol]!;
-      expect(extractNetworkProtocol(protocol)).toMatchObject(expected);
-    }
+    instrumentOutgoingRequests(tracingClient, {
+      traceFetch: false,
+      enableHTTPTimings: false,
+      onRequestSpanStart: span => {
+        requestSpan = span;
+      },
+    });
+    xhrHandler?.({
+      xhr: {
+        [browserUtils.SENTRY_XHR_DATA_KEY]: {
+          method: 'QUERY',
+          url: 'https://example.com/rest/v1/users?select=id',
+          request_headers: {},
+        },
+        setRequestHeader: vi.fn(),
+      },
+      startTimestamp: Date.now(),
+    } as utils.HandlerDataXhr);
+
+    expect(xhrHandler).toBeDefined();
+    expect(requestSpan).toBeDefined();
+    const requestSpanJson = utils.spanToJSON(requestSpan!);
+    expect(requestSpanJson.name).toBe('QUERY https://example.com/rest/v1/users');
+    expect(requestSpanJson.attributes[HTTP_METHOD]).toBe('QUERY');
+  });
+
+  describe('XHR trace header span', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('uses the active propagation context for an ignored child span', () => {
+      const activeSpan = new utils.SentryNonRecordingSpan();
+      const ignoredSpan = new utils.SentryNonRecordingSpan({ dropReason: 'ignored' });
+      let xhrHandler: ((data: utils.HandlerDataXhr) => void) | undefined;
+
+      vi.spyOn(browserUtils, 'addXhrInstrumentationHandler').mockImplementation(handler => {
+        xhrHandler = handler;
+      });
+      vi.spyOn(utils, 'getClient').mockReturnValue(client);
+      vi.spyOn(utils, 'getActiveSpan').mockReturnValue(activeSpan);
+      vi.spyOn(utils, 'hasSpansEnabled').mockReturnValue(true);
+      vi.spyOn(utils, 'hasSpanStreamingEnabled').mockReturnValue(true);
+      vi.spyOn(utils, 'startInactiveSpan').mockReturnValue(ignoredSpan);
+      const getTraceDataSpy = vi.spyOn(utils, 'getTraceData').mockReturnValue({
+        'sentry-trace': '12345678901234567890123456789012-1234567890123456-1',
+      });
+
+      instrumentOutgoingRequests(client, {
+        traceFetch: false,
+        tracePropagationTargets: ['example.com'],
+        enableHTTPTimings: false,
+      });
+      xhrHandler?.({
+        xhr: {
+          [browserUtils.SENTRY_XHR_DATA_KEY]: {
+            method: 'GET',
+            url: 'https://example.com/outgoing',
+            request_headers: {},
+          },
+          setRequestHeader: vi.fn(),
+        },
+        startTimestamp: Date.now(),
+      } as utils.HandlerDataXhr);
+
+      expect(xhrHandler).toBeDefined();
+      expect(getTraceDataSpy).toHaveBeenCalledWith({
+        span: undefined,
+        propagateTraceparent: undefined,
+      });
+    });
   });
 });
 
@@ -131,18 +190,14 @@ describe('shouldAttachHeaders', () => {
   });
 
   describe('with no defined `tracePropagationTargets`', () => {
-    let originalWindowLocation: Location;
+    let locationHrefSpy: MockInstance;
 
-    beforeAll(() => {
-      originalWindowLocation = WINDOW.location;
-      // @ts-expect-error Override delete
-      delete WINDOW.location;
-      // @ts-expect-error We are missing some fields of the Origin interface but it doesn't matter for these tests.
-      WINDOW.location = new URL('https://my-origin.com');
+    beforeEach(() => {
+      locationHrefSpy = vi.spyOn(utils, 'getLocationHref').mockImplementation(() => 'https://my-origin.com');
     });
 
-    afterAll(() => {
-      WINDOW.location = originalWindowLocation;
+    afterEach(() => {
+      locationHrefSpy.mockReset();
     });
 
     it.each([
@@ -173,18 +228,16 @@ describe('shouldAttachHeaders', () => {
   });
 
   describe('with `tracePropagationTargets`', () => {
-    let originalWindowLocation: Location;
+    let locationHrefSpy: MockInstance;
 
-    beforeAll(() => {
-      originalWindowLocation = WINDOW.location;
-      // @ts-expect-error Override delete
-      delete WINDOW.location;
-      // @ts-expect-error We are missing some fields of the Origin interface but it doesn't matter for these tests.
-      WINDOW.location = new URL('https://my-origin.com/api/my-route');
+    beforeEach(() => {
+      locationHrefSpy = vi
+        .spyOn(utils, 'getLocationHref')
+        .mockImplementation(() => 'https://my-origin.com/api/my-route');
     });
 
-    afterAll(() => {
-      WINDOW.location = originalWindowLocation;
+    afterEach(() => {
+      locationHrefSpy.mockReset();
     });
 
     it.each([
@@ -242,7 +295,7 @@ describe('shouldAttachHeaders', () => {
       ['https://my-origin.com?my-query', 'my-query', true],
       ['https://not-my-origin.com?my-query', 'my-query', true],
     ])(
-      'for url %p and tracePropagationTarget %p on page "https://my-origin.com/api/my-route" should return %p',
+      'for url %j and tracePropagationTarget %j on page "https://my-origin.com/api/my-route" should return %j',
       (url, matcher, result) => {
         expect(shouldAttachHeaders(url, [matcher])).toBe(result);
       },
@@ -293,23 +346,19 @@ describe('shouldAttachHeaders', () => {
     'https://not-my-origin.com/api',
     'https://my-origin.com?my-query',
     'https://not-my-origin.com?my-query',
-  ])('should return false for everything if tracePropagationTargets are empty (%p)', url => {
+  ])('should return false for everything if tracePropagationTargets are empty (%j)', url => {
     expect(shouldAttachHeaders(url, [])).toBe(false);
   });
 
   describe('when window.location.href is not available', () => {
-    let originalWindowLocation: Location;
+    let locationHrefSpy: MockInstance;
 
-    beforeAll(() => {
-      originalWindowLocation = WINDOW.location;
-      // @ts-expect-error Override delete
-      delete WINDOW.location;
-      // @ts-expect-error We need to simulate an edge-case
-      WINDOW.location = undefined;
+    beforeEach(() => {
+      locationHrefSpy = vi.spyOn(utils, 'getLocationHref').mockImplementation(() => '');
     });
 
-    afterAll(() => {
-      WINDOW.location = originalWindowLocation;
+    afterEach(() => {
+      locationHrefSpy.mockReset();
     });
 
     describe('with no defined `tracePropagationTargets`', () => {
@@ -329,7 +378,7 @@ describe('shouldAttachHeaders', () => {
         ['http://localhost:3000', false],
         ['https://somewhere.com/test/localhost/123', false],
         ['https://somewhere.com/test?url=https://my-origin.com', false],
-      ])('for URL %p should return %p', (url, expectedResult) => {
+      ])('for URL %j should return %j', (url, expectedResult) => {
         expect(shouldAttachHeaders(url, undefined)).toBe(expectedResult);
       });
     });
@@ -390,7 +439,7 @@ describe('shouldAttachHeaders', () => {
       ['https://not-my-origin.com/api', 'api', true],
       ['https://my-origin.com?my-query', 'my-query', true],
       ['https://not-my-origin.com?my-query', 'my-query', true],
-    ])('for url %p and tracePropagationTarget %p should return %p', (url, matcher, result) => {
+    ])('for url %j and tracePropagationTarget %j should return %j', (url, matcher, result) => {
       expect(shouldAttachHeaders(url, [matcher])).toBe(result);
     });
   });

@@ -2,21 +2,17 @@
  * @vitest-environment jsdom
  */
 
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-import { getCurrentScope } from '@sentry/core';
-import { setCurrentClient } from '@sentry/core';
-
-import { TextDecoder, TextEncoder } from 'util';
-const patchedEncoder = (!global.window.TextEncoder && (global.window.TextEncoder = TextEncoder)) || true;
-// @ts-expect-error patch the encoder on the window, else importing JSDOM fails (deleted in afterAll)
-const patchedDecoder = (!global.window.TextDecoder && (global.window.TextDecoder = TextDecoder)) || true;
-
+import { getMainCarrier, setCurrentClient } from '@sentry/core/browser';
 import { JSDOM } from 'jsdom';
-
+import { TextDecoder, TextEncoder } from 'util';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserClient } from '../../src/client';
 import { registerBackgroundTabDetection } from '../../src/tracing/backgroundtab';
 import { getDefaultBrowserClientOptions } from '../helper/browser-client-options';
+
+const patchedEncoder = (!global.window.TextEncoder && (global.window.TextEncoder = TextEncoder)) || true;
+// @ts-expect-error patch the encoder on the window, else importing JSDOM fails (deleted in afterAll)
+const patchedDecoder = (!global.window.TextDecoder && (global.window.TextDecoder = TextDecoder)) || true;
 
 describe('registerBackgroundTabDetection', () => {
   afterAll(() => {
@@ -43,7 +39,7 @@ describe('registerBackgroundTabDetection', () => {
 
   afterEach(() => {
     events = {};
-    getCurrentScope().clear();
+    getMainCarrier().__SENTRY__ = undefined;
   });
 
   it('does not create an event listener if global document is undefined', () => {

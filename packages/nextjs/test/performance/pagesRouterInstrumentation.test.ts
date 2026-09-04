@@ -3,11 +3,12 @@ import { WINDOW } from '@sentry/react';
 import { JSDOM } from 'jsdom';
 import type { NEXT_DATA } from 'next/dist/shared/lib/utils';
 import Router from 'next/router';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   pagesRouterInstrumentNavigation,
   pagesRouterInstrumentPageLoad,
 } from '../../src/client/routing/pagesRouterRoutingInstrumentation';
+import { URL_TEMPLATE } from '@sentry/conventions/attributes';
 
 const globalObject = WINDOW as typeof WINDOW & {
   __BUILD_MANIFEST?: {
@@ -20,7 +21,7 @@ const originalBuildManifestRoutes = globalObject.__BUILD_MANIFEST?.sortedPages;
 
 let eventHandlers: { [eventName: string]: Set<(...args: any[]) => void> } = {};
 
-jest.mock('next/router', () => {
+vi.mock('next/router', () => {
   return {
     default: {
       events: {
@@ -31,7 +32,7 @@ jest.mock('next/router', () => {
 
           eventHandlers[type]!.add(handler);
         },
-        off: jest.fn((type: string, handler: (...args: any[]) => void) => {
+        off: vi.fn((type: string, handler: (...args: any[]) => void) => {
           if (eventHandlers[type]) {
             eventHandlers[type]!.delete(handler);
           }
@@ -107,14 +108,14 @@ describe('pagesRouterInstrumentPageLoad', () => {
     eventHandlers = {};
 
     // Necessary to clear all Router.events.off() mock call numbers
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it.each([
     [
-      'https://example.com/lforst/posts/1337?q=42',
+      'https://example.com/chargome/posts/1337?q=42',
       '/[user]/posts/[id]',
-      { user: 'lforst', id: '1337', q: '42' },
+      { user: 'chargome', id: '1337', q: '42' },
       {
         pageProps: {
           _sentryTraceData: 'c82b8554881b4d28ad977de04a4fb40a-a755953cd3394d5f-1',
@@ -128,6 +129,10 @@ describe('pagesRouterInstrumentPageLoad', () => {
           'sentry.op': 'pageload',
           'sentry.origin': 'auto.pageload.nextjs.pages_router_instrumentation',
           'sentry.source': 'route',
+          [URL_TEMPLATE]: '/[user]/posts/[id]',
+          user: 'chargome',
+          id: '1337',
+          q: '42',
         },
       },
     ],
@@ -148,6 +153,7 @@ describe('pagesRouterInstrumentPageLoad', () => {
           'sentry.op': 'pageload',
           'sentry.origin': 'auto.pageload.nextjs.pages_router_instrumentation',
           'sentry.source': 'route',
+          [URL_TEMPLATE]: '/some-page',
         },
       },
     ],
@@ -163,6 +169,7 @@ describe('pagesRouterInstrumentPageLoad', () => {
           'sentry.op': 'pageload',
           'sentry.origin': 'auto.pageload.nextjs.pages_router_instrumentation',
           'sentry.source': 'route',
+          [URL_TEMPLATE]: '/',
         },
       },
     ],
@@ -186,7 +193,7 @@ describe('pagesRouterInstrumentPageLoad', () => {
     (url, route, query, props, hasNextData, expectedStartTransactionArgument) => {
       setUpNextPage({ url, route, query, props, hasNextData });
 
-      const emit = jest.fn();
+      const emit = vi.fn();
       const client = {
         emit,
         getOptions: () => ({}),
@@ -269,7 +276,7 @@ describe('pagesRouterInstrumentNavigation', () => {
     eventHandlers = {};
 
     // Necessary to clear all Router.events.off() mock call numbers
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it.each([
@@ -311,7 +318,7 @@ describe('pagesRouterInstrumentNavigation', () => {
         ],
       });
 
-      const emit = jest.fn();
+      const emit = vi.fn();
       const client = {
         emit,
         getOptions: () => ({}),
@@ -321,18 +328,28 @@ describe('pagesRouterInstrumentNavigation', () => {
 
       Router.events.emit('routeChangeStart', targetLocation);
 
-      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit).toHaveBeenCalledTimes(2);
+      const expectedStartSpanOptions = {
+        name: expectedTransactionName,
+        attributes: {
+          'sentry.op': 'navigation',
+          'sentry.origin': 'auto.navigation.nextjs.pages_router_instrumentation',
+          'sentry.source': expectedTransactionSource,
+          ...(expectedTransactionSource === 'route' ? { [URL_TEMPLATE]: expectedTransactionName } : {}),
+        },
+      };
       expect(emit).toHaveBeenCalledWith(
-        'startNavigationSpan',
-        expect.objectContaining({
-          name: expectedTransactionName,
-          attributes: {
-            'sentry.op': 'navigation',
-            'sentry.origin': 'auto.navigation.nextjs.pages_router_instrumentation',
-            'sentry.source': expectedTransactionSource,
-          },
-        }),
+        'beforeStartNavigationSpan',
+        expect.objectContaining(expectedStartSpanOptions),
+        {
+          isRedirect: undefined,
+          url: `https://example.com${targetLocation}`,
+        },
       );
+      expect(emit).toHaveBeenCalledWith('startNavigationSpan', expect.objectContaining(expectedStartSpanOptions), {
+        isRedirect: undefined,
+        url: `https://example.com${targetLocation}`,
+      });
     },
   );
 });

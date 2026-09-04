@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test';
-
 import { sentryTest } from '../../../utils/fixtures';
 
 sentryTest(
@@ -7,7 +6,7 @@ sentryTest(
   async ({ getLocalTestUrl, page, forceFlushReplay }) => {
     const bundle = process.env.PW_BUNDLE;
 
-    if (!bundle || !bundle.startsWith('bundle_') || bundle.includes('replay')) {
+    if (!bundle?.startsWith('bundle_') || bundle.includes('replay')) {
       sentryTest.skip();
     }
 
@@ -15,7 +14,7 @@ sentryTest(
     page.on('console', msg => consoleMessages.push(msg.text()));
 
     let requestCount = 0;
-    await page.route('https://dsn.ingest.sentry.io/**/*', route => {
+    await page.route(/^https:\/\/dsn\.ingest\.sentry\.io\//, route => {
       requestCount++;
       return route.fulfill({
         status: 200,

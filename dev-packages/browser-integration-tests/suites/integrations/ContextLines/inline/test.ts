@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test';
-
 import { sentryTest } from '../../../../utils/fixtures';
 import { envelopeRequestParser, waitForErrorRequestOnUrl } from '../../../../utils/helpers';
 
@@ -8,8 +7,8 @@ sentryTest(
   async ({ getLocalTestUrl, page, browserName }) => {
     if (browserName === 'webkit') {
       // The error we're throwing in this test is thrown as "Script error." in Webkit.
-      // We filter "Script error." out by default in `InboundFilters`.
-      // I don't think there's much value to disable InboundFilters defaults for this test,
+      // We filter "Script error." out by default in `EventFilters`.
+      // I don't think there's much value to disable EventFilters defaults for this test,
       // given that most of our users won't do that either.
       // Let's skip it instead for Webkit.
       sentryTest.skip();
@@ -34,16 +33,14 @@ sentryTest(
       stacktrace: {
         frames: [
           {
-            pre_context: ['<!DOCTYPE html>', '<html>', '<head>', '    <meta charset="utf-8">', '  </head>', '  <body>'],
+            pre_context: ['<html>', '<head>', '    <meta charset="utf-8">', '  </head>', '  <body>'],
             context_line:
-              '      <button id="inline-error-btn" onclick="throw new Error(\'Error with context lines\')">Click me</button>',
+              '    <button id="inline-error-btn" onclick="throw new Error(\'Error with context lines\');">Click me</button>',
             post_context: [
               expect.stringContaining('<script'), // this line varies in the test based on tarball/cdn bundle (+variants)
-              '  <footer>',
-              '    Some text...',
-              '  ',
+              '  <footer>Some text...</footer>',
               '',
-              '</footer></body>',
+              '</body>',
               '</html>',
             ],
           },

@@ -2,15 +2,16 @@
  * @vitest-environment jsdom
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
+import '../utils/mock-internal-setTimeout';
 import { getClient } from '@sentry/core';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetSdkMock } from '../mocks/resetSdkMock';
-import { useFakeTimers } from '../utils/use-fake-timers';
-
-useFakeTimers();
 
 describe('Integration | sampling', () => {
+  beforeAll(() => {
+    vi.useFakeTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -37,6 +38,7 @@ describe('Integration | sampling', () => {
     expect(replay.getContext()).toEqual({
       errorIds: new Set(),
       traceIds: new Set(),
+      segmentNames: new Set(),
       urls: [],
       initialTimestamp: expect.any(Number),
       initialUrl: '',
@@ -78,6 +80,7 @@ describe('Integration | sampling', () => {
       initialTimestamp: expect.any(Number),
       initialUrl: 'http://localhost:3000/',
       traceIds: new Set(),
+      segmentNames: new Set(),
       urls: ['http://localhost:3000/'],
     });
     expect(replay.recordingMode).toBe('buffer');

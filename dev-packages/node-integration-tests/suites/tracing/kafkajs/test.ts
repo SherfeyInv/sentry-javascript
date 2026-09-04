@@ -1,55 +1,113 @@
-import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
+import type { TransactionEvent } from '@sentry/core';
+import { afterAll, expect } from 'vitest';
+import { cleanupChildProcesses, createEsmAndCjsTests, describeWithDockerCompose } from '../../../utils/runner';
 
-// When running docker compose, we need a larger timeout, as this takes some time...
-jest.setTimeout(60_000);
+const producerOrigin = 'auto.kafkajs.producer';
+const consumerOrigin = 'auto.kafkajs.consumer';
 
-describe('kafkajs', () => {
+describeWithDockerCompose('kafkajs', { workingDirectory: [__dirname] }, () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  test('traces producers and consumers', done => {
-    createRunner(__dirname, 'scenario.js')
-      .withDockerCompose({
-        workingDirectory: [__dirname],
-        readyMatches: ['9092'],
-      })
-      .expect({
-        transaction: {
-          transaction: 'test-topic',
-          contexts: {
-            trace: expect.objectContaining({
-              op: 'message',
-              status: 'ok',
-              data: expect.objectContaining({
-                'messaging.system': 'kafka',
-                'messaging.destination': 'test-topic',
-                'otel.kind': 'PRODUCER',
-                'sentry.op': 'message',
-                'sentry.origin': 'auto.kafkajs.otel.producer',
-              }),
-            }),
+  createEsmAndCjsTests(__dirname, 'scenario.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('traces producers and consumers', { timeout: 90_000 }, async () => {
+      // The producer and consumer transactions can arrive in any order,
+      // so we collect them and assert after both have been received.
+      const receivedTransactions: TransactionEvent[] = [];
+
+      await createRunner()
+        .expect({
+          transaction: (transaction: TransactionEvent) => {
+            receivedTransactions.push(transaction);
           },
-        },
-      })
-      .expect({
-        transaction: {
-          transaction: 'test-topic',
-          contexts: {
-            trace: expect.objectContaining({
-              op: 'message',
-              status: 'ok',
-              data: expect.objectContaining({
-                'messaging.system': 'kafka',
-                'messaging.destination': 'test-topic',
-                'otel.kind': 'CONSUMER',
-                'sentry.op': 'message',
-                'sentry.origin': 'auto.kafkajs.otel.consumer',
+        })
+        .expect({
+          transaction: (transaction: TransactionEvent) => {
+            receivedTransactions.push(transaction);
+
+            const producer = receivedTransactions.find(
+              t => t.contexts?.trace?.data?.['sentry.origin'] === producerOrigin,
+            );
+            const consumer = receivedTransactions.find(
+              t => t.contexts?.trace?.data?.['sentry.origin'] === consumerOrigin,
+            );
+
+            expect(producer).toBeDefined();
+            expect(consumer).toBeDefined();
+
+            for (const t of [producer, consumer]) {
+              // just to assert on the basic shape (for more straight-forward tests, this is usually done by the runner)
+              expect(t).toMatchObject({
+                event_id: expect.any(String),
+                timestamp: expect.anything(),
+                start_timestamp: expect.anything(),
+                spans: expect.any(Array),
+                type: 'transaction',
+              });
+            }
+
+            expect(producer!.transaction).toBe('send test-topic');
+            expect(consumer!.transaction).toBe('process test-topic');
+
+            expect(producer!.contexts?.trace).toMatchObject(
+              expect.objectContaining({
+                op: 'queue.publish',
+                status: 'ok',
+                data: expect.objectContaining({
+                  'messaging.system': 'kafka',
+                  'messaging.destination.name': 'test-topic',
+                  'sentry.kind': 'producer',
+                  'sentry.op': 'queue.publish',
+                  'sentry.origin': producerOrigin,
+                }),
               }),
-            }),
+            );
+
+            expect(consumer!.contexts?.trace).toMatchObject(
+              expect.objectContaining({
+                op: 'queue.process',
+                status: 'ok',
+                data: expect.objectContaining({
+                  'messaging.system': 'kafka',
+                  'messaging.destination.name': 'test-topic',
+                  'sentry.kind': 'consumer',
+                  'sentry.op': 'queue.process',
+                  'sentry.origin': consumerOrigin,
+                }),
+              }),
+            );
           },
-        },
-      })
-      .start(done);
+        })
+        .start()
+        .completed();
+    });
+  });
+
+  createEsmAndCjsTests(__dirname, 'scenario-error.mjs', 'instrument.mjs', (createRunner, test) => {
+    test('marks the producer span as errored when a send fails', { timeout: 90_000 }, async () => {
+      await createRunner()
+        .expect({
+          transaction: (transaction: TransactionEvent) => {
+            expect(transaction.transaction).toBe('send invalid topic name');
+            expect(transaction.contexts?.trace).toMatchObject(
+              expect.objectContaining({
+                op: 'queue.publish',
+                status: 'internal_error',
+                data: expect.objectContaining({
+                  'messaging.system': 'kafka',
+                  'messaging.destination.name': 'invalid topic name',
+                  'sentry.kind': 'producer',
+                  'sentry.op': 'queue.publish',
+                  'sentry.origin': producerOrigin,
+                  'error.type': 'KafkaJSNonRetriableError',
+                }),
+              }),
+            );
+          },
+        })
+        .start()
+        .completed();
+    });
   });
 });

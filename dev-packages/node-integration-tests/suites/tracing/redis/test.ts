@@ -1,49 +1,70 @@
-import { cleanupChildProcesses, createRunner } from '../../../utils/runner';
+import { afterAll, expect } from 'vitest';
+import { cleanupChildProcesses, createEsmAndCjsTests, describeWithDockerCompose } from '../../../utils/runner';
 
-// When running docker compose, we need a larger timeout, as this takes some time...
-jest.setTimeout(75000);
-
-describe('redis auto instrumentation', () => {
+describeWithDockerCompose('redis auto instrumentation', { workingDirectory: [__dirname] }, () => {
   afterAll(() => {
     cleanupChildProcesses();
   });
 
-  test('should auto-instrument `ioredis` package when using redis.set() and redis.get()', done => {
-    const EXPECTED_TRANSACTION = {
-      transaction: 'Test Span',
-      spans: expect.arrayContaining([
-        expect.objectContaining({
-          description: 'set test-key [1 other arguments]',
-          op: 'db',
-          origin: 'auto.db.otel.redis',
-          data: expect.objectContaining({
-            'sentry.op': 'db',
-            'sentry.origin': 'auto.db.otel.redis',
-            'db.system': 'redis',
-            'net.peer.name': 'localhost',
-            'net.peer.port': 6379,
-            'db.statement': 'set test-key [1 other arguments]',
-          }),
-        }),
-        expect.objectContaining({
-          description: 'get test-key',
-          op: 'db',
-          origin: 'auto.db.otel.redis',
-          data: expect.objectContaining({
-            'sentry.op': 'db',
-            'sentry.origin': 'auto.db.otel.redis',
-            'db.system': 'redis',
-            'net.peer.name': 'localhost',
-            'net.peer.port': 6379,
-            'db.statement': 'get test-key',
-          }),
-        }),
-      ]),
-    };
+  // Under orchestrion, ioredis <5.11 is instrumented by the diagnostics-channel
+  // subscriber instead of the OTel monkey-patch, so the span origin differs. All
+  // other attributes are identical.
+  const origin = 'auto.db.redis';
 
-    createRunner(__dirname, 'scenario-ioredis.js')
-      .withDockerCompose({ workingDirectory: [__dirname], readyMatches: ['port=6379'] })
-      .expect({ transaction: EXPECTED_TRANSACTION })
-      .start(done);
+  const EXPECTED_TRANSACTION = {
+    transaction: 'Test Span',
+    spans: expect.arrayContaining([
+      expect.objectContaining({
+        description: 'set test-key [1 other arguments]',
+        op: 'db',
+        origin,
+        data: expect.objectContaining({
+          'sentry.op': 'db',
+          'sentry.origin': origin,
+          'db.system.name': 'redis',
+          'server.address': 'localhost',
+          'server.port': 6380,
+          'db.query.text': 'set test-key [1 other arguments]',
+        }),
+      }),
+      expect.objectContaining({
+        description: 'get test-key',
+        op: 'db',
+        origin,
+        data: expect.objectContaining({
+          'sentry.op': 'db',
+          'sentry.origin': origin,
+          'db.system.name': 'redis',
+          'server.address': 'localhost',
+          'server.port': 6380,
+          'db.query.text': 'get test-key',
+        }),
+      }),
+      // a failing command produces a span with an error status
+      expect.objectContaining({
+        description: 'incr test-key',
+        op: 'db',
+        status: 'internal_error',
+        origin,
+        data: expect.objectContaining({
+          'sentry.op': 'db',
+          'sentry.origin': origin,
+          'db.system.name': 'redis',
+          'server.address': 'localhost',
+          'server.port': 6380,
+          'db.query.text': 'incr test-key',
+        }),
+      }),
+    ]),
+  };
+
+  createEsmAndCjsTests(__dirname, 'scenario-ioredis.mjs', 'instrument.mjs', (createTestRunner, test) => {
+    test(
+      'should auto-instrument `ioredis` package when using redis.set() and redis.get()',
+      { timeout: 75_000 },
+      async () => {
+        await createTestRunner().expect({ transaction: EXPECTED_TRANSACTION }).start().completed();
+      },
+    );
   });
 });

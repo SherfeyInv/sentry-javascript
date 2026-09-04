@@ -1,33 +1,41 @@
+/**
+ * @vitest-environment jsdom
+ */
 import {
+  createTransport,
+  getCurrentScope,
   SEMANTIC_ATTRIBUTE_SENTRY_OP,
   SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN,
   SEMANTIC_ATTRIBUTE_SENTRY_SOURCE,
-  createTransport,
-  getCurrentScope,
   setCurrentClient,
 } from '@sentry/core';
-import { act, render } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { createMemoryHistory } from 'history-4';
-// biome-ignore lint/nursery/noUnusedImports: Need React import for JSX
 import * as React from 'react';
-import { Route, Router, Switch, matchPath } from 'react-router-4';
-
+import { act } from 'react';
+import { matchPath, Route, Router, Switch } from 'react-router-4';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { URL_TEMPLATE } from '@sentry/conventions/attributes';
 import { BrowserClient, reactRouterV4BrowserTracingIntegration, withSentryRouting } from '../src';
 import type { RouteConfig } from '../src/reactrouter';
 
-const mockStartBrowserTracingPageLoadSpan = jest.fn();
-const mockStartBrowserTracingNavigationSpan = jest.fn();
+const mockStartBrowserTracingPageLoadSpan = vi.fn();
+const mockStartBrowserTracingNavigationSpan = vi.fn();
 
 const mockRootSpan = {
-  updateName: jest.fn(),
-  setAttribute: jest.fn(),
+  updateName: vi.fn(),
+  setAttribute: vi.fn(),
+  setAttributes: vi.fn(),
   getSpanJSON() {
+    return { attributes: { 'sentry.op': 'pageload' } };
+  },
+  getStaticSpanJSON() {
     return { op: 'pageload' };
   },
 };
 
-jest.mock('@sentry/browser', () => {
-  const actual = jest.requireActual('@sentry/browser');
+vi.mock('@sentry/browser', async requireActual => {
+  const actual = (await requireActual()) as any;
   return {
     ...actual,
     startBrowserTracingNavigationSpan: (...args: unknown[]) => {
@@ -41,10 +49,9 @@ jest.mock('@sentry/browser', () => {
   };
 });
 
-jest.mock('@sentry/core', () => {
-  const actual = jest.requireActual('@sentry/core');
+vi.mock('@sentry/core', async requireActual => {
   return {
-    ...actual,
+    ...(await requireActual()),
     getRootSpan: () => {
       return mockRootSpan;
     },
@@ -62,7 +69,7 @@ describe('browserTracingReactRouterV4', () => {
   }
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     getCurrentScope().setClient(undefined);
   });
 
@@ -240,7 +247,12 @@ describe('browserTracingReactRouterV4', () => {
     });
     expect(mockRootSpan.updateName).toHaveBeenCalledTimes(2);
     expect(mockRootSpan.updateName).toHaveBeenLastCalledWith('/users/:userid');
-    expect(mockRootSpan.setAttribute).toHaveBeenCalledWith(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'route');
+    expect(mockRootSpan.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/users/:userid',
+      }),
+    );
   });
 
   it('normalizes nested transaction names with custom Route', () => {
@@ -280,7 +292,12 @@ describe('browserTracingReactRouterV4', () => {
     });
     expect(mockRootSpan.updateName).toHaveBeenCalledTimes(2);
     expect(mockRootSpan.updateName).toHaveBeenLastCalledWith('/organizations/:orgid/v1/:teamid');
-    expect(mockRootSpan.setAttribute).toHaveBeenLastCalledWith(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'route');
+    expect(mockRootSpan.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/organizations/:orgid/v1/:teamid',
+      }),
+    );
 
     act(() => {
       history.push('/organizations/543');
@@ -298,7 +315,12 @@ describe('browserTracingReactRouterV4', () => {
     });
     expect(mockRootSpan.updateName).toHaveBeenCalledTimes(3);
     expect(mockRootSpan.updateName).toHaveBeenLastCalledWith('/organizations/:orgid');
-    expect(mockRootSpan.setAttribute).toHaveBeenLastCalledWith(SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, 'route');
+    expect(mockRootSpan.setAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/organizations/:orgid',
+      }),
+    );
   });
 
   it('matches with route object', () => {
@@ -335,6 +357,7 @@ describe('browserTracingReactRouterV4', () => {
       name: '/organizations/:orgid/v1/:teamid',
       attributes: {
         [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/organizations/:orgid/v1/:teamid',
         [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v4',
         [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
       },
@@ -348,6 +371,7 @@ describe('browserTracingReactRouterV4', () => {
       name: '/organizations/:orgid',
       attributes: {
         [SEMANTIC_ATTRIBUTE_SENTRY_SOURCE]: 'route',
+        [URL_TEMPLATE]: '/organizations/:orgid',
         [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: 'auto.navigation.react.reactrouter_v4',
         [SEMANTIC_ATTRIBUTE_SENTRY_OP]: 'navigation',
       },

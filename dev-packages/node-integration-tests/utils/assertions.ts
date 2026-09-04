@@ -1,13 +1,23 @@
-import { SDK_VERSION } from '@sentry/core';
 import type {
   ClientReport,
   Envelope,
   Event,
   SerializedCheckIn,
+  SerializedLogContainer,
+  SerializedMetricContainer,
   SerializedSession,
+  SerializedStreamedSpanContainer,
   SessionAggregates,
   TransactionEvent,
 } from '@sentry/core';
+import { SDK_VERSION } from '@sentry/core';
+import { expect } from 'vitest';
+
+export type DeepPartial<T> = T extends object
+  ? {
+      [P in keyof T]?: DeepPartial<T[P]>;
+    }
+  : T;
 
 /**
  * Asserts against a Sentry Event ignoring non-deterministic properties
@@ -65,9 +75,48 @@ export function assertSentryClientReport(actual: ClientReport, expected: Partial
   });
 }
 
+export function assertSentryLogContainer(
+  actual: SerializedLogContainer,
+  expected: Partial<SerializedLogContainer>,
+): void {
+  expect(actual).toMatchObject({
+    ...expected,
+  });
+}
+
+export function assertSentryMetricContainer(
+  actual: SerializedMetricContainer,
+  expected: Partial<SerializedMetricContainer>,
+): void {
+  expect(actual).toMatchObject({
+    ...expected,
+  });
+}
+
+export function assertSentrySpanContainer(
+  actual: SerializedStreamedSpanContainer,
+  expected: DeepPartial<SerializedStreamedSpanContainer>,
+): void {
+  expect(actual).toMatchObject({
+    items: expect.any(Array),
+    ...expected,
+  });
+}
+
 export function assertEnvelopeHeader(actual: Envelope[0], expected: Partial<Envelope[0]>): void {
   expect(actual).toEqual({
     event_id: expect.any(String),
+    sent_at: expect.any(String),
+    sdk: {
+      name: 'sentry.javascript.node',
+      version: SDK_VERSION,
+    },
+    ...expected,
+  });
+}
+
+export function assertSpanEnvelopeHeader(actual: Envelope[0], expected: Partial<Envelope[0]>): void {
+  expect(actual).toEqual({
     sent_at: expect.any(String),
     sdk: {
       name: 'sentry.javascript.node',

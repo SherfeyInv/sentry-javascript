@@ -1,25 +1,28 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import type { Event, IntegrationFn, StackFrame } from '@sentry/core';
-import { LRUMap, defineIntegration, logger, snipLine } from '@sentry/core';
+import { debug, defineIntegration, LRUMap, snipLine } from '@sentry/core';
 import { DEBUG_BUILD } from '../debug-build';
 
 const LRU_FILE_CONTENTS_CACHE = new LRUMap<string, Record<number, string>>(10);
 const LRU_FILE_CONTENTS_FS_READ_FAILED = new LRUMap<string, 1>(20);
 const DEFAULT_LINES_OF_CONTEXT = 7;
-const INTEGRATION_NAME = 'ContextLines';
+const INTEGRATION_NAME = 'ContextLines' as const;
 // Determines the upper bound of lineno/colno that we will attempt to read. Large colno values are likely to be
 // minified code while large lineno values are likely to be bundled code.
 // Exported for testing purposes.
 export const MAX_CONTEXTLINES_COLNO: number = 1000;
 export const MAX_CONTEXTLINES_LINENO: number = 10000;
 
+// TODO(v11): Use `dataCollection.frameContextLines` default (5)
 interface ContextLinesOptions {
   /**
    * Sets the number of context lines for each frame when loading a file.
    * Defaults to 7.
    *
    * Set to 0 to disable loading and inclusion of source files.
+   *
+   * When set, this option takes precedence over `dataCollection.frameContextLines`.
    **/
   frameContextLines?: number;
 }
@@ -142,13 +145,21 @@ function getContextLinesFromFile(path: string, ranges: ReadlineRange[], output: 
       input: stream,
     });
 
+    // We need to explicitly destroy the stream to prevent memory leaks,
+    // removing the listeners on the readline interface is not enough.
+    // See: https://github.com/nodejs/node/issues/9002 and https://github.com/getsentry/sentry-javascript/issues/14892
+    function destroyStreamAndResolve(): void {
+      stream.destroy();
+      resolve();
+    }
+
     // Init at zero and increment at the start of the loop because lines are 1 indexed.
     let lineNumber = 0;
     let currentRangeIndex = 0;
     const range = ranges[currentRangeIndex];
     if (range === undefined) {
       // We should never reach this point, but if we do, we should resolve the promise to prevent it from hanging.
-      resolve();
+      destroyStreamAndResolve();
       return;
     }
     let rangeStart = range[0];
@@ -159,17 +170,17 @@ function getContextLinesFromFile(path: string, ranges: ReadlineRange[], output: 
     function onStreamError(e: Error): void {
       // Mark file path as failed to read and prevent multiple read attempts.
       LRU_FILE_CONTENTS_FS_READ_FAILED.set(path, 1);
-      DEBUG_BUILD && logger.error(`Failed to read file: ${path}. Error: ${e}`);
+      DEBUG_BUILD && debug.error(`Failed to read file: ${path}. Error: ${e}`);
       lineReaded.close();
       lineReaded.removeAllListeners();
-      resolve();
+      destroyStreamAndResolve();
     }
 
     // We need to handle the error event to prevent the process from crashing in < Node 16
     // https://github.com/nodejs/node/pull/31603
     stream.on('error', onStreamError);
     lineReaded.on('error', onStreamError);
-    lineReaded.on('close', resolve);
+    lineReaded.on('close', destroyStreamAndResolve);
 
     lineReaded.on('line', line => {
       lineNumber++;
@@ -273,14 +284,14 @@ async function addSourceContext(event: Event, contextLines: number): Promise<Eve
 
   // The promise rejections are caught in order to prevent them from short circuiting Promise.all
   await Promise.all(readlinePromises).catch(() => {
-    DEBUG_BUILD && logger.log('Failed to read one or more source files and resolve context lines');
+    DEBUG_BUILD && debug.log('Failed to read one or more source files and resolve context lines');
   });
 
   // Perform the same loop as above, but this time we can assume all files are in the cache
   // and attempt to add source context to frames.
   if (contextLines > 0 && event.exception?.values) {
     for (const exception of event.exception.values) {
-      if (exception.stacktrace && exception.stacktrace.frames && exception.stacktrace.frames.length > 0) {
+      if (exception.stacktrace?.frames && exception.stacktrace.frames.length > 0) {
         addSourceContextToFrames(exception.stacktrace.frames, contextLines, LRU_FILE_CONTENTS_CACHE);
       }
     }
@@ -331,7 +342,7 @@ export function addContextToFrame(
   // When there is no line number in the frame, attaching context is nonsensical and will even break grouping.
   // We already check for lineno before calling this, but since StackFrame lineno ism optional, we check it again.
   if (frame.lineno === undefined || contents === undefined) {
-    DEBUG_BUILD && logger.error('Cannot resolve context for frame with no lineno or file contents');
+    DEBUG_BUILD && debug.error('Cannot resolve context for frame with no lineno or file contents');
     return;
   }
 
@@ -342,7 +353,7 @@ export function addContextToFrame(
     const line = contents[i];
     if (line === undefined) {
       clearLineContext(frame);
-      DEBUG_BUILD && logger.error(`Could not find line ${i} in file ${frame.filename}`);
+      DEBUG_BUILD && debug.error(`Could not find line ${i} in file ${frame.filename}`);
       return;
     }
 
@@ -353,7 +364,7 @@ export function addContextToFrame(
   // without adding any linecontext.
   if (contents[lineno] === undefined) {
     clearLineContext(frame);
-    DEBUG_BUILD && logger.error(`Could not find line ${lineno} in file ${frame.filename}`);
+    DEBUG_BUILD && debug.error(`Could not find line ${lineno} in file ${frame.filename}`);
     return;
   }
 
@@ -390,11 +401,11 @@ function makeContextRange(line: number, linecontext: number): [start: number, en
 
 /** Exported only for tests, as a type-safe variant. */
 export const _contextLinesIntegration = ((options: ContextLinesOptions = {}) => {
-  const contextLines = options.frameContextLines !== undefined ? options.frameContextLines : DEFAULT_LINES_OF_CONTEXT;
-
   return {
     name: INTEGRATION_NAME,
-    processEvent(event) {
+    processEvent(event, _hint, client) {
+      const contextLines =
+        options.frameContextLines ?? client?.getDataCollectionOptions().frameContextLines ?? DEFAULT_LINES_OF_CONTEXT;
       return addSourceContext(event, contextLines);
     },
   };

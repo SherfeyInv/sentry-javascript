@@ -1,26 +1,69 @@
-import * as os from 'os';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { ProxyTracer } from '@opentelemetry/api';
-import * as opentelemetryInstrumentationPackage from '@opentelemetry/instrumentation';
-import type { Event, EventHint } from '@sentry/core';
-import { SDK_VERSION, getCurrentScope, getGlobalScope, getIsolationScope } from '@sentry/core';
-
+import type { Event, EventHint, Log } from '@sentry/core';
+import { getAsyncContextStrategy, getMainCarrier, Scope, SDK_VERSION } from '@sentry/core';
+import type { SentryTracerProvider } from '@sentry/opentelemetry';
 import { setOpenTelemetryContextAsyncContextStrategy } from '@sentry/opentelemetry';
+import * as SentryOpentelemetry from '@sentry/opentelemetry';
+import * as SentryServerUtils from '@sentry/server-utils';
+import * as os from 'os';
+import { afterEach, beforeEach, describe, expect, it, test, vi } from 'vitest';
 import { NodeClient } from '../../src';
 import { getDefaultNodeClientOptions } from '../helpers/getDefaultNodeClientOptions';
 import { cleanupOtel } from '../helpers/mockSdkInit';
 
 describe('NodeClient', () => {
   beforeEach(() => {
-    getIsolationScope().clear();
-    getGlobalScope().clear();
-    getCurrentScope().clear();
-    getCurrentScope().setClient(undefined);
+    getMainCarrier().__SENTRY__ = undefined;
     setOpenTelemetryContextAsyncContextStrategy();
   });
 
   afterEach(() => {
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
     cleanupOtel();
+  });
+
+  describe('init', () => {
+    beforeEach(() => {
+      // Undo the OTel strategy the outer `beforeEach` installs, so each test observes what `init()`
+      // does in a fresh process (the ALS installer would otherwise reuse the OTel manager's storage).
+      getMainCarrier().__SENTRY__ = undefined;
+      cleanupOtel();
+    });
+
+    it('installs the AsyncLocalStorage context strategy by default', () => {
+      const alsStrategySpy = vi.spyOn(SentryServerUtils, 'setAsyncLocalStorageAsyncContextStrategy');
+      const otelStrategySpy = vi.spyOn(SentryOpentelemetry, 'setOpenTelemetryContextAsyncContextStrategy');
+
+      const client = new NodeClient(getDefaultNodeClientOptions());
+
+      expect(alsStrategySpy).not.toHaveBeenCalled();
+      expect(otelStrategySpy).not.toHaveBeenCalled();
+
+      client.init();
+
+      expect(alsStrategySpy).toHaveBeenCalledTimes(1);
+      expect(otelStrategySpy).not.toHaveBeenCalled();
+      expect(client.asyncLocalStorageLookup?.asyncLocalStorage).toBeInstanceOf(AsyncLocalStorage);
+      expect(client.asyncLocalStorageLookup?.contextSymbol).toBeUndefined();
+      // The lookup points at the same ALS the installed strategy hands to channel-based integrations
+      expect(getAsyncContextStrategy(getMainCarrier()).getTracingChannelBinding?.()?.asyncLocalStorage).toBe(
+        client.asyncLocalStorageLookup?.asyncLocalStorage,
+      );
+    });
+
+    it('installs the OpenTelemetry context strategy with `enableOpenTelemetrySetup`', () => {
+      const alsStrategySpy = vi.spyOn(SentryServerUtils, 'setAsyncLocalStorageAsyncContextStrategy');
+      const otelStrategySpy = vi.spyOn(SentryOpentelemetry, 'setOpenTelemetryContextAsyncContextStrategy');
+
+      const client = new NodeClient(getDefaultNodeClientOptions({ enableOpenTelemetrySetup: true }));
+      client.init();
+
+      expect(otelStrategySpy).toHaveBeenCalledTimes(1);
+      expect(alsStrategySpy).not.toHaveBeenCalled();
+      expect(client.asyncLocalStorageLookup?.asyncLocalStorage).toBeInstanceOf(AsyncLocalStorage);
+      expect(client.asyncLocalStorageLookup?.contextSymbol).toBeDefined();
+    });
   });
 
   it('sets correct metadata', () => {
@@ -28,9 +71,16 @@ describe('NodeClient', () => {
     const client = new NodeClient(options);
 
     expect(client.getOptions()).toEqual({
+      attachStacktrace: true,
       dsn: expect.any(String),
       integrations: [],
       transport: options.transport,
+      traceLifecycle: 'static',
+      transportOptions: {
+        headers: {
+          'user-agent': `sentry.javascript.node/${SDK_VERSION}`,
+        },
+      },
       stackParser: options.stackParser,
       _metadata: {
         sdk: {
@@ -65,13 +115,16 @@ describe('NodeClient', () => {
   });
 
   describe('_prepareEvent', () => {
+    const currentScope = new Scope();
+    const isolationScope = new Scope();
+
     test('adds platform to event', () => {
       const options = getDefaultNodeClientOptions({});
       const client = new NodeClient(options);
 
       const event: Event = {};
       const hint: EventHint = {};
-      client['_prepareEvent'](event, hint);
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.platform).toEqual('node');
     });
@@ -82,11 +135,24 @@ describe('NodeClient', () => {
 
       const event: Event = {};
       const hint: EventHint = {};
-      client['_prepareEvent'](event, hint);
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.contexts?.runtime).toEqual({
         name: 'node',
         version: process.version,
+      });
+    });
+
+    test('uses custom runtime when provided in options', () => {
+      const options = getDefaultNodeClientOptions({ runtime: { name: 'cloudflare' } });
+      const client = new NodeClient(options);
+
+      const event: Event = {};
+      const hint: EventHint = {};
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
+
+      expect(event.contexts?.runtime).toEqual({
+        name: 'cloudflare',
       });
     });
 
@@ -96,7 +162,7 @@ describe('NodeClient', () => {
 
       const event: Event = {};
       const hint: EventHint = {};
-      client['_prepareEvent'](event, hint);
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.server_name).toEqual('foo');
     });
@@ -108,7 +174,7 @@ describe('NodeClient', () => {
 
       const event: Event = {};
       const hint: EventHint = {};
-      client['_prepareEvent'](event, hint);
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.server_name).toEqual('foo');
 
@@ -121,9 +187,21 @@ describe('NodeClient', () => {
 
       const event: Event = {};
       const hint: EventHint = {};
-      client['_prepareEvent'](event, hint);
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.server_name).toEqual(os.hostname());
+    });
+
+    test('does not add hostname when includeServerName = false', () => {
+      const options = getDefaultNodeClientOptions({});
+      options.includeServerName = false;
+      const client = new NodeClient(options);
+
+      const event: Event = {};
+      const hint: EventHint = {};
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
+
+      expect(event.server_name).toBeUndefined();
     });
 
     test("doesn't clobber existing runtime data", () => {
@@ -132,7 +210,7 @@ describe('NodeClient', () => {
 
       const event: Event = { contexts: { runtime: { name: 'foo', version: '1.2.3' } } };
       const hint: EventHint = {};
-      client['_prepareEvent'](event, hint);
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.contexts?.runtime).toEqual({ name: 'foo', version: '1.2.3' });
       expect(event.contexts?.runtime).not.toEqual({ name: 'node', version: process.version });
@@ -144,7 +222,7 @@ describe('NodeClient', () => {
 
       const event: Event = { server_name: 'foo' };
       const hint: EventHint = {};
-      client['_prepareEvent'](event, hint);
+      client['_prepareEvent'](event, hint, currentScope, isolationScope);
 
       expect(event.server_name).toEqual('foo');
       expect(event.server_name).not.toEqual('bar');
@@ -160,7 +238,7 @@ describe('NodeClient', () => {
       });
       const client = new NodeClient(options);
 
-      const sendEnvelopeSpy = jest.spyOn(client, 'sendEnvelope');
+      const sendEnvelopeSpy = vi.spyOn(client, 'sendEnvelope');
 
       const id = client.captureCheckIn(
         { monitorSlug: 'foo', status: 'in_progress' },
@@ -230,7 +308,7 @@ describe('NodeClient', () => {
       });
       const client = new NodeClient(options);
 
-      const sendEnvelopeSpy = jest.spyOn(client, 'sendEnvelope');
+      const sendEnvelopeSpy = vi.spyOn(client, 'sendEnvelope');
 
       const id = client.captureCheckIn({ monitorSlug: 'heartbeat-monitor', status: 'ok' });
 
@@ -256,7 +334,7 @@ describe('NodeClient', () => {
       const options = getDefaultNodeClientOptions({ serverName: 'bar', enabled: false });
       const client = new NodeClient(options);
 
-      const sendEnvelopeSpy = jest.spyOn(client, 'sendEnvelope');
+      const sendEnvelopeSpy = vi.spyOn(client, 'sendEnvelope');
 
       client.captureCheckIn({ monitorSlug: 'foo', status: 'in_progress' });
 
@@ -264,18 +342,112 @@ describe('NodeClient', () => {
     });
   });
 
-  it('registers instrumentations provided with `openTelemetryInstrumentations`', () => {
-    const registerInstrumentationsSpy = jest
-      .spyOn(opentelemetryInstrumentationPackage, 'registerInstrumentations')
-      .mockImplementationOnce(() => () => undefined);
-    const instrumentationsArray = ['foobar'] as unknown as opentelemetryInstrumentationPackage.Instrumentation[];
+  describe('log capture', () => {
+    it('adds server name to log attributes', () => {
+      const options = getDefaultNodeClientOptions();
+      const client = new NodeClient(options);
 
-    new NodeClient(getDefaultNodeClientOptions({ openTelemetryInstrumentations: instrumentationsArray }));
+      const log: Log = { level: 'info', message: 'test message', attributes: {} };
+      client.emit('beforeCaptureLog', log);
 
-    expect(registerInstrumentationsSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        instrumentations: instrumentationsArray,
-      }),
-    );
+      expect(log.attributes).toEqual({
+        'server.address': expect.any(String),
+      });
+    });
+
+    it('preserves existing log attributes', () => {
+      const serverName = 'test-server';
+      const options = getDefaultNodeClientOptions({ serverName });
+      const client = new NodeClient(options);
+
+      const log: Log = { level: 'info', message: 'test message', attributes: { 'existing.attr': 'value' } };
+      client.emit('beforeCaptureLog', log);
+
+      expect(log.attributes).toEqual({
+        'existing.attr': 'value',
+        'server.address': serverName,
+      });
+    });
+  });
+
+  describe('close', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('shuts down the OTel trace provider', async () => {
+      const shutdownSpy = vi.fn().mockResolvedValue(true);
+      const forceFlushSpy = vi.fn().mockResolvedValue(undefined);
+
+      const client = new NodeClient(getDefaultNodeClientOptions());
+
+      client.traceProvider = {
+        shutdown: shutdownSpy,
+        forceFlush: forceFlushSpy,
+      } as unknown as SentryTracerProvider;
+
+      const result = await client.close();
+
+      // ensure we return the flush result rather than void from the traceProvider shutdown
+      expect(result).toBe(true);
+
+      expect(shutdownSpy).toHaveBeenCalledTimes(1);
+
+      // close calls flush and flush force-flushes the traceProvider
+      expect(forceFlushSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops client report tracking if it was started', async () => {
+      const processOffSpy = vi.spyOn(process, 'off');
+      const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+
+      const client = new NodeClient(getDefaultNodeClientOptions({ sendClientReports: true }));
+
+      client.startClientReportTracking();
+
+      const result = await client.close();
+
+      expect(result).toBe(true);
+
+      expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+
+      // removes `_clientReportOnExitFlushListener`
+      expect(processOffSpy).toHaveBeenNthCalledWith(1, 'beforeExit', expect.any(Function));
+    });
+
+    it('stops log capture if it was started', async () => {
+      const processOffSpy = vi.spyOn(process, 'off');
+
+      const client = new NodeClient(getDefaultNodeClientOptions());
+
+      const result = await client.close();
+
+      expect(result).toBe(true);
+
+      // removes `_logOnExitFlushListener`
+      expect(processOffSpy).toHaveBeenNthCalledWith(1, 'beforeExit', expect.any(Function));
+    });
+  });
+
+  describe('flush', () => {
+    it('flush returns immediately when nothing is processing', async () => {
+      const options = getDefaultNodeClientOptions();
+      const client = new NodeClient(options);
+
+      const startTime = Date.now();
+      const result = await client.flush(1000);
+      const elapsed = Date.now() - startTime;
+
+      expect(result).toBe(true);
+      expect(elapsed).toBeLessThan(100);
+    });
+
+    it('flush does not block process exit with unref timers', async () => {
+      const options = getDefaultNodeClientOptions();
+      const client = new NodeClient(options);
+
+      const result = await client.flush(5000);
+      expect(result).toBe(true);
+    });
   });
 });

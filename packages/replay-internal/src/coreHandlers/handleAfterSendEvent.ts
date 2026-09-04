@@ -1,8 +1,8 @@
-import { setTimeout } from '@sentry-internal/browser-utils';
 import type { ErrorEvent, Event, TransactionEvent, TransportMakeRequestResponse } from '@sentry/core';
-
+import { setTimeout } from '@sentry/browser-utils';
 import type { ReplayContainer } from '../types';
 import { isErrorEvent, isTransactionEvent } from '../util/eventUtils';
+import { addSegmentDetailsToContext } from './util/addSegmentDetailsToContext';
 
 type AfterSendEventCallback = (event: Event, sendResponse: TransportMakeRequestResponse) => void;
 
@@ -15,11 +15,10 @@ export function handleAfterSendEvent(replay: ReplayContainer): AfterSendEventCal
       return;
     }
 
-    const statusCode = sendResponse && sendResponse.statusCode;
+    const statusCode = sendResponse.statusCode;
 
     // We only want to do stuff on successful error sending, otherwise you get error replays without errors attached
-    // If not using the base transport, we allow `undefined` response (as a custom transport may not implement this correctly yet)
-    // If we do use the base transport, we skip if we encountered an non-OK status code
+    // We skip if we encountered an non-OK status code
     if (!statusCode || statusCode < 200 || statusCode >= 300) {
       return;
     }
@@ -34,14 +33,7 @@ export function handleAfterSendEvent(replay: ReplayContainer): AfterSendEventCal
 }
 
 function handleTransactionEvent(replay: ReplayContainer, event: TransactionEvent): void {
-  const replayContext = replay.getContext();
-
-  // Collect traceIds in _context regardless of `recordingMode`
-  // In error mode, _context gets cleared on every checkout
-  // We limit to max. 100 transactions linked
-  if (event.contexts && event.contexts.trace && event.contexts.trace.trace_id && replayContext.traceIds.size < 100) {
-    replayContext.traceIds.add(event.contexts.trace.trace_id as string);
-  }
+  addSegmentDetailsToContext(replay, event.contexts?.trace?.trace_id, event.transaction);
 }
 
 function handleErrorEvent(replay: ReplayContainer, event: ErrorEvent): void {
@@ -59,7 +51,7 @@ function handleErrorEvent(replay: ReplayContainer, event: ErrorEvent): void {
 
   // If error event is tagged with replay id it means it was sampled (when in buffer mode)
   // Need to be very careful that this does not cause an infinite loop
-  if (replay.recordingMode !== 'buffer' || !event.tags || !event.tags.replayId) {
+  if (replay.recordingMode !== 'buffer' || !event.tags?.replayId) {
     return;
   }
 

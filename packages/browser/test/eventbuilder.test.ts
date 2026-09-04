@@ -2,12 +2,13 @@
  * @vitest-environment jsdom
  */
 
+import { runInNewContext } from 'node:vm';
+import { addNonEnumerableProperty } from '@sentry/core/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { defaultStackParser } from '../src';
 import { eventFromMessage, eventFromUnknownInput, extractMessage, extractType } from '../src/eventbuilder';
 
-vi.mock('@sentry/core', async requireActual => {
+vi.mock('@sentry/core/browser', async requireActual => {
   return {
     ...((await requireActual()) as any),
     getClient() {
@@ -82,9 +83,9 @@ describe('eventFromUnknownInput', () => {
       'Event',
       new Event('custom'),
       {
-        currentTarget: '[object Null]',
+        currentTarget: null,
         isTrusted: false,
-        target: '[object Null]',
+        target: null,
         type: 'custom',
       },
       'Event `Event` (type=custom) captured as exception',
@@ -93,9 +94,9 @@ describe('eventFromUnknownInput', () => {
       'MouseEvent',
       new MouseEvent('click'),
       {
-        currentTarget: '[object Null]',
+        currentTarget: null,
         isTrusted: false,
-        target: '[object Null]',
+        target: null,
         type: 'click',
       },
       'Event `MouseEvent` (type=click) captured as exception',
@@ -140,6 +141,22 @@ describe('eventFromUnknownInput', () => {
     });
   });
 
+  it('handles object with error prop created in another realm', () => {
+    const error = runInNewContext(`new Error('Some error')`) as Error;
+    expect(error).not.toBeInstanceOf(Error);
+
+    const event = eventFromUnknownInput(defaultStackParser, {
+      err: error,
+    });
+
+    expect(event.exception?.values?.[0]).toEqual(
+      expect.objectContaining({
+        type: 'Error',
+        value: 'Some error',
+      }),
+    );
+  });
+
   it('handles class with error prop', () => {
     const error = new Error('Some error');
 
@@ -167,6 +184,115 @@ describe('eventFromUnknownInput', () => {
         },
       },
     });
+  });
+
+  it('uses the stringified value for a non-Error input when attachStacktrace is true', async () => {
+    const syntheticException = new Error('Test message');
+    const event = await eventFromUnknownInput(defaultStackParser, new Response('test body'), syntheticException, true);
+
+    expect(event.exception?.values?.[0]).toEqual(
+      expect.objectContaining({
+        mechanism: { handled: true, synthetic: true, type: 'generic' },
+        type: 'Error',
+        value: '[object Response]',
+      }),
+    );
+  });
+
+  it('does not throw and stringifies the value for a Symbol input', async () => {
+    const event = await eventFromUnknownInput(defaultStackParser, Symbol('foo'));
+
+    expect(event.exception?.values?.[0]).toEqual(
+      expect.objectContaining({
+        type: 'Error',
+        value: 'Symbol(foo)',
+      }),
+    );
+  });
+
+  it('add a synthetic stack trace to DOMException with empty stack traces if attachStacktrace is true', async () => {
+    const exception = new DOMException('The string did not match the expected pattern.', 'SyntaxError');
+    exception.stack = '';
+
+    const syntheticException = new Error('Test message');
+    const event = await eventFromUnknownInput(defaultStackParser, exception, syntheticException, true);
+    expect(event.exception?.values?.[0]).toEqual(
+      expect.objectContaining({
+        mechanism: { handled: true, synthetic: true, type: 'generic' },
+        stacktrace: {
+          frames: expect.arrayContaining([expect.any(Object), expect.any(Object)]),
+        },
+        type: 'SyntaxError',
+        value: 'The string did not match the expected pattern.',
+      }),
+    );
+  });
+
+  it('preserves DOMException type when stack is an empty string', () => {
+    const exception = new DOMException('The string did not match the expected pattern.', 'SyntaxError');
+    exception.stack = '';
+
+    const event = eventFromUnknownInput(defaultStackParser, exception, new Error('synthetic'), true);
+
+    expect(event.exception?.values?.[0]).toMatchObject({
+      type: 'SyntaxError',
+      value: 'The string did not match the expected pattern.',
+    });
+  });
+
+  it('add a synthetic stack trace to DOMException without a stack traces property if attachStacktrace is true', async () => {
+    const exception = new DOMException('The string did not match the expected pattern.', 'SyntaxError');
+    delete exception.stack;
+
+    const syntheticException = new Error('Test message');
+    const event = await eventFromUnknownInput(defaultStackParser, exception, syntheticException, true);
+    expect(event.exception?.values?.[0]).toEqual(
+      expect.objectContaining({
+        mechanism: { handled: true, synthetic: true, type: 'generic' },
+        stacktrace: {
+          frames: expect.arrayContaining([expect.any(Object), expect.any(Object)]),
+        },
+        type: 'Error',
+        value: 'SyntaxError: The string did not match the expected pattern.',
+      }),
+    );
+  });
+
+  it("doesn't add a synthetic stack trace to DOMException with empty stack traces if attachStacktrace is false", async () => {
+    const exception = new DOMException('The string did not match the expected pattern.', 'SyntaxError');
+    exception.stack = '';
+
+    const syntheticException = new Error('Test message');
+    const event = await eventFromUnknownInput(defaultStackParser, exception, syntheticException, false);
+    expect(event.exception?.values?.[0]).toEqual({
+      type: 'SyntaxError',
+      value: 'The string did not match the expected pattern.',
+    });
+  });
+
+  it("doesn't add a synthetic stack trace to DOMException with stack traces if attachStacktrace is true", async () => {
+    const exception = new DOMException('The string did not match the expected pattern.', 'SyntaxError');
+    exception.stack = 'SyntaxError\n    at <anonymous>:1:2';
+
+    const syntheticException = new Error('Test message');
+    const event = await eventFromUnknownInput(defaultStackParser, exception, syntheticException, true);
+    expect(event.exception?.values?.[0]).toEqual(
+      expect.objectContaining({
+        stacktrace: {
+          frames: [
+            {
+              colno: 2,
+              filename: '<anonymous>',
+              function: '?',
+              in_app: true,
+              lineno: 1,
+            },
+          ],
+        },
+        type: 'SyntaxError',
+        value: 'The string did not match the expected pattern.',
+      }),
+    );
   });
 });
 
@@ -259,5 +385,79 @@ describe('eventFromMessage ', () => {
     const syntheticException = new Error('Test message');
     const event = await eventFromMessage(defaultStackParser, 'Test message', 'info', { syntheticException }, false);
     expect(event.exception).toBeUndefined();
+  });
+});
+
+describe('__sentry_fetch_url_host__ error enhancement', () => {
+  it('should enhance error message when __sentry_fetch_url_host__ property is present', () => {
+    const error = new Error('Failed to fetch');
+    // Simulate what fetch instrumentation does
+    addNonEnumerableProperty(error, '__sentry_fetch_url_host__', 'example.com');
+
+    const message = extractMessage(error);
+
+    expect(message).toBe('Failed to fetch (example.com)');
+  });
+
+  it('should not enhance error message when property is missing', () => {
+    const error = new Error('Failed to fetch');
+
+    const message = extractMessage(error);
+
+    expect(message).toBe('Failed to fetch');
+  });
+
+  it('should preserve original error message unchanged', () => {
+    const error = new Error('Failed to fetch');
+    addNonEnumerableProperty(error, '__sentry_fetch_url_host__', 'api.example.com');
+
+    // Original error message should still be accessible
+    expect(error.message).toBe('Failed to fetch');
+
+    // But Sentry exception should have enhanced message
+    const message = extractMessage(error);
+    expect(message).toBe('Failed to fetch (api.example.com)');
+  });
+
+  it.each([
+    { message: 'Failed to fetch', host: 'example.com', expected: 'Failed to fetch (example.com)' },
+    { message: 'Load failed', host: 'api.test.com', expected: 'Load failed (api.test.com)' },
+    {
+      message: 'NetworkError when attempting to fetch resource.',
+      host: 'localhost:3000',
+      expected: 'NetworkError when attempting to fetch resource. (localhost:3000)',
+    },
+  ])('should work with all network error types ($message)', ({ message, host, expected }) => {
+    const error = new Error(message);
+
+    addNonEnumerableProperty(error, '__sentry_fetch_url_host__', host);
+
+    const enhancedMessage = extractMessage(error);
+    expect(enhancedMessage).toBe(expected);
+  });
+
+  it('should not enhance if property value is not a string', () => {
+    const error = new Error('Failed to fetch');
+    addNonEnumerableProperty(error, '__sentry_fetch_url_host__', 123); // Not a string
+
+    const message = extractMessage(error);
+    expect(message).toBe('Failed to fetch');
+  });
+
+  it('should handle errors with stack traces', () => {
+    const error = new Error('Failed to fetch');
+    error.stack = 'TypeError: Failed to fetch\n    at fetch (test.js:1:1)';
+    addNonEnumerableProperty(error, '__sentry_fetch_url_host__', 'example.com');
+
+    const message = extractMessage(error);
+    expect(message).toBe('Failed to fetch (example.com)');
+  });
+
+  it('should preserve hostname with port', () => {
+    const error = new Error('Failed to fetch');
+    addNonEnumerableProperty(error, '__sentry_fetch_url_host__', 'localhost:8080');
+
+    const message = extractMessage(error);
+    expect(message).toBe('Failed to fetch (localhost:8080)');
   });
 });

@@ -64,13 +64,21 @@ test('Cron job triggers send of in_progress envelope', async ({ baseURL }) => {
 
 test('Sends exceptions to Sentry on error in cron job', async ({ baseURL }) => {
   const errorEventPromise = waitForError('nestjs-fastify', event => {
-    return !event.type && event.exception?.values?.[0]?.value === 'Test error from cron job';
+    return (
+      !event.type &&
+      event.exception?.values?.[0]?.value === 'Test error from cron job' &&
+      event.exception?.values?.[0]?.mechanism?.type === 'auto.function.nestjs.cron'
+    );
   });
 
   const errorEvent = await errorEventPromise;
 
   expect(errorEvent.exception?.values).toHaveLength(1);
   expect(errorEvent.exception?.values?.[0]?.value).toBe('Test error from cron job');
+  expect(errorEvent.exception?.values?.[0]?.mechanism).toEqual({
+    handled: false,
+    type: 'auto.function.nestjs.cron',
+  });
   expect(errorEvent.contexts?.trace).toEqual({
     trace_id: expect.stringMatching(/[a-f0-9]{32}/),
     span_id: expect.stringMatching(/[a-f0-9]{16}/),

@@ -8,14 +8,12 @@ export default [
       bundleType: 'addon',
       entrypoints: ['src/screenshot/integration.ts'],
       jsVersion: 'es6',
-      licenseTitle: '@sentry-internal/feedback',
+      licenseTitle: '@sentry/feedback',
       outputFileBase: () => 'bundles/feedback-screenshot',
-      sucrase: {
-        // The feedback widget is using preact so we need different pragmas and jsx runtimes
-        jsxPragma: 'h',
-        jsxFragmentPragma: 'Fragment',
-        jsxRuntime: 'classic',
-        production: true,
+      esbuild: {
+        // The feedback widget uses preact, so override esbuild's React defaults.
+        jsxFactory: 'h',
+        jsxFragment: 'Fragment',
       },
     }),
   ),
@@ -24,14 +22,12 @@ export default [
       bundleType: 'addon',
       entrypoints: ['src/modal/integration.tsx'],
       jsVersion: 'es6',
-      licenseTitle: '@sentry-internal/feedback',
+      licenseTitle: '@sentry/feedback',
       outputFileBase: () => 'bundles/feedback-modal',
-      sucrase: {
-        // The feedback widget is using preact so we need different pragmas and jsx runtimes
-        jsxPragma: 'h',
-        jsxFragmentPragma: 'Fragment',
-        jsxRuntime: 'classic',
-        production: true,
+      esbuild: {
+        // The feedback widget uses preact, so override esbuild's React defaults.
+        jsxFactory: 'h',
+        jsxFragment: 'Fragment',
       },
     }),
   ),

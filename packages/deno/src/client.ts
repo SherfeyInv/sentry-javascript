@@ -1,6 +1,6 @@
 import type { ServerRuntimeClientOptions } from '@sentry/core';
-import { SDK_VERSION, ServerRuntimeClient } from '@sentry/core';
-
+import { _INTERNAL_flushLogsBuffer, SDK_VERSION, ServerRuntimeClient } from '@sentry/core';
+import { setAsyncLocalStorageAsyncContextStrategy } from '@sentry/server-utils';
 import type { DenoClientOptions } from './types';
 
 function getHostName(): string | undefined {
@@ -20,6 +20,8 @@ function getHostName(): string | undefined {
  * @see SentryClient for usage documentation.
  */
 export class DenoClient extends ServerRuntimeClient<DenoClientOptions> {
+  private _logOnExitFlushListener: (() => void) | undefined;
+
   /**
    * Creates a new Deno SDK instance.
    * @param options Configuration options for this SDK.
@@ -37,13 +39,50 @@ export class DenoClient extends ServerRuntimeClient<DenoClientOptions> {
       version: SDK_VERSION,
     };
 
+    const serverName = options.serverName || getHostName();
+
     const clientOptions: ServerRuntimeClientOptions = {
       ...options,
       platform: 'javascript',
       runtime: { name: 'deno', version: Deno.version.deno },
-      serverName: options.serverName || getHostName(),
+      serverName,
     };
 
     super(clientOptions);
+
+    this._logOnExitFlushListener = () => {
+      _INTERNAL_flushLogsBuffer(this);
+    };
+
+    if (serverName) {
+      this.on('beforeCaptureLog', log => {
+        log.attributes = {
+          ...log.attributes,
+          'server.address': serverName,
+        };
+      });
+    }
+
+    globalThis.addEventListener('unload', this._logOnExitFlushListener);
+  }
+
+  /** @inheritDoc */
+  public init(): void {
+    // The channel-based default integrations propagate scope across async
+    // boundaries via Deno's AsyncLocalStorage context strategy. Install it here,
+    // the setup path both `Sentry.init()` and a directly-constructed client run
+    // through, so it is in place before the integrations subscribe.
+    setAsyncLocalStorageAsyncContextStrategy();
+    super.init();
+  }
+
+  /** @inheritDoc */
+  // @ts-expect-error - PromiseLike is a subset of Promise
+  public async close(timeout?: number | undefined): PromiseLike<boolean> {
+    if (this._logOnExitFlushListener) {
+      globalThis.removeEventListener('unload', this._logOnExitFlushListener);
+    }
+
+    return super.close(timeout);
   }
 }

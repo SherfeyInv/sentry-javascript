@@ -1,55 +1,156 @@
-import { createRunner } from '../../../utils/runner';
+import { afterAll, describe, expect } from 'vitest';
+import { cleanupChildProcesses, createEsmAndCjsTests } from '../../../utils/runner';
 
-// Graphql Instrumentation emits some spans by default on server start
+// Server start transaction (Apollo Server v5 no longer runs introspection query on start)
 const EXPECTED_START_SERVER_TRANSACTION = {
   transaction: 'Test Server Start',
 };
 
-describe('GraphQL/Apollo Tests', () => {
-  test('should instrument GraphQL queries used from Apollo Server.', done => {
-    const EXPECTED_TRANSACTION = {
-      transaction: 'Test Transaction',
-      spans: expect.arrayContaining([
-        expect.objectContaining({
-          data: {
-            'graphql.operation.type': 'query',
-            'graphql.source': '{hello}',
-            'sentry.origin': 'auto.graphql.otel.graphql',
-          },
-          description: 'query',
-          status: 'ok',
-          origin: 'auto.graphql.otel.graphql',
-        }),
-      ]),
-    };
+const ORIGIN = 'auto.graphql.diagnostic_channel';
 
-    createRunner(__dirname, 'scenario-query.js')
-      .expect({ transaction: EXPECTED_START_SERVER_TRANSACTION })
-      .expect({ transaction: EXPECTED_TRANSACTION })
-      .start(done);
+function graphqlExecuteSpan(opts: {
+  description: string;
+  operationType: string;
+  operationName?: string;
+  document: unknown;
+  status?: string;
+}): ReturnType<typeof expect.objectContaining> {
+  const { description, operationType, operationName, document, status = 'ok' } = opts;
+  return expect.objectContaining({
+    description,
+    status,
+    origin: ORIGIN,
+    data: expect.objectContaining({
+      'graphql.operation.type': operationType,
+      ...(operationName ? { 'graphql.operation.name': operationName } : {}),
+      'graphql.document': document,
+      'sentry.origin': ORIGIN,
+    }),
+  });
+}
+
+describe('GraphQL/Apollo Tests', () => {
+  afterAll(() => {
+    cleanupChildProcesses();
   });
 
-  test('should instrument GraphQL mutations used from Apollo Server.', done => {
+  describe('query', () => {
     const EXPECTED_TRANSACTION = {
-      transaction: 'Test Transaction',
+      transaction: 'Test Transaction (query)',
       spans: expect.arrayContaining([
-        expect.objectContaining({
-          data: {
-            'graphql.operation.name': 'Mutation',
-            'graphql.operation.type': 'mutation',
-            'graphql.source': 'mutation Mutation($email: String) {\n  login(email: $email)\n}',
-            'sentry.origin': 'auto.graphql.otel.graphql',
-          },
+        graphqlExecuteSpan({ description: 'query', operationType: 'query', document: '{hello}' }),
+      ]),
+    };
+
+    createEsmAndCjsTests(
+      __dirname,
+      'scenario-query.mjs',
+      'instrument.mjs',
+      (createTestRunner, test) => {
+        test('should instrument GraphQL queries used from Apollo Server.', async () => {
+          await createTestRunner()
+            .expect({ transaction: EXPECTED_START_SERVER_TRANSACTION })
+            .expect({ transaction: EXPECTED_TRANSACTION })
+            .unordered()
+            .start()
+            .completed();
+        });
+      },
+      { copyPaths: ['apollo-server.mjs'] },
+    );
+  });
+
+  describe('mutation', () => {
+    const EXPECTED_TRANSACTION = {
+      transaction: 'Test Transaction (mutation Mutation)',
+      spans: expect.arrayContaining([
+        graphqlExecuteSpan({
           description: 'mutation Mutation',
-          status: 'ok',
-          origin: 'auto.graphql.otel.graphql',
+          operationType: 'mutation',
+          operationName: 'Mutation',
+          document: 'mutation Mutation($email: String) {\n  login(email: $email)\n}',
         }),
       ]),
     };
 
-    createRunner(__dirname, 'scenario-mutation.js')
-      .expect({ transaction: EXPECTED_START_SERVER_TRANSACTION })
-      .expect({ transaction: EXPECTED_TRANSACTION })
-      .start(done);
+    createEsmAndCjsTests(
+      __dirname,
+      'scenario-mutation.mjs',
+      'instrument.mjs',
+      (createTestRunner, test) => {
+        test('should instrument GraphQL mutations used from Apollo Server.', async () => {
+          await createTestRunner()
+            .expect({ transaction: EXPECTED_START_SERVER_TRANSACTION })
+            .expect({ transaction: EXPECTED_TRANSACTION })
+            .unordered()
+            .start()
+            .completed();
+        });
+      },
+      { copyPaths: ['apollo-server.mjs'] },
+    );
+  });
+
+  describe('redaction', () => {
+    const EXPECTED_TRANSACTION = {
+      transaction: 'Test Transaction (mutation)',
+      spans: expect.arrayContaining([
+        // The inline email literal must be redacted to `"*"`, so the raw value never reaches the span.
+        graphqlExecuteSpan({
+          description: 'mutation',
+          operationType: 'mutation',
+          document: expect.stringContaining('login(email: "*")'),
+        }),
+      ]),
+    };
+
+    createEsmAndCjsTests(
+      __dirname,
+      'scenario-redaction.mjs',
+      'instrument.mjs',
+      (createTestRunner, test) => {
+        test('redacts inline literal values from the graphql document.', async () => {
+          await createTestRunner()
+            .expect({ transaction: EXPECTED_START_SERVER_TRANSACTION })
+            .expect({ transaction: EXPECTED_TRANSACTION })
+            .unordered()
+            .start()
+            .completed();
+        });
+      },
+      { copyPaths: ['apollo-server.mjs'] },
+    );
+  });
+
+  describe('error', () => {
+    const EXPECTED_TRANSACTION = {
+      transaction: 'Test Transaction (mutation Mutation)',
+      spans: expect.arrayContaining([
+        graphqlExecuteSpan({
+          description: 'mutation Mutation',
+          operationType: 'mutation',
+          operationName: 'Mutation',
+          document: 'mutation Mutation($email: String) {\n  login(email: $email)\n}',
+          status: 'internal_error',
+        }),
+      ]),
+    };
+
+    createEsmAndCjsTests(
+      __dirname,
+      'scenario-error.mjs',
+      'instrument.mjs',
+      (createTestRunner, test) => {
+        test('should handle GraphQL errors.', async () => {
+          await createTestRunner()
+            .expect({ transaction: EXPECTED_START_SERVER_TRANSACTION })
+            .expect({ transaction: EXPECTED_TRANSACTION })
+            .unordered()
+            .start()
+            .completed();
+        });
+      },
+      { copyPaths: ['apollo-server.mjs'] },
+    );
   });
 });

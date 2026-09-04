@@ -12,9 +12,7 @@
 
 ## Links
 
-- [SDK on Deno registry](https://deno.land/x/sentry)
 - [Official SDK Docs](https://docs.sentry.io/quickstart/)
-- [TypeDoc](http://getsentry.github.io/sentry-javascript/)
 
 The Sentry Deno SDK is in beta. Please help us improve the SDK by
 [reporting any issues or giving us feedback](https://github.com/getsentry/sentry-javascript/issues).
@@ -25,10 +23,6 @@ To use this SDK, call `Sentry.init(options)` as early as possible in the main en
 and hook into the environment. Note that you can turn off almost all side effects using the respective options.
 
 ```javascript
-// Import from the Deno registry
-import * as Sentry from 'https://deno.land/x/sentry/build/index.mjs';
-
-// or import from npm registry
 import * as Sentry from 'npm:@sentry/deno';
 
 Sentry.init({
@@ -61,4 +55,31 @@ Sentry.captureEvent({
     // ...
   ],
 });
+```
+
+## Auto-instrumentation (experimental)
+
+Some libraries (e.g. `mysql`) don't emit tracing signals on their
+own. To instrument them, Sentry uses
+[orchestrion](https://github.com/apm-js-collab/tracing-hooks) to
+transform them at load time so they publish to
+`node:diagnostics_channel`.
+
+Use the `--import` or `--preload` argument to `deno run` to enable
+these instrumentations.
+
+```bash
+$ deno run --import=@sentry/deno/import app.ts
+```
+
+Your `app.ts` should simply load Sentry as usual:
+
+```ts
+// app.ts
+
+// initialize Sentry as early as possible
+import * as Sentry from 'npm:@sentry/deno';
+Sentry.init({ dsn: '__DSN__' });
+
+// ... the rest of the app...
 ```

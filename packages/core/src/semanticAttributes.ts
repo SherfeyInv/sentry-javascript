@@ -1,14 +1,25 @@
 /**
- * Use this attribute to represent the source of a span.
- * Should be one of: custom, url, route, view, component, task, unknown
- *
+ * Use this attribute to represent the source of a span name.
+ * Must be one of: custom, url, route, view, component, task
+ * TODO(v11): remove this export
  */
 export const SEMANTIC_ATTRIBUTE_SENTRY_SOURCE = 'sentry.source';
 
 /**
- * Use this attribute to represent the sample rate used for a span.
+ * Attributes that holds the sample rate that was locally applied to a span.
+ * If this attribute is not defined, it means that the span inherited a sampling decision.
+ *
+ * NOTE: Is only defined on root spans.
  */
 export const SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE = 'sentry.sample_rate';
+
+/**
+ * Attribute holding the sample rate of the previous trace.
+ * This is used to sample consistently across subsequent traces in the browser SDK.
+ *
+ * Note: Only defined on root spans, if opted into consistent sampling
+ */
+export const SEMANTIC_ATTRIBUTE_SENTRY_PREVIOUS_TRACE_SAMPLE_RATE = 'sentry.previous_trace_sample_rate';
 
 /**
  * Use this attribute to represent the operation of a span.
@@ -20,6 +31,16 @@ export const SEMANTIC_ATTRIBUTE_SENTRY_OP = 'sentry.op';
  */
 export const SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN = 'sentry.origin';
 
+/**
+ * Holds the human-readable span status message (e.g. set via
+ * `span.setStatus({ code, message })`).
+ *
+ * Streamed (v2) span statuses are reduced to `ok`/`error`, so we preserve the
+ * message as an attribute instead of dropping it. This mirrors the attribute
+ * Sentry's OTLP ingestion uses for the same purpose.
+ */
+export const SEMANTIC_ATTRIBUTE_SENTRY_STATUS_MESSAGE = 'sentry.status.message';
+
 /** The reason why an idle span finished. */
 export const SEMANTIC_ATTRIBUTE_SENTRY_IDLE_SPAN_FINISH_REASON = 'sentry.idle_span_finish_reason';
 
@@ -28,6 +49,42 @@ export const SEMANTIC_ATTRIBUTE_SENTRY_MEASUREMENT_UNIT = 'sentry.measurement_un
 
 /** The value of a measurement, which may be stored as a TimedEvent. */
 export const SEMANTIC_ATTRIBUTE_SENTRY_MEASUREMENT_VALUE = 'sentry.measurement_value';
+
+/** The release version of the application */
+export const SEMANTIC_ATTRIBUTE_SENTRY_RELEASE = 'sentry.release';
+/** The environment name (e.g., "production", "staging", "development") */
+export const SEMANTIC_ATTRIBUTE_SENTRY_ENVIRONMENT = 'sentry.environment';
+/**
+ * The segment name (e.g., "GET /users")
+ * @deprecated Use `SENTRY_SEGMENT_NAME` `@sentry/conventions/attributes` instead.
+ */
+export const SEMANTIC_ATTRIBUTE_SENTRY_SEGMENT_NAME = 'sentry.segment.name';
+/**
+ * The id of the segment that this span belongs to.
+ * @deprecated Use `SENTRY_SEGMENT_ID` `@sentry/conventions/attributes` instead.
+ */
+export const SEMANTIC_ATTRIBUTE_SENTRY_SEGMENT_ID = 'sentry.segment.id';
+/**
+ * The name of the Sentry SDK (e.g., "sentry.php", "sentry.javascript")
+ * @deprecated Use `SENTRY_SDK_NAME` `@sentry/conventions/attributes` instead.
+ */
+export const SEMANTIC_ATTRIBUTE_SENTRY_SDK_NAME = 'sentry.sdk.name';
+/**
+ * The version of the Sentry SDK
+ * @deprecated Use `SENTRY_SDK_VERSION` `@sentry/conventions/attributes` instead.
+ */
+export const SEMANTIC_ATTRIBUTE_SENTRY_SDK_VERSION = 'sentry.sdk.version';
+/** The list of integrations enabled in the Sentry SDK (e.g., ["EventFilters", "BrowserTracing"]) */
+export const SEMANTIC_ATTRIBUTE_SENTRY_SDK_INTEGRATIONS = 'sentry.sdk.integrations';
+
+/** The user ID */
+export const SEMANTIC_ATTRIBUTE_USER_ID = 'user.id';
+/** The user email */
+export const SEMANTIC_ATTRIBUTE_USER_EMAIL = 'user.email';
+/** The user IP address */
+export const SEMANTIC_ATTRIBUTE_USER_IP_ADDRESS = 'user.ip_address';
+/** The user username */
+export const SEMANTIC_ATTRIBUTE_USER_USERNAME = 'user.name';
 
 /**
  * A custom span name set by users guaranteed to be taken over any automatically
@@ -53,4 +110,34 @@ export const SEMANTIC_ATTRIBUTE_CACHE_ITEM_SIZE = 'cache.item_size';
 
 /** TODO: Remove these once we update to latest semantic conventions */
 export const SEMANTIC_ATTRIBUTE_HTTP_REQUEST_METHOD = 'http.request.method';
+/**
+ * @deprecated Use `URL_FULL` `@sentry/conventions/attributes` instead.
+ */
 export const SEMANTIC_ATTRIBUTE_URL_FULL = 'url.full';
+
+/**
+ * A span link attribute to mark the link as a special span link.
+ *
+ * Known values:
+ * - `previous_trace`: The span links to the frontend root span of the previous trace.
+ * - `next_trace`: The span links to the frontend root span of the next trace. (Not set by the SDK)
+ *
+ * Other values may be set as appropriate.
+ * @see https://develop.sentry.dev/sdk/telemetry/traces/span-links/#link-types
+ */
+export const SEMANTIC_LINK_ATTRIBUTE_LINK_TYPE = 'sentry.link.type';
+
+/**
+ * =============================================================================
+ * GEN AI ATTRIBUTES
+ * Based on OpenTelemetry Semantic Conventions for Generative AI
+ * @see https://opentelemetry.io/docs/specs/semconv/gen-ai/
+ * =============================================================================
+ */
+
+/**
+ * The conversation ID for linking messages across API calls.
+ * For OpenAI Assistants API: thread_id
+ * For LangGraph: configurable.thread_id
+ */
+export const GEN_AI_CONVERSATION_ID_ATTRIBUTE = 'gen_ai.conversation.id';

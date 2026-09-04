@@ -1,16 +1,16 @@
-import type { Client, IntegrationFn } from '@sentry/core';
+import type { Client, IntegrationFn } from '@sentry/core/browser';
 import {
-  GLOBAL_OBJ,
   captureMessage,
   defineIntegration,
   getClient,
+  GLOBAL_OBJ,
   supportsReportingObserver,
   withScope,
-} from '@sentry/core';
+} from '@sentry/core/browser';
 
 const WINDOW = GLOBAL_OBJ as typeof GLOBAL_OBJ & Window;
 
-const INTEGRATION_NAME = 'ReportingObserver';
+const INTEGRATION_NAME = 'ReportingObserver' as const;
 
 interface Report {
   [key: string]: unknown;

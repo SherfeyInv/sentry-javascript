@@ -1,14 +1,20 @@
-import type { Span, SpanStatus } from '../types-hoist';
+import type { Span } from '../types/span';
+import type { SpanStatusType } from '../types/spanStatus';
+import { SPAN_STATUS_TYPES, type SpanStatus } from '../types/spanStatus';
 
 export const SPAN_STATUS_UNSET = 0;
 export const SPAN_STATUS_OK = 1;
 export const SPAN_STATUS_ERROR = 2;
 
+export function isStatusErrorMessageValid(message: string): boolean {
+  return message !== 'ok' && SPAN_STATUS_TYPES.includes(message as SpanStatusType);
+}
+
 /**
  * Converts a HTTP status code into a sentry status with a message.
  *
  * @param httpStatus The HTTP response status code.
- * @returns The span status or unknown_error.
+ * @returns The span status or internal_error.
  */
 // https://develop.sentry.dev/sdk/event-payloads/span/
 export function getSpanStatusFromHttpCode(httpStatus: number): SpanStatus {
@@ -50,7 +56,7 @@ export function getSpanStatusFromHttpCode(httpStatus: number): SpanStatus {
     }
   }
 
-  return { code: SPAN_STATUS_ERROR, message: 'unknown_error' };
+  return { code: SPAN_STATUS_ERROR, message: 'internal_error' };
 }
 
 /**

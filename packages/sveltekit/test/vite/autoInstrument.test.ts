@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
 import { canWrapLoad, makeAutoInstrumentationPlugin } from '../../src/vite/autoInstrument';
 
 const DEFAULT_CONTENT = `
@@ -42,7 +41,12 @@ describe('makeAutoInstrumentationPlugin()', () => {
   });
 
   it('returns the auto instrumentation plugin', async () => {
-    const plugin = makeAutoInstrumentationPlugin({ debug: true, load: true, serverLoad: true });
+    const plugin = makeAutoInstrumentationPlugin({
+      debug: true,
+      load: true,
+      serverLoad: true,
+      onlyInstrumentClient: false,
+    });
     expect(plugin.name).toEqual('sentry-auto-instrumentation');
     expect(plugin.enforce).toEqual('pre');
     expect(plugin.load).toEqual(expect.any(Function));
@@ -59,7 +63,12 @@ describe('makeAutoInstrumentationPlugin()', () => {
     'path/to/+layout.mjs',
   ])('transform %s files', (path: string) => {
     it('wraps universal load if `load` option is `true`', async () => {
-      const plugin = makeAutoInstrumentationPlugin({ debug: false, load: true, serverLoad: true });
+      const plugin = makeAutoInstrumentationPlugin({
+        debug: false,
+        load: true,
+        serverLoad: true,
+        onlyInstrumentClient: false,
+      });
       // @ts-expect-error this exists
       const loadResult = await plugin.load(path);
       expect(loadResult).toEqual(
@@ -75,6 +84,7 @@ describe('makeAutoInstrumentationPlugin()', () => {
         debug: false,
         load: false,
         serverLoad: false,
+        onlyInstrumentClient: false,
       });
       // @ts-expect-error this exists
       const loadResult = await plugin.load(path);
@@ -93,7 +103,12 @@ describe('makeAutoInstrumentationPlugin()', () => {
     'path/to/+layout.server.mjs',
   ])('transform %s files', (path: string) => {
     it('wraps universal load if `load` option is `true`', async () => {
-      const plugin = makeAutoInstrumentationPlugin({ debug: false, load: false, serverLoad: true });
+      const plugin = makeAutoInstrumentationPlugin({
+        debug: false,
+        load: false,
+        serverLoad: true,
+        onlyInstrumentClient: false,
+      });
       // @ts-expect-error this exists
       const loadResult = await plugin.load(path);
       expect(loadResult).toEqual(
@@ -109,10 +124,219 @@ describe('makeAutoInstrumentationPlugin()', () => {
         debug: false,
         load: false,
         serverLoad: false,
+        onlyInstrumentClient: false,
       });
       // @ts-expect-error this exists
       const loadResult = await plugin.load(path);
       expect(loadResult).toEqual(null);
+    });
+  });
+
+  describe('when `onlyInstrumentClient` is `true`', () => {
+    it.each([
+      // server-only files
+      'path/to/+page.server.ts',
+      'path/to/+layout.server.js',
+      // universal files
+      'path/to/+page.mts',
+      'path/to/+layout.mjs',
+    ])("doesn't wrap code in SSR build in %s", async (path: string) => {
+      const plugin = makeAutoInstrumentationPlugin({
+        debug: false,
+        load: true,
+        serverLoad: true,
+        onlyInstrumentClient: true,
+      });
+
+      // @ts-expect-error this exists and is callable
+      plugin.configResolved({
+        build: {
+          ssr: true,
+        },
+      });
+
+      // @ts-expect-error this exists
+      const loadResult = await plugin.load(path);
+
+      expect(loadResult).toEqual(null);
+    });
+
+    it.each(['path/to/+page.ts', 'path/to/+layout.js'])(
+      'wraps client-side code in universal files in %s',
+      async (path: string) => {
+        const plugin = makeAutoInstrumentationPlugin({
+          debug: false,
+          load: true,
+          serverLoad: true,
+          onlyInstrumentClient: true,
+        });
+
+        // @ts-expect-error this exists and is callable
+        plugin.configResolved({
+          build: {
+            ssr: false,
+          },
+        });
+
+        // @ts-expect-error this exists and is callable
+        const loadResult = await plugin.load(path);
+
+        expect(loadResult).toBe(
+          'import { wrapLoadWithSentry } from "@sentry/sveltekit";' +
+            `import * as userModule from "${path}?sentry-auto-wrap";` +
+            'export const load = userModule.load ? wrapLoadWithSentry(userModule.load) : undefined;' +
+            `export * from "${path}?sentry-auto-wrap";`,
+        );
+      },
+    );
+
+    /**
+     * This is a bit of a constructed case because in a client build, server-only files
+     * shouldn't even be passed into the load hook. But just to be extra careful, let's
+     * make sure we don't wrap server-only files in a client build.
+     */
+    it.each(['path/to/+page.server.ts', 'path/to/+layout.server.js'])(
+      "doesn't wrap client-side code in server-only files in %s",
+      async (path: string) => {
+        const plugin = makeAutoInstrumentationPlugin({
+          debug: false,
+          load: true,
+          serverLoad: true,
+          onlyInstrumentClient: true,
+        });
+
+        // @ts-expect-error this exists and is callable
+        plugin.configResolved({
+          build: {
+            ssr: false,
+          },
+        });
+
+        // @ts-expect-error this exists and is callable
+        const loadResult = await plugin.load(path);
+
+        expect(loadResult).toBe(null);
+      },
+    );
+  });
+
+  describe('when SvelteKit native server tracing is detected via the Vite plugin `api`', () => {
+    // SvelteKit 3 no longer reads native-tracing config from `svelte.config.js` (so the
+    // `onlyInstrumentClient` option computed from it is `false`); the config is exposed on the
+    // SvelteKit Vite plugin's `api.options` instead.
+    // The tracing config location differs by SvelteKit version:
+    // - SvelteKit 3 (>= 3.0.0-next.21): `tracing.server` (the `kit` nesting was flattened away)
+    // - SvelteKit 3 (>= 3.0.0-next.8): `kit.tracing.server`
+    // - SvelteKit 2.31+ and early Kit 3 prereleases: `kit.experimental.tracing.server`
+    function configWithKitTracing(
+      ssr: boolean,
+      serverTracing: boolean,
+      location: 'tracing' | 'experimental' | 'flat' = 'tracing',
+    ): unknown {
+      const tracing = { tracing: { server: serverTracing } };
+      const options =
+        location === 'flat' ? tracing : { kit: location === 'tracing' ? tracing : { experimental: tracing } };
+
+      return {
+        build: { ssr },
+        plugins: [
+          { name: 'some-other-plugin' },
+          {
+            name: 'vite-plugin-sveltekit-setup',
+            api: { options },
+          },
+        ],
+      };
+    }
+
+    describe.each(['tracing', 'experimental', 'flat'] as const)('with the config in the `%s` location', location => {
+      it.each(['path/to/+page.server.ts', 'path/to/+layout.server.js', 'path/to/+page.ts', 'path/to/+layout.mjs'])(
+        "doesn't wrap %s in the SSR build when native tracing is enabled, even if `onlyInstrumentClient` is `false`",
+        async (path: string) => {
+          const plugin = makeAutoInstrumentationPlugin({
+            debug: false,
+            load: true,
+            serverLoad: true,
+            onlyInstrumentClient: false,
+          });
+
+          // @ts-expect-error this exists and is callable
+          plugin.configResolved(configWithKitTracing(true, true, location));
+
+          // @ts-expect-error this exists and is callable
+          const loadResult = await plugin.load(path);
+
+          expect(loadResult).toEqual(null);
+        },
+      );
+
+      it('still wraps server load in the SSR build when native tracing is not enabled', async () => {
+        const plugin = makeAutoInstrumentationPlugin({
+          debug: false,
+          load: true,
+          serverLoad: true,
+          onlyInstrumentClient: false,
+        });
+
+        // @ts-expect-error this exists and is callable
+        plugin.configResolved(configWithKitTracing(true, false, location));
+
+        const path = 'path/to/+page.server.ts';
+        // @ts-expect-error this exists and is callable
+        const loadResult = await plugin.load(path);
+
+        expect(loadResult).toBe(
+          'import { wrapServerLoadWithSentry } from "@sentry/sveltekit";' +
+            `import * as userModule from "${path}?sentry-auto-wrap";` +
+            'export const load = userModule.load ? wrapServerLoadWithSentry(userModule.load) : undefined;' +
+            `export * from "${path}?sentry-auto-wrap";`,
+        );
+      });
+    });
+  });
+
+  describe('when the server build is detected via the Vite Environment API', () => {
+    // On Vite 6+ `config.build.ssr` no longer reliably reflects the per-environment
+    // build, so the plugin relies on the current environment (`this.environment.name`). When
+    // `onlyInstrumentClient` is `true`, universal load must not be wrapped in the `ssr` environment
+    // (but should still be wrapped in `client`), even when `config.build.ssr`/`configResolved`
+    // didn't flag a server build.
+    it.each(['path/to/+page.ts', 'path/to/+layout.js', 'path/to/+page.server.ts'])(
+      "doesn't wrap %s in the `ssr` environment",
+      async (path: string) => {
+        const plugin = makeAutoInstrumentationPlugin({
+          debug: false,
+          load: true,
+          serverLoad: true,
+          onlyInstrumentClient: true,
+        });
+
+        // `configResolved` is intentionally not called - `isServerBuild` stays `undefined`
+        // @ts-expect-error this exists and is callable; bind `this.environment` like Vite does
+        const loadResult = await plugin.load.call({ environment: { name: 'ssr' } }, path);
+
+        expect(loadResult).toEqual(null);
+      },
+    );
+
+    it('still wraps universal load in the `client` environment', async () => {
+      const plugin = makeAutoInstrumentationPlugin({
+        debug: false,
+        load: true,
+        serverLoad: true,
+        onlyInstrumentClient: true,
+      });
+
+      const path = 'path/to/+page.ts';
+      // @ts-expect-error this exists and is callable; bind `this.environment` like Vite does
+      const loadResult = await plugin.load.call({ environment: { name: 'client' } }, path);
+
+      expect(loadResult).toBe(
+        'import { wrapLoadWithSentry } from "@sentry/sveltekit";' +
+          `import * as userModule from "${path}?sentry-auto-wrap";` +
+          'export const load = userModule.load ? wrapLoadWithSentry(userModule.load) : undefined;' +
+          `export * from "${path}?sentry-auto-wrap";`,
+      );
     });
   });
 });
@@ -140,7 +364,15 @@ describe('canWrapLoad', () => {
         return { props: { msg: res.toString() } }
       }`,
     ],
-
+    [
+      'export function declaration - with angle bracket type assertion',
+      `export async function load() {
+        let x: unknown = 'foo';
+        return {
+          msg: <string>x,
+        };
+      }`,
+    ],
     [
       'variable declaration (let)',
       `import {something} from 'somewhere';

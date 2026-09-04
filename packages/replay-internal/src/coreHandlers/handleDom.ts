@@ -1,9 +1,8 @@
-import { record } from '@sentry-internal/rrweb';
-import type { serializedElementNodeWithId, serializedNodeWithId } from '@sentry-internal/rrweb-snapshot';
-import { NodeType } from '@sentry-internal/rrweb-snapshot';
-import { htmlTreeAsString } from '@sentry/core';
+import { htmlTreeAsString } from '@sentry/browser-utils';
 import type { Breadcrumb, HandlerDataDom } from '@sentry/core';
-
+import { record } from '@sentry/rrweb';
+import type { serializedElementNodeWithId, serializedNodeWithId } from '@sentry/rrweb-snapshot';
+import { NodeType } from '@sentry/rrweb-snapshot';
 import type { ReplayContainer } from '../types';
 import { createBreadcrumb } from '../util/createBreadcrumb';
 import { handleClick } from './handleClick';
@@ -31,18 +30,13 @@ export const handleDomListener: (replay: ReplayContainer) => (handlerData: Handl
     if (
       isClick &&
       replay.clickDetector &&
-      event &&
-      event.target &&
+      event?.target &&
       !event.altKey &&
       !event.metaKey &&
       !event.ctrlKey &&
       !event.shiftKey
     ) {
-      handleClick(
-        replay.clickDetector,
-        result as Breadcrumb & { timestamp: number; data: { nodeId: number } },
-        getClickTargetNode(handlerData.event as Event) as HTMLElement,
-      );
+      handleClick(replay.clickDetector, result, getClickTargetNode(handlerData.event as Event) as HTMLElement);
     }
 
     addBreadcrumbEvent(replay, result);
@@ -99,7 +93,7 @@ function getDomTarget(handlerData: HandlerDataDom): { target: Node | null; messa
   try {
     target = isClick ? getClickTargetNode(handlerData.event as Event) : getTargetNode(handlerData.event as Event);
     message = htmlTreeAsString(target, { maxStringLength: 200 }) || '<unknown>';
-  } catch (e) {
+  } catch {
     message = '<unknown>';
   }
 
